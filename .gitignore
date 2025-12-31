@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-electron/
+.env
+.env.local
+*.log
+__pycache__/
+*.pyc
+.venv/
+backend/venv/

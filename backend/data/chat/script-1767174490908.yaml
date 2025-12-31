@@ -1,0 +1,14 @@
+messages:
+- id: e828cf7e
+  module: script
+  role: user
+  content: 6‘
+  created_at: '2025-12-31T17:48:14.100904'
+- id: 7f4f5c1b
+  module: script
+  role: assistant
+  content: 请问“6‘’”具体是指什么需求呢？是6分钟时长的视频脚本创作/优化、分镜中某个6秒/6分钟的片段调整，还是其他相关内容？请补充说明细节，我会针对性地提供协助~
+  created_at: '2025-12-31T17:48:20.947804'
+created_at: '2025-12-31T17:48:14.100874'
+updated_at: '2025-12-31T17:48:20.947804'
+session_id: script-1767174490908

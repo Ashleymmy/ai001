@@ -1,0 +1,24 @@
+llm:
+  provider: doubao
+  apiKey: afa76b36-bc0f-4f06-85f8-31cb0108be58
+  baseUrl: https://ark.cn-beijing.volces.com/api/v3
+  model: doubao-seed-1-6-251015
+  customProvider: null
+image:
+  provider: qwen-image
+  apiKey: sk-91eeefd017df40f090e92a30143d2fe5
+  baseUrl: https://dashscope.aliyuncs.com/api/v1
+  model: wanx2.1-t2i-turbo
+  customProvider: 万象
+video:
+  provider: none
+  apiKey: ''
+  baseUrl: ''
+  model: ''
+  customProvider: null
+local:
+  enabled: false
+  comfyuiUrl: http://127.0.0.1:8188
+  sdWebuiUrl: http://127.0.0.1:7860
+  vramStrategy: auto
+updated_at: '2025-12-31T17:43:46.672723'
