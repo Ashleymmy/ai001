@@ -53,6 +53,8 @@ interface Settings {
   llm: ModelConfig
   // 图像模型配置
   image: ModelConfig
+  // 分镜图像模型配置（独立于普通图像生成）
+  storyboard: ModelConfig
   // 视频模型配置
   video: ModelConfig
   // 本地部署配置
@@ -69,6 +71,7 @@ interface SettingsState {
   isLoaded: boolean
   updateLLM: (updates: Partial<ModelConfig>) => void
   updateImage: (updates: Partial<ModelConfig>) => void
+  updateStoryboard: (updates: Partial<ModelConfig>) => void
   updateVideo: (updates: Partial<ModelConfig>) => void
   updateLocal: (updates: Partial<Settings['local']>) => void
   loadFromBackend: () => Promise<void>
@@ -83,6 +86,12 @@ const defaultSettings: Settings = {
     model: 'qwen-plus'
   },
   image: {
+    provider: 'placeholder',
+    apiKey: '',
+    baseUrl: '',
+    model: ''
+  },
+  storyboard: {
     provider: 'placeholder',
     apiKey: '',
     baseUrl: '',
@@ -112,15 +121,23 @@ export const useSettingsStore = create<SettingsState>()(
         try {
           const saved = await getSavedSettings()
           if (saved && saved.llm) {
+            // 强制使用后端数据，覆盖 localStorage
+            const newSettings = {
+              llm: saved.llm,
+              image: saved.image,
+              storyboard: saved.storyboard || defaultSettings.storyboard,
+              video: saved.video,
+              local: saved.local
+            }
             set({ 
-              settings: {
-                llm: saved.llm,
-                image: saved.image,
-                video: saved.video,
-                local: saved.local
-              },
+              settings: newSettings,
               isLoaded: true 
             })
+            // 同步更新 localStorage
+            localStorage.setItem('storyboarder-settings-v2', JSON.stringify({
+              state: { settings: newSettings, isLoaded: true },
+              version: 2
+            }))
             console.log('[Settings] 从后端加载设置成功')
           } else {
             set({ isLoaded: true })
@@ -154,6 +171,14 @@ export const useSettingsStore = create<SettingsState>()(
           settings: {
             ...state.settings,
             image: { ...state.settings.image, ...updates }
+          }
+        })),
+
+      updateStoryboard: (updates) =>
+        set((state) => ({
+          settings: {
+            ...state.settings,
+            storyboard: { ...state.settings.storyboard, ...updates }
           }
         })),
 

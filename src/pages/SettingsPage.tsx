@@ -6,7 +6,10 @@ import {
   Video,
   Server,
   CheckCircle,
-  AlertCircle
+  AlertCircle,
+  Settings,
+  Sparkles,
+  Film
 } from 'lucide-react'
 import {
   useSettingsStore,
@@ -17,34 +20,47 @@ import {
 } from '../store/settingsStore'
 import { updateSettings } from '../services/api'
 
-// 模型配置卡片组件
 function ModelConfigCard({
   title,
   icon: Icon,
   config,
   providers,
-  onUpdate
+  onUpdate,
+  gradientFrom,
+  gradientTo
 }: {
   title: string
   icon: React.ElementType
   config: ModelConfig
   providers: typeof LLM_PROVIDERS
   onUpdate: (updates: Partial<ModelConfig>) => void
+  gradientFrom: string
+  gradientTo: string
 }) {
   const selectedProvider = providers.find((p) => p.id === config.provider)
   const isCustom = config.provider === 'custom'
+  const isPlaceholder = config.provider === 'placeholder' || config.provider === 'none'
+  const isDoubao = config.provider === 'doubao'
+  
+  // 判断是否需要显示 Base URL 输入框
+  const needsBaseUrl = isCustom || config.provider === 'claude' || config.provider === 'midjourney'
+  
+  // 判断模型选择方式：有预设模型列表用下拉框，否则用输入框
+  const hasPresetModels = selectedProvider && selectedProvider.models.length > 0 && !isCustom && !isDoubao
 
   return (
-    <div className="bg-[#1a1a1a] rounded-xl p-5 border border-gray-800">
-      <div className="flex items-center gap-2 mb-4">
-        <Icon size={20} className="text-primary" />
-        <h3 className="font-semibold">{title}</h3>
+    <div className="glass-card p-5 hover-lift">
+      <div className="flex items-center gap-3 mb-5">
+        <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${gradientFrom} ${gradientTo} flex items-center justify-center shadow-lg`}>
+          <Icon size={18} className="text-white" />
+        </div>
+        <h3 className="font-semibold text-gradient">{title}</h3>
       </div>
 
       <div className="space-y-4">
         {/* 服务商选择 */}
         <div>
-          <label className="block text-sm text-gray-400 mb-1.5">服务商</label>
+          <label className="block text-sm text-gray-400 mb-2">服务商</label>
           <select
             value={config.provider}
             onChange={(e) => {
@@ -55,143 +71,122 @@ function ModelConfigCard({
                 model: provider?.models[0] || ''
               })
             }}
-            className="w-full bg-[#252525] rounded-lg p-2.5 border border-gray-700 focus:border-primary/50 focus:outline-none text-sm"
+            className="w-full glass-input p-3 text-sm bg-gray-900/80"
           >
             {providers.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
+              <option key={p.id} value={p.id} className="bg-gray-900 text-white">{p.name}</option>
             ))}
           </select>
         </div>
 
         {/* 自定义服务商名称 */}
         {isCustom && (
-          <div>
-            <label className="block text-sm text-gray-400 mb-1.5">
-              自定义服务商名称
-            </label>
+          <div className="animate-fadeIn">
+            <label className="block text-sm text-gray-400 mb-2">自定义服务商名称</label>
             <input
               type="text"
               value={config.customProvider || ''}
               onChange={(e) => onUpdate({ customProvider: e.target.value })}
-              placeholder="例如: LocalAI"
-              className="w-full bg-[#252525] rounded-lg p-2.5 border border-gray-700 focus:border-primary/50 focus:outline-none text-sm"
+              placeholder="例如: LocalAI, Ollama"
+              className="w-full glass-input p-3 text-sm"
             />
           </div>
         )}
 
         {/* API Key */}
-        {config.provider !== 'placeholder' && config.provider !== 'none' && (
-          <div>
-            <label className="block text-sm text-gray-400 mb-1.5">API Key</label>
+        {!isPlaceholder && (
+          <div className="animate-fadeIn">
+            <label className="block text-sm text-gray-400 mb-2">API Key</label>
             <input
               type="password"
               value={config.apiKey}
               onChange={(e) => onUpdate({ apiKey: e.target.value })}
               placeholder="输入 API Key"
-              className="w-full bg-[#252525] rounded-lg p-2.5 border border-gray-700 focus:border-primary/50 focus:outline-none text-sm"
+              className="w-full glass-input p-3 text-sm"
             />
           </div>
         )}
 
-        {/* Base URL */}
-        {(isCustom ||
-          config.provider === 'claude' ||
-          config.provider === 'midjourney') && (
-          <div>
-            <label className="block text-sm text-gray-400 mb-1.5">
-              API Base URL
-            </label>
+        {/* API Base URL */}
+        {needsBaseUrl && (
+          <div className="animate-fadeIn">
+            <label className="block text-sm text-gray-400 mb-2">API Base URL</label>
             <input
               type="text"
               value={config.baseUrl}
               onChange={(e) => onUpdate({ baseUrl: e.target.value })}
               placeholder="https://api.example.com/v1"
-              className="w-full bg-[#252525] rounded-lg p-2.5 border border-gray-700 focus:border-primary/50 focus:outline-none text-sm"
+              className="w-full glass-input p-3 text-sm"
             />
           </div>
         )}
 
-        {/* 模型选择 - 有预设模型列表的服务商 */}
-        {selectedProvider && selectedProvider.models.length > 0 && config.provider !== 'doubao' && (
-          <div>
-            <label className="block text-sm text-gray-400 mb-1.5">模型</label>
+        {/* 模型选择 - 有预设列表时显示下拉框 */}
+        {hasPresetModels && (
+          <div className="animate-fadeIn">
+            <label className="block text-sm text-gray-400 mb-2">模型</label>
             <select
               value={config.model}
               onChange={(e) => onUpdate({ model: e.target.value })}
-              className="w-full bg-[#252525] rounded-lg p-2.5 border border-gray-700 focus:border-primary/50 focus:outline-none text-sm"
+              className="w-full glass-input p-3 text-sm bg-gray-900/80"
             >
               {selectedProvider.models.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
+                <option key={m} value={m} className="bg-gray-900 text-white">{m}</option>
               ))}
             </select>
+            {/* 允许手动输入其他模型 */}
+            <div className="mt-2">
+              <input
+                type="text"
+                value={config.model}
+                onChange={(e) => onUpdate({ model: e.target.value })}
+                placeholder="或手动输入其他模型名称"
+                className="w-full glass-input p-2 text-xs text-gray-400"
+              />
+            </div>
           </div>
         )}
 
-        {/* 豆包特殊处理 - 需要输入推理接入点 ID */}
-        {config.provider === 'doubao' && (
-          <div>
-            <label className="block text-sm text-gray-400 mb-1.5">推理接入点 ID</label>
+        {/* 豆包特殊处理 - 推理接入点 */}
+        {isDoubao && (
+          <div className="animate-fadeIn">
+            <label className="block text-sm text-gray-400 mb-2">推理接入点 ID</label>
             <input
               type="text"
               value={config.model}
               onChange={(e) => onUpdate({ model: e.target.value })}
-              placeholder="ep-xxx"
-              className="w-full bg-[#252525] rounded-lg p-2.5 border border-gray-700 focus:border-primary/50 focus:outline-none text-sm"
+              placeholder="ep-xxx 或模型名称"
+              className="w-full glass-input p-3 text-sm"
             />
-            <p className="text-xs text-gray-500 mt-1">
-              需要在火山引擎控制台创建推理接入点，填入接入点 ID（如 ep-xxx）
-            </p>
+            <p className="text-xs text-gray-500 mt-2">需要在火山引擎控制台创建推理接入点</p>
           </div>
         )}
 
-        {/* 需要手动输入模型名称的服务商（models 数组为空，且不是特殊类型） */}
-        {selectedProvider && 
-         selectedProvider.models.length === 0 && 
-         !isCustom && 
-         config.provider !== 'doubao' &&
-         config.provider !== 'placeholder' && 
-         config.provider !== 'none' && (
-          <div>
-            <label className="block text-sm text-gray-400 mb-1.5">模型名称</label>
+        {/* 自定义或无预设模型时 - 手动输入模型名称 */}
+        {!isPlaceholder && !hasPresetModels && !isDoubao && (
+          <div className="animate-fadeIn">
+            <label className="block text-sm text-gray-400 mb-2">模型名称</label>
             <input
               type="text"
               value={config.model}
               onChange={(e) => onUpdate({ model: e.target.value })}
-              placeholder="输入模型名称"
-              className="w-full bg-[#252525] rounded-lg p-2.5 border border-gray-700 focus:border-primary/50 focus:outline-none text-sm"
+              placeholder="输入模型名称，如 gpt-4, claude-3-opus"
+              className="w-full glass-input p-3 text-sm"
             />
           </div>
         )}
 
-        {/* 自定义服务商 - 模型名称 */}
-        {isCustom && (
-          <div>
-            <label className="block text-sm text-gray-400 mb-1.5">模型名称</label>
-            <input
-              type="text"
-              value={config.model}
-              onChange={(e) => onUpdate({ model: e.target.value })}
-              placeholder="例如: gpt-4"
-              className="w-full bg-[#252525] rounded-lg p-2.5 border border-gray-700 focus:border-primary/50 focus:outline-none text-sm"
-            />
-          </div>
-        )}
-
-        {/* 状态指示 */}
-        <div className="flex items-center gap-2 text-xs">
+        {/* 配置状态 */}
+        <div className="flex items-center gap-2 text-xs pt-2">
           {config.apiKey ? (
-            <span className="flex items-center gap-1 text-green-400">
+            <span className="flex items-center gap-1.5 text-green-400 glass-button px-3 py-1.5 rounded-full">
               <CheckCircle size={12} />
               已配置
             </span>
-          ) : config.provider === 'placeholder' || config.provider === 'none' ? (
-            <span className="text-gray-500">无需配置</span>
+          ) : isPlaceholder ? (
+            <span className="text-gray-500 glass-button px-3 py-1.5 rounded-full">无需配置</span>
           ) : (
-            <span className="flex items-center gap-1 text-yellow-400">
+            <span className="flex items-center gap-1.5 text-yellow-400 glass-button px-3 py-1.5 rounded-full">
               <AlertCircle size={12} />
               未配置 API Key
             </span>
@@ -203,12 +198,9 @@ function ModelConfigCard({
 }
 
 export default function SettingsPage() {
-  const { settings, updateLLM, updateImage, updateVideo, updateLocal } =
-    useSettingsStore()
+  const { settings, updateLLM, updateImage, updateStoryboard, updateVideo, updateLocal } = useSettingsStore()
   const [saving, setSaving] = useState(false)
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>(
-    'idle'
-  )
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [activeTab, setActiveTab] = useState<'models' | 'local'>('models')
 
   const handleSave = async () => {
@@ -219,6 +211,7 @@ export default function SettingsPage() {
       await updateSettings({
         llm: settings.llm,
         image: settings.image,
+        storyboard: settings.storyboard,
         video: settings.video,
         local: settings.local
       })
@@ -233,194 +226,200 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="p-8 max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold mb-6">设置</h1>
+    <div className="h-full overflow-auto p-8 animate-fadeIn">
+      <div className="max-w-4xl mx-auto">
+      {/* 页面标题 */}
+      <div className="flex items-center gap-4 mb-8 animate-fadeInDown">
+        <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-slate-500 via-gray-500 to-zinc-400 flex items-center justify-center shadow-lg shadow-slate-500/30">
+          <Settings size={24} className="text-white drop-shadow-md" strokeWidth={2.5} />
+        </div>
+        <div>
+          <h1 className="text-2xl font-bold text-gradient">设置</h1>
+          <p className="text-sm text-gray-500">配置 AI 模型和本地服务</p>
+        </div>
+      </div>
 
       {/* Tab 切换 */}
-      <div className="flex gap-2 mb-6">
+      <div className="flex gap-2 mb-8 animate-fadeInUp delay-100" style={{ animationFillMode: 'backwards' }}>
         <button
           onClick={() => setActiveTab('models')}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+          className={`px-5 py-2.5 rounded-xl text-sm font-medium transition-all ${
             activeTab === 'models'
-              ? 'bg-primary text-white'
-              : 'bg-[#1a1a1a] text-gray-400 hover:text-white'
+              ? 'bg-gradient-to-r from-blue-500 to-purple-500 text-white shadow-lg shadow-blue-500/25'
+              : 'glass-button text-gray-400 hover:text-white'
           }`}
         >
-          模型配置
+          <span className="flex items-center gap-2">
+            <Sparkles size={16} />
+            模型配置
+          </span>
         </button>
         <button
           onClick={() => setActiveTab('local')}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+          className={`px-5 py-2.5 rounded-xl text-sm font-medium transition-all ${
             activeTab === 'local'
-              ? 'bg-primary text-white'
-              : 'bg-[#1a1a1a] text-gray-400 hover:text-white'
+              ? 'bg-gradient-to-r from-blue-500 to-purple-500 text-white shadow-lg shadow-blue-500/25'
+              : 'glass-button text-gray-400 hover:text-white'
           }`}
         >
-          本地部署
+          <span className="flex items-center gap-2">
+            <Server size={16} />
+            本地部署
+          </span>
         </button>
       </div>
 
       {activeTab === 'models' && (
-        <div className="space-y-6">
-          {/* 文本模型 */}
-          <section>
-            <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
-              <MessageSquare size={20} />
-              文本模型 (LLM)
-            </h2>
-            <p className="text-sm text-gray-500 mb-4">
-              用于剧本拆解、分镜描述生成和 AI 对话
-            </p>
+        <div className="space-y-8 animate-fadeIn">
+          <section className="animate-fadeInUp delay-200" style={{ animationFillMode: 'backwards' }}>
+            <div className="flex items-center gap-2 mb-4">
+              <MessageSquare size={18} className="text-blue-400" />
+              <h2 className="text-lg font-semibold">文本模型 (LLM)</h2>
+            </div>
+            <p className="text-sm text-gray-500 mb-4">用于剧本拆解、分镜描述生成和 AI 对话</p>
             <ModelConfigCard
               title="文本生成"
               icon={MessageSquare}
               config={settings.llm}
               providers={LLM_PROVIDERS}
               onUpdate={updateLLM}
+              gradientFrom="from-blue-500"
+              gradientTo="to-cyan-500"
             />
           </section>
 
-          {/* 图像模型 */}
-          <section>
-            <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
-              <Image size={20} />
-              图像模型
-            </h2>
-            <p className="text-sm text-gray-500 mb-4">用于生成分镜画面</p>
+          <section className="animate-fadeInUp delay-300" style={{ animationFillMode: 'backwards' }}>
+            <div className="flex items-center gap-2 mb-4">
+              <Image size={18} className="text-purple-400" />
+              <h2 className="text-lg font-semibold">图像模型</h2>
+            </div>
+            <p className="text-sm text-gray-500 mb-4">用于图像生成页面的独立图像生成</p>
             <ModelConfigCard
               title="图像生成"
               icon={Image}
               config={settings.image}
               providers={IMAGE_PROVIDERS}
               onUpdate={updateImage}
+              gradientFrom="from-purple-500"
+              gradientTo="to-pink-500"
             />
           </section>
 
-          {/* 视频模型 */}
-          <section>
-            <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
-              <Video size={20} />
-              视频模型
-            </h2>
-            <p className="text-sm text-gray-500 mb-4">
-              用于将分镜图片生成视频片段（可选）
-            </p>
+          <section className="animate-fadeInUp delay-350" style={{ animationFillMode: 'backwards' }}>
+            <div className="flex items-center gap-2 mb-4">
+              <Film size={18} className="text-orange-400" />
+              <h2 className="text-lg font-semibold">分镜图像模型</h2>
+            </div>
+            <p className="text-sm text-gray-500 mb-4">用于分镜制作页面的图像生成（可独立配置不同的模型）</p>
+            <ModelConfigCard
+              title="分镜图像"
+              icon={Film}
+              config={settings.storyboard}
+              providers={IMAGE_PROVIDERS}
+              onUpdate={updateStoryboard}
+              gradientFrom="from-orange-500"
+              gradientTo="to-amber-500"
+            />
+          </section>
+
+          <section className="animate-fadeInUp delay-400" style={{ animationFillMode: 'backwards' }}>
+            <div className="flex items-center gap-2 mb-4">
+              <Video size={18} className="text-green-400" />
+              <h2 className="text-lg font-semibold">视频模型</h2>
+            </div>
+            <p className="text-sm text-gray-500 mb-4">用于将分镜图片生成视频片段（可选）</p>
             <ModelConfigCard
               title="视频生成"
               icon={Video}
               config={settings.video}
               providers={VIDEO_PROVIDERS}
               onUpdate={updateVideo}
+              gradientFrom="from-green-500"
+              gradientTo="to-emerald-500"
             />
           </section>
         </div>
       )}
 
       {activeTab === 'local' && (
-        <div className="space-y-6">
-          <section>
-            <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
-              <Server size={20} />
-              本地部署配置
-            </h2>
-            <p className="text-sm text-gray-500 mb-4">
-              配置本地运行的 AI 服务，支持 ComfyUI 和 Stable Diffusion WebUI
-            </p>
+        <div className="space-y-6 animate-fadeIn">
+          <section className="animate-fadeInUp delay-200" style={{ animationFillMode: 'backwards' }}>
+            <div className="flex items-center gap-2 mb-4">
+              <Server size={18} className="text-cyan-400" />
+              <h2 className="text-lg font-semibold">本地部署配置</h2>
+            </div>
+            <p className="text-sm text-gray-500 mb-4">配置本地运行的 AI 服务，支持 ComfyUI 和 Stable Diffusion WebUI</p>
 
-            <div className="bg-[#1a1a1a] rounded-xl p-5 border border-gray-800 space-y-4">
-              {/* 启用本地部署 */}
+            <div className="glass-card p-6 space-y-5">
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="font-medium">启用本地部署</h3>
-                  <p className="text-sm text-gray-500">
-                    优先使用本地服务生成图像
-                  </p>
+                  <p className="text-sm text-gray-500 mt-1">优先使用本地服务生成图像</p>
                 </div>
                 <button
-                  onClick={() =>
-                    updateLocal({ enabled: !settings.local.enabled })
-                  }
-                  className={`w-12 h-6 rounded-full transition-colors ${
-                    settings.local.enabled ? 'bg-primary' : 'bg-gray-600'
+                  onClick={() => updateLocal({ enabled: !settings.local.enabled })}
+                  className={`w-14 h-7 rounded-full transition-all ${
+                    settings.local.enabled 
+                      ? 'bg-gradient-to-r from-cyan-500 to-blue-500 shadow-lg shadow-cyan-500/25' 
+                      : 'bg-gray-700'
                   }`}
                 >
-                  <div
-                    className={`w-5 h-5 bg-white rounded-full transition-transform ${
-                      settings.local.enabled
-                        ? 'translate-x-6'
-                        : 'translate-x-0.5'
-                    }`}
-                  />
+                  <div className={`w-5 h-5 bg-white rounded-full transition-transform shadow-md ${
+                    settings.local.enabled ? 'translate-x-8' : 'translate-x-1'
+                  }`} />
                 </button>
               </div>
 
               {settings.local.enabled && (
-                <>
-                  {/* ComfyUI */}
+                <div className="space-y-4 pt-4 border-t border-white/5 animate-fadeIn">
                   <div>
-                    <label className="block text-sm text-gray-400 mb-1.5">
-                      ComfyUI 地址
-                    </label>
+                    <label className="block text-sm text-gray-400 mb-2">ComfyUI 地址</label>
                     <input
                       type="text"
                       value={settings.local.comfyuiUrl}
-                      onChange={(e) =>
-                        updateLocal({ comfyuiUrl: e.target.value })
-                      }
+                      onChange={(e) => updateLocal({ comfyuiUrl: e.target.value })}
                       placeholder="http://127.0.0.1:8188"
-                      className="w-full bg-[#252525] rounded-lg p-2.5 border border-gray-700 focus:border-primary/50 focus:outline-none text-sm"
+                      className="w-full glass-input p-3 text-sm"
                     />
                   </div>
 
-                  {/* SD WebUI */}
                   <div>
-                    <label className="block text-sm text-gray-400 mb-1.5">
-                      SD WebUI 地址
-                    </label>
+                    <label className="block text-sm text-gray-400 mb-2">SD WebUI 地址</label>
                     <input
                       type="text"
                       value={settings.local.sdWebuiUrl}
-                      onChange={(e) =>
-                        updateLocal({ sdWebuiUrl: e.target.value })
-                      }
+                      onChange={(e) => updateLocal({ sdWebuiUrl: e.target.value })}
                       placeholder="http://127.0.0.1:7860"
-                      className="w-full bg-[#252525] rounded-lg p-2.5 border border-gray-700 focus:border-primary/50 focus:outline-none text-sm"
+                      className="w-full glass-input p-3 text-sm"
                     />
                   </div>
 
-                  {/* 显存策略 */}
                   <div>
-                    <label className="block text-sm text-gray-400 mb-1.5">
-                      显存策略
-                    </label>
+                    <label className="block text-sm text-gray-400 mb-2">显存策略</label>
                     <select
                       value={settings.local.vramStrategy}
-                      onChange={(e) =>
-                        updateLocal({ vramStrategy: e.target.value })
-                      }
-                      className="w-full bg-[#252525] rounded-lg p-2.5 border border-gray-700 focus:border-primary/50 focus:outline-none text-sm"
+                      onChange={(e) => updateLocal({ vramStrategy: e.target.value })}
+                      className="w-full glass-input p-3 text-sm bg-gray-900/80"
                     >
-                      <option value="auto">自动检测</option>
-                      <option value="low">低显存 (4-6GB)</option>
-                      <option value="medium">中等显存 (8-12GB)</option>
-                      <option value="high">高显存 (16GB+)</option>
+                      <option value="auto" className="bg-gray-900 text-white">自动检测</option>
+                      <option value="low" className="bg-gray-900 text-white">低显存 (4-6GB)</option>
+                      <option value="medium" className="bg-gray-900 text-white">中等显存 (8-12GB)</option>
+                      <option value="high" className="bg-gray-900 text-white">高显存 (16GB+)</option>
                     </select>
                   </div>
-                </>
+                </div>
               )}
             </div>
           </section>
 
-          {/* 使用说明 */}
-          <section className="bg-[#1a1a1a] rounded-xl p-5 border border-gray-800">
-            <h3 className="font-medium mb-3">本地部署说明</h3>
+          <section className="glass-card p-6 animate-fadeInUp delay-300" style={{ animationFillMode: 'backwards' }}>
+            <h3 className="font-medium mb-4 flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-cyan-500"></span>
+              本地部署说明
+            </h3>
             <ul className="text-sm text-gray-400 space-y-2">
-              <li>
-                • <strong>ComfyUI</strong>: 推荐使用，支持更灵活的工作流配置
-              </li>
-              <li>
-                • <strong>SD WebUI</strong>: 简单易用，适合快速生成
-              </li>
+              <li>• <strong className="text-gray-300">ComfyUI</strong>: 推荐使用，支持更灵活的工作流配置</li>
+              <li>• <strong className="text-gray-300">SD WebUI</strong>: 简单易用，适合快速生成</li>
               <li>• 启用本地部署后，图像生成将优先使用本地服务</li>
               <li>• 确保本地服务已启动并可访问对应地址</li>
               <li>• 建议显存 8GB 以上以获得最佳体验</li>
@@ -430,28 +429,29 @@ export default function SettingsPage() {
       )}
 
       {/* 保存按钮 */}
-      <div className="flex items-center gap-4 mt-8 pt-6 border-t border-gray-800">
+      <div className="flex items-center gap-4 mt-10 pt-6 border-t border-white/5 animate-fadeInUp delay-500" style={{ animationFillMode: 'backwards' }}>
         <button
           onClick={handleSave}
           disabled={saving}
-          className="flex items-center gap-2 px-6 py-3 bg-primary rounded-lg font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+          className="flex items-center gap-2 px-8 py-3 bg-gradient-to-r from-blue-500 to-purple-500 rounded-xl font-medium hover:opacity-90 transition-all hover:scale-105 hover:shadow-lg hover:shadow-blue-500/25 disabled:opacity-50 disabled:hover:scale-100"
         >
           <Save size={18} />
           {saving ? '保存中...' : '保存设置'}
         </button>
 
         {saveStatus === 'success' && (
-          <span className="flex items-center gap-1 text-green-400 text-sm">
+          <span className="flex items-center gap-2 text-green-400 text-sm glass-button px-4 py-2 rounded-xl animate-fadeIn">
             <CheckCircle size={16} />
             设置已保存并生效
           </span>
         )}
         {saveStatus === 'error' && (
-          <span className="flex items-center gap-1 text-red-400 text-sm">
+          <span className="flex items-center gap-2 text-red-400 text-sm glass-button px-4 py-2 rounded-xl animate-fadeIn">
             <AlertCircle size={16} />
             保存失败，请检查后端服务
           </span>
         )}
+      </div>
       </div>
     </div>
   )

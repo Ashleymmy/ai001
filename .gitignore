@@ -8,3 +8,24 @@ __pycache__/
 *.pyc
 .venv/
 backend/venv/
+
+# Build artifacts
+backend/build/
+backend/dist/
+backend/backend-server.exe
+build/*.ico
+build/*.icns
+
+# Data files (user data)
+backend/data/storyboarder.db
+backend/data/chat/
+backend/data/projects/
+backend/data/scripts/
+backend/data/exports/
+backend/data/videos/*.mp4
+backend/data/images/ref_*.png
+backend/data/images/ref_*.jpg
+
+# Temp files
+~$*
+*.tmp

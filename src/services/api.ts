@@ -26,6 +26,7 @@ export interface StoryboardResult {
 export interface FullSettings {
   llm: ModelConfig
   image: ModelConfig
+  storyboard: ModelConfig
   video: ModelConfig
   local: {
     enabled: boolean
@@ -98,13 +99,25 @@ export async function uploadReference(file: File): Promise<string> {
 // 单独生成图像
 export async function generateImage(
   prompt: string,
-  negativePrompt?: string
-): Promise<string> {
+  negativePrompt?: string,
+  options?: {
+    width?: number
+    height?: number
+    steps?: number
+    seed?: number
+    style?: string
+  }
+): Promise<{ imageUrl: string; seed: number; width: number; height: number; steps: number }> {
   const response = await api.post('/api/generate-image', {
     prompt,
-    negativePrompt
+    negativePrompt,
+    width: options?.width || 1024,
+    height: options?.height || 576,
+    steps: options?.steps || 25,
+    seed: options?.seed,
+    style: options?.style
   })
-  return response.data.imageUrl
+  return response.data
 }
 
 // 健康检查
@@ -117,22 +130,101 @@ export async function healthCheck(): Promise<boolean> {
   }
 }
 
-// AI 对话
+// AI 对话 - 支持取消
+let chatAbortController: AbortController | null = null
+
 export async function chatWithAI(
   message: string,
   context?: string
 ): Promise<string> {
-  const response = await api.post('/api/chat', { message, context })
+  // 取消之前的请求
+  if (chatAbortController) {
+    chatAbortController.abort()
+  }
+  chatAbortController = new AbortController()
+  
+  const response = await api.post('/api/chat', { message, context }, {
+    signal: chatAbortController.signal
+  })
   return response.data.reply
+}
+
+export function stopChatGeneration() {
+  if (chatAbortController) {
+    chatAbortController.abort()
+    chatAbortController = null
+  }
 }
 
 // 生成视频（从图片）
 export async function generateVideo(
   imageUrl: string,
+  prompt: string,
+  options?: {
+    duration?: number
+    motionStrength?: number
+    seed?: number
+  }
+): Promise<{
+  taskId: string
+  status: string
+  videoUrl: string | null
+  duration: number
+  seed: number
+  error?: string
+}> {
+  const response = await api.post('/api/generate-video', {
+    imageUrl,
+    prompt,
+    duration: options?.duration || 5,
+    motionStrength: options?.motionStrength || 0.5,
+    seed: options?.seed
+  })
+  return response.data
+}
+
+// 检查视频任务状态
+export async function checkVideoTaskStatus(taskId: string): Promise<{
+  taskId: string
+  status: string
+  videoUrl: string | null
+  progress?: number
+  error?: string
+}> {
+  const response = await api.post('/api/video-task-status', { taskId })
+  return response.data
+}
+
+// 获取视频历史
+export interface GeneratedVideo {
+  id: string
+  task_id: string
+  source_image: string
   prompt: string
-): Promise<string> {
-  const response = await api.post('/api/generate-video', { imageUrl, prompt })
-  return response.data.videoUrl
+  video_url: string | null
+  status: string
+  provider: string
+  model: string
+  duration: number
+  seed: number
+  created_at: string
+  updated_at: string
+}
+
+export async function getVideoHistory(limit = 50): Promise<GeneratedVideo[]> {
+  const response = await api.get('/api/videos/history', { params: { limit } })
+  return response.data.videos
+}
+
+// 删除单个视频历史
+export async function deleteVideoHistory(videoId: string): Promise<void> {
+  await api.delete(`/api/videos/history/${videoId}`)
+}
+
+// 批量删除视频历史
+export async function deleteVideosHistoryBatch(ids: string[]): Promise<{ deleted: number }> {
+  const response = await api.post('/api/videos/history/delete-batch', { ids })
+  return response.data
 }
 
 // ========== 项目管理 ==========
@@ -292,12 +384,28 @@ export interface GeneratedImage {
   image_url: string
   provider?: string
   model?: string
+  width?: number
+  height?: number
+  steps?: number
+  seed?: number
+  style?: string
   created_at: string
 }
 
 export async function getImageHistory(limit = 100): Promise<GeneratedImage[]> {
   const response = await api.get('/api/images/history', { params: { limit } })
   return response.data.images
+}
+
+// 删除单个图像历史
+export async function deleteImageHistory(imageId: string): Promise<void> {
+  await api.delete(`/api/images/history/${imageId}`)
+}
+
+// 批量删除图像历史
+export async function deleteImagesHistoryBatch(ids: string[]): Promise<{ deleted: number }> {
+  const response = await api.post('/api/images/history/delete-batch', { ids })
+  return response.data
 }
 
 // ========== 对话历史 ==========

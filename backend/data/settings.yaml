@@ -10,15 +10,21 @@ image:
   baseUrl: https://dashscope.aliyuncs.com/api/v1
   model: wanx2.1-t2i-turbo
   customProvider: 万象
+storyboard:
+  provider: custom
+  apiKey: sk-91eeefd017df40f090e92a30143d2fe5
+  baseUrl: https://dashscope.aliyuncs.com/api/v1
+  model: wan2.6-i2v
+  customProvider: 通义万相
 video:
-  provider: none
-  apiKey: ''
-  baseUrl: ''
-  model: ''
-  customProvider: null
+  provider: custom
+  apiKey: sk-3b3a69aad6b84ed5be66c30e66dc3e1d
+  baseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
+  model: wan2.6-i2v
+  customProvider: 通义万相
 local:
   enabled: false
   comfyuiUrl: http://127.0.0.1:8188
   sdWebuiUrl: http://127.0.0.1:7860
   vramStrategy: auto
-updated_at: '2025-12-31T17:43:46.672723'
+updated_at: '2026-01-02T18:09:36.183357'

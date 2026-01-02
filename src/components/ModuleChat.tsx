@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import {
-  Send,
   Bot,
   User,
   Loader2,
@@ -11,11 +10,13 @@ import {
 } from 'lucide-react'
 import {
   chatWithAI,
+  stopChatGeneration,
   saveChatMessage,
   getChatHistory,
   clearChatHistory,
   listChatSessions
 } from '../services/api'
+import ChatInput from './ChatInput'
 
 interface Message {
   id: string
@@ -88,7 +89,6 @@ export default function ModuleChat({
   const [sessions, setSessions] = useState<ChatSession[]>([])
   const [loadingSessions, setLoadingSessions] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -172,6 +172,7 @@ export default function ModuleChat({
     }
 
     setMessages((prev) => [...prev, userMessage])
+    const messageContent = input.trim()
     setInput('')
     setIsLoading(true)
 
@@ -184,7 +185,7 @@ export default function ModuleChat({
 
     try {
       const moduleContext = `[${config.title}模式] ${context || ''}`
-      const response = await chatWithAI(input.trim(), moduleContext)
+      const response = await chatWithAI(messageContent, moduleContext)
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -204,7 +205,10 @@ export default function ModuleChat({
       } catch (e) {
         console.error('保存助手消息失败:', e)
       }
-    } catch (error) {
+    } catch (error: unknown) {
+      if (error instanceof Error && error.name === 'CanceledError') {
+        return // 用户主动取消
+      }
       console.error('对话失败:', error)
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -217,11 +221,9 @@ export default function ModuleChat({
     }
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
-    }
+  const handleStop = () => {
+    stopChatGeneration()
+    setIsLoading(false)
   }
 
   const handleClearHistory = async () => {
@@ -378,25 +380,15 @@ export default function ModuleChat({
 
       {/* 输入区 */}
       <div className="p-3 border-t border-gray-800">
-        <div className="flex gap-2">
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={placeholder || '输入消息...'}
-            className="flex-1 bg-[#252525] rounded-lg px-3 py-2 text-sm resize-none border border-gray-700 focus:border-primary/50 focus:outline-none"
-            rows={2}
-            disabled={isLoading}
-          />
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() || isLoading}
-            className="px-3 bg-primary rounded-lg hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors self-end"
-          >
-            <Send size={16} />
-          </button>
-        </div>
+        <ChatInput
+          value={input}
+          onChange={setInput}
+          onSend={handleSend}
+          onStop={handleStop}
+          isLoading={isLoading}
+          placeholder={placeholder || '输入消息...'}
+          showModelSelector={true}
+        />
       </div>
     </div>
   )

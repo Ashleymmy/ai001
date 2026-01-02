@@ -302,8 +302,8 @@ class StorageService:
                             "id": script.get("id"),
                             "project_id": script.get("project_id"),
                             "title": script.get("title"),
+                            "content": script.get("content", ""),
                             "version": script.get("version"),
-                            "content_preview": script.get("content", "")[:100],
                             "created_at": script.get("created_at"),
                             "updated_at": script.get("updated_at")
                         })
@@ -364,7 +364,9 @@ class StorageService:
         return os.path.join(IMAGES_DIR, "index.yaml")
     
     def save_generated_image(self, prompt: str, image_url: str, 
-                             negative_prompt: str = "", provider: str = "", model: str = "") -> Dict[str, Any]:
+                             negative_prompt: str = "", provider: str = "", model: str = "",
+                             width: int = 1024, height: int = 576, steps: int = 25,
+                             seed: int = 0, style: str = None) -> Dict[str, Any]:
         """保存生成的图像记录"""
         index = _load_yaml(self._images_index_file())
         if 'images' not in index:
@@ -380,6 +382,11 @@ class StorageService:
             "image_url": image_url,
             "provider": provider,
             "model": model,
+            "width": width,
+            "height": height,
+            "steps": steps,
+            "seed": seed,
+            "style": style,
             "created_at": now
         }
         
@@ -396,6 +403,36 @@ class StorageService:
         images = index.get('images', [])
         return images[offset:offset + limit]
     
+    def delete_generated_image(self, image_id: str) -> bool:
+        """删除图像历史记录"""
+        index = _load_yaml(self._images_index_file())
+        images = index.get('images', [])
+        
+        original_len = len(images)
+        index['images'] = [img for img in images if img.get('id') != image_id]
+        
+        if len(index['images']) < original_len:
+            index['updated_at'] = _now()
+            _save_yaml(self._images_index_file(), index)
+            return True
+        return False
+    
+    def delete_generated_images_batch(self, image_ids: List[str]) -> int:
+        """批量删除图像历史记录"""
+        index = _load_yaml(self._images_index_file())
+        images = index.get('images', [])
+        
+        ids_set = set(image_ids)
+        original_len = len(images)
+        index['images'] = [img for img in images if img.get('id') not in ids_set]
+        
+        deleted_count = original_len - len(index['images'])
+        if deleted_count > 0:
+            index['updated_at'] = _now()
+            _save_yaml(self._images_index_file(), index)
+        
+        return deleted_count
+    
     def get_image_stats(self) -> Dict[str, Any]:
         """获取图像生成统计"""
         index = _load_yaml(self._images_index_file())
@@ -409,6 +446,149 @@ class StorageService:
         return {
             "total": len(images),
             "by_provider": providers
+        }
+    
+    # ==================== 视频历史 ====================
+    
+    def _videos_index_file(self) -> str:
+        return os.path.join(IMAGES_DIR, "videos_index.yaml")
+    
+    def save_generated_video(self, source_image: str, prompt: str,
+                             video_url: str = None, task_id: str = "",
+                             status: str = "processing", provider: str = "",
+                             model: str = "", duration: float = 5.0,
+                             seed: int = 0) -> Dict[str, Any]:
+        """保存生成的视频记录"""
+        index = _load_yaml(self._videos_index_file())
+        if 'videos' not in index:
+            index['videos'] = []
+        
+        video_id = _gen_id()
+        now = _now()
+        
+        # 保存源图片到文件
+        saved_source_image = ""
+        if source_image:
+            if source_image.startswith('data:image'):
+                # base64 图片，保存到文件
+                try:
+                    import base64
+                    # 解析 base64
+                    if ',' in source_image:
+                        header, data = source_image.split(',', 1)
+                        ext = 'png'
+                        if 'jpeg' in header or 'jpg' in header:
+                            ext = 'jpg'
+                        elif 'webp' in header:
+                            ext = 'webp'
+                    else:
+                        data = source_image
+                        ext = 'png'
+                    
+                    # 保存文件
+                    filename = f"video_src_{video_id}.{ext}"
+                    filepath = os.path.join(IMAGES_DIR, filename)
+                    with open(filepath, 'wb') as f:
+                        f.write(base64.b64decode(data))
+                    saved_source_image = f"/api/images/{filename}"
+                except Exception as e:
+                    print(f"保存源图片失败: {e}")
+                    saved_source_image = ""
+            else:
+                # 已经是 URL
+                saved_source_image = source_image
+        
+        video_record = {
+            "id": video_id,
+            "task_id": task_id,
+            "source_image": saved_source_image,
+            "prompt": prompt,
+            "video_url": video_url,
+            "status": status,
+            "provider": provider,
+            "model": model,
+            "duration": duration,
+            "seed": seed,
+            "created_at": now,
+            "updated_at": now
+        }
+        
+        index['videos'].insert(0, video_record)
+        index['videos'] = index['videos'][:500]  # 保留最近 500 条
+        index['updated_at'] = now
+        
+        _save_yaml(self._videos_index_file(), index)
+        return video_record
+    
+    def update_video_status(self, task_id: str, status: str, video_url: str = None) -> bool:
+        """更新视频任务状态"""
+        index = _load_yaml(self._videos_index_file())
+        videos = index.get('videos', [])
+        
+        for video in videos:
+            if video.get('task_id') == task_id:
+                video['status'] = status
+                if video_url:
+                    video['video_url'] = video_url
+                video['updated_at'] = _now()
+                _save_yaml(self._videos_index_file(), index)
+                return True
+        
+        return False
+    
+    def list_generated_videos(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+        """获取视频历史"""
+        index = _load_yaml(self._videos_index_file())
+        videos = index.get('videos', [])
+        return videos[offset:offset + limit]
+    
+    def delete_generated_video(self, video_id: str) -> bool:
+        """删除视频历史记录"""
+        index = _load_yaml(self._videos_index_file())
+        videos = index.get('videos', [])
+        
+        original_len = len(videos)
+        index['videos'] = [vid for vid in videos if vid.get('id') != video_id]
+        
+        if len(index['videos']) < original_len:
+            index['updated_at'] = _now()
+            _save_yaml(self._videos_index_file(), index)
+            return True
+        return False
+    
+    def delete_generated_videos_batch(self, video_ids: List[str]) -> int:
+        """批量删除视频历史记录"""
+        index = _load_yaml(self._videos_index_file())
+        videos = index.get('videos', [])
+        
+        ids_set = set(video_ids)
+        original_len = len(videos)
+        index['videos'] = [vid for vid in videos if vid.get('id') not in ids_set]
+        
+        deleted_count = original_len - len(index['videos'])
+        if deleted_count > 0:
+            index['updated_at'] = _now()
+            _save_yaml(self._videos_index_file(), index)
+        
+        return deleted_count
+    
+    def get_video_stats(self) -> Dict[str, Any]:
+        """获取视频生成统计"""
+        index = _load_yaml(self._videos_index_file())
+        videos = index.get('videos', [])
+        
+        providers = {}
+        statuses = {}
+        for vid in videos:
+            p = vid.get('provider', 'unknown')
+            s = vid.get('status', 'unknown')
+            providers[p] = providers.get(p, 0) + 1
+            statuses[s] = statuses.get(s, 0) + 1
+        
+        return {
+            "total": len(videos),
+            "by_provider": providers,
+            "by_status": statuses
         }
     
     # ==================== 对话历史 ====================

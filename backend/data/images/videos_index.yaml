@@ -1,0 +1,14 @@
+videos:
+- id: 26ba1ccb
+  task_id: 63f27d9e-3fc4-43da-b512-fba5c788cdb6
+  source_image: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAABAAAAAJACAIAAACc94OCAAAFV2lUWHRYTUw6Y29tLmFkb2JlLnhtcAAAAAAAPD94cGFja2V0IGJlZ2luPSLvu78iIGlkPSJXNU0wTXBDZWhpSHpyZVN6TlRjemtjOWQiPz4KPHg6eG1wbWV0YSB4bWxucz
+  prompt: 挥爪爪
+  video_url: https://dashscope-result-sh.oss-accelerate.aliyuncs.com/1d/61/20260102/32c9ba39/63f27d9e-3fc4-43da-b512-fba5c788cdb6.mp4?Expires=1767435491&OSSAccessKeyId=LTAI5tKPD3TMqf2Lna1fASuh&Signature=3ZJ6kXZZb8wofAu3bCayx26Nssw%3D
+  status: completed
+  provider: custom
+  model: wan2.6-i2v
+  duration: 5.0
+  seed: 0
+  created_at: '2026-01-02T18:16:07.655581'
+  updated_at: '2026-01-02T18:18:23.918478'
+updated_at: '2026-01-02T18:16:07.655581'

@@ -1,9 +1,34 @@
-const { app, BrowserWindow, ipcMain } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog } = require('electron')
 const path = require('path')
-const { spawn } = require('child_process')
+const { spawn, exec } = require('child_process')
+const fs = require('fs')
 
 let mainWindow
 let pythonProcess
+let splashWindow
+
+// 单实例锁
+const gotTheLock = app.requestSingleInstanceLock()
+if (!gotTheLock) {
+  app.quit()
+}
+
+function createSplashWindow() {
+  splashWindow = new BrowserWindow({
+    width: 400,
+    height: 300,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false
+    }
+  })
+  
+  splashWindow.loadFile(path.join(__dirname, 'splash.html'))
+  splashWindow.center()
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -11,12 +36,19 @@ function createWindow() {
     height: 900,
     minWidth: 1200,
     minHeight: 800,
+    show: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js')
     },
-    titleBarStyle: 'hiddenInset',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#0a0a12',
+      symbolColor: '#ffffff',
+      height: 32
+    },
+    backgroundColor: '#0a0a12',
     frame: true
   })
 
@@ -27,42 +59,146 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
+
+  mainWindow.once('ready-to-show', () => {
+    if (splashWindow) {
+      splashWindow.close()
+      splashWindow = null
+    }
+    mainWindow.show()
+  })
+
+  mainWindow.on('closed', () => {
+    mainWindow = null
+  })
 }
 
 function startPythonBackend() {
-  const pythonPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'backend', 'main.exe')
-    : 'python'
-  
-  const args = app.isPackaged
-    ? []
-    : ['-m', 'uvicorn', 'main:app', '--port', '8000']
-  
-  const cwd = app.isPackaged
-    ? path.join(process.resourcesPath, 'backend')
-    : path.join(__dirname, '../backend')
+  return new Promise((resolve, reject) => {
+    let pythonPath, args, cwd
 
-  pythonProcess = spawn(pythonPath, args, { cwd })
-  
-  pythonProcess.stdout.on('data', (data) => {
-    console.log(`Python: ${data}`)
-  })
-  
-  pythonProcess.stderr.on('data', (data) => {
-    console.error(`Python Error: ${data}`)
+    if (app.isPackaged) {
+      // 打包后使用 PyInstaller 生成的 exe
+      const exePath = path.join(process.resourcesPath, 'backend', 'backend-server.exe')
+      if (fs.existsSync(exePath)) {
+        pythonPath = exePath
+        args = []
+        cwd = path.join(process.resourcesPath, 'backend')
+      } else {
+        // 如果没有 exe，尝试使用 Python
+        pythonPath = 'python'
+        args = ['-m', 'uvicorn', 'main:app', '--port', '8000']
+        cwd = path.join(process.resourcesPath, 'backend')
+      }
+    } else {
+      pythonPath = 'python'
+      args = ['-m', 'uvicorn', 'main:app', '--port', '8000']
+      cwd = path.join(__dirname, '../backend')
+    }
+
+    console.log(`Starting backend: ${pythonPath} ${args.join(' ')}`)
+    console.log(`Working directory: ${cwd}`)
+
+    pythonProcess = spawn(pythonPath, args, { 
+      cwd,
+      env: { ...process.env, PYTHONUNBUFFERED: '1' }
+    })
+    
+    pythonProcess.stdout.on('data', (data) => {
+      const output = data.toString()
+      console.log(`Backend: ${output}`)
+      if (output.includes('Uvicorn running') || output.includes('Application startup complete')) {
+        resolve()
+      }
+    })
+    
+    pythonProcess.stderr.on('data', (data) => {
+      const output = data.toString()
+      console.log(`Backend: ${output}`)
+      if (output.includes('Uvicorn running') || output.includes('Application startup complete')) {
+        resolve()
+      }
+    })
+
+    pythonProcess.on('error', (err) => {
+      console.error('Failed to start backend:', err)
+      reject(err)
+    })
+
+    // 超时后也继续
+    setTimeout(resolve, 5000)
   })
 }
 
-app.whenReady().then(() => {
+function stopPythonBackend() {
+  if (pythonProcess) {
+    if (process.platform === 'win32') {
+      exec(`taskkill /pid ${pythonProcess.pid} /T /F`)
+    } else {
+      pythonProcess.kill('SIGTERM')
+    }
+    pythonProcess = null
+  }
+}
+
+app.on('second-instance', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
+  }
+})
+
+app.whenReady().then(async () => {
+  createSplashWindow()
+  
+  try {
+    await startPythonBackend()
+  } catch (err) {
+    console.error('Backend start failed:', err)
+  }
+  
   createWindow()
-  // startPythonBackend() // 开发时可手动启动后端
 })
 
 app.on('window-all-closed', () => {
-  if (pythonProcess) pythonProcess.kill()
-  if (process.platform !== 'darwin') app.quit()
+  stopPythonBackend()
+  if (process.platform !== 'darwin') {
+    app.quit()
+  }
+})
+
+app.on('before-quit', () => {
+  stopPythonBackend()
 })
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow()
+  }
+})
+
+// IPC 处理
+ipcMain.handle('select-file', async (event, options) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile'],
+    filters: options?.filters || [{ name: 'All Files', extensions: ['*'] }]
+  })
+  return result.filePaths[0]
+})
+
+ipcMain.handle('save-file', async (event, options) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: options?.defaultPath,
+    filters: options?.filters || [{ name: 'All Files', extensions: ['*'] }]
+  })
+  return result.filePath
+})
+
+ipcMain.handle('get-system-info', () => {
+  return {
+    platform: process.platform,
+    arch: process.arch,
+    version: app.getVersion(),
+    isPackaged: app.isPackaged
+  }
 })

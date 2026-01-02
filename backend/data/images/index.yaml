@@ -1,9 +1,14 @@
 images:
-- id: fc007fe6
+- id: e35e6e92
   prompt: 一只猫
   negative_prompt: blurry, low quality, distorted, deformed, ugly
-  image_url: https://dashscope-result-wlcb-acdr-1.oss-cn-wulanchabu-acdr-1.aliyuncs.com/1d/05/20251231/77c9ad12/44554d7f-1eb3-478d-8cae-0cb322a028031240592904.png?Expires=1767260642&OSSAccessKeyId=LTAI5tKPD3TMqf2Lna1fASuh&Signature=59gBZUj4eKvrP4KbyBPMjHvHrlY%3D
+  image_url: https://dashscope-result-wlcb-acdr-1.oss-cn-wulanchabu-acdr-1.aliyuncs.com/1d/10/20260102/77c9ad12/658845d5-ca99-45c0-ae5a-6f45fc69ab734087597843.png?Expires=1767429524&OSSAccessKeyId=LTAI5tKPD3TMqf2Lna1fASuh&Signature=N%2FoWg0n1fWzz8e9PE4rlH%2BRhFvo%3D
   provider: qwen-image
   model: wanx2.1-t2i-turbo
-  created_at: '2025-12-31T17:44:02.972319'
-updated_at: '2025-12-31T17:44:02.972319'
+  width: 1024
+  height: 576
+  steps: 25
+  seed: 1305032470
+  style: null
+  created_at: '2026-01-02T16:38:47.331666'
+updated_at: '2026-01-02T18:24:46.101138'

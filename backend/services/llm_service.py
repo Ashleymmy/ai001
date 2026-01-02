@@ -1,7 +1,7 @@
 """LLM 服务 - 支持多种大模型提供商"""
 import os
 import re
-from typing import Optional
+from typing import Optional, List
 from openai import AsyncOpenAI
 
 # 预设的提供商配置
@@ -87,7 +87,7 @@ class LLMService:
         story_text: str,
         count: int = 4,
         style: str = "cinematic"
-    ) -> list[str]:
+    ) -> List[str]:
         """将剧情拆解为分镜描述"""
         if not self.client:
             print("[LLM] 未配置 API Key，使用降级方案")
@@ -179,7 +179,7 @@ class LLMService:
         }
         return styles.get(style, styles["cinematic"])
 
-    def _simple_parse(self, story_text: str, count: int, style: str = "cinematic") -> list[str]:
+    def _simple_parse(self, story_text: str, count: int, style: str = "cinematic") -> List[str]:
         """降级方案：简单文本拆分"""
         sentences = re.split(r'[。，！？,.!?]', story_text)
         sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 2]

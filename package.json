@@ -1,14 +1,19 @@
 {
   "name": "ai-storyboarder",
-  "version": "1.0.0",
+  "version": "0.1.0-beta.1",
   "description": "AI 视频分镜制作助手",
+  "author": "AI Storyboarder Team",
   "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "electron:build": "vite build && electron-builder",
-    "python:dev": "cd backend && python -m uvicorn main:app --reload --port 8000"
+    "electron:build:win": "vite build && electron-builder --win",
+    "python:dev": "cd backend && python -m uvicorn main:app --reload --port 8000",
+    "python:build": "cd backend && pyinstaller --onefile --name backend-server main.py",
+    "pack:win": "npm run build && electron-builder --win --dir",
+    "dist:win": "npm run build && electron-builder --win"
   },
   "dependencies": {
     "react": "^18.2.0",
@@ -35,11 +40,47 @@
   "build": {
     "appId": "com.ai-storyboarder.app",
     "productName": "AI Storyboarder",
+    "copyright": "Copyright © 2024-2026",
     "directories": {
-      "output": "dist-electron"
+      "output": "dist-electron",
+      "buildResources": "build"
     },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "!node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "backend/backend-server.exe",
+        "to": "backend/backend-server.exe"
+      },
+      {
+        "from": "backend/data",
+        "to": "backend/data",
+        "filter": [
+          "**/*",
+          "!*.db"
+        ]
+      }
+    ],
     "win": {
-      "target": "nsis"
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "${productName}-${version}-Setup.${ext}",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AI Storyboarder",
+      "license": "LICENSE"
     }
   }
 }

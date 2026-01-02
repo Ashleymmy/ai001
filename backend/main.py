@@ -2,13 +2,14 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import os
 import uuid
 import base64
 
 from services.llm_service import LLMService
 from services.image_service import ImageService
+from services.video_service import VideoService
 from services.storage_service import storage
 
 app = FastAPI(title="AI Storyboarder Backend")
@@ -24,6 +25,8 @@ app.add_middleware(
 # 全局服务实例
 llm_service: Optional[LLMService] = None
 image_service: Optional[ImageService] = None
+storyboard_service: Optional[ImageService] = None  # 分镜专用图像服务
+video_service: Optional[VideoService] = None  # 视频生成服务
 
 # 当前配置
 current_settings = {}
@@ -31,10 +34,14 @@ current_settings = {}
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# 参考图目录
+REF_IMAGES_DIR = os.path.join(os.path.dirname(__file__), "data", "images")
+os.makedirs(REF_IMAGES_DIR, exist_ok=True)
+
 
 def load_saved_settings():
     """启动时加载已保存的设置"""
-    global llm_service, image_service, current_settings
+    global llm_service, image_service, storyboard_service, video_service, current_settings
     
     saved = storage.get_settings()
     if not saved:
@@ -74,6 +81,36 @@ def load_saved_settings():
             model=img_config.get('model') or None
         )
         print(f"[Startup] 图像服务已加载: provider={img_config.get('provider')}")
+    
+    # 加载分镜图像配置
+    sb_config = saved.get('storyboard', {})
+    if sb_config.get('provider') and sb_config.get('provider') != 'placeholder':
+        if local_config.get('enabled') and sb_config.get('provider') in ['comfyui', 'sd-webui']:
+            storyboard_service = ImageService(
+                provider=sb_config.get('provider'),
+                model=sb_config.get('model') or None,
+                comfyui_url=local_config.get('comfyuiUrl', 'http://127.0.0.1:8188'),
+                sd_webui_url=local_config.get('sdWebuiUrl', 'http://127.0.0.1:7860')
+            )
+        else:
+            storyboard_service = ImageService(
+                provider=sb_config.get('provider'),
+                api_key=sb_config.get('apiKey', ''),
+                base_url=sb_config.get('baseUrl') or None,
+                model=sb_config.get('model') or None
+            )
+        print(f"[Startup] 分镜图像服务已加载: provider={sb_config.get('provider')}")
+    
+    # 加载视频配置
+    video_config = saved.get('video', {})
+    if video_config.get('provider') and video_config.get('provider') != 'none':
+        video_service = VideoService(
+            provider=video_config.get('provider'),
+            api_key=video_config.get('apiKey', ''),
+            base_url=video_config.get('baseUrl') or None,
+            model=video_config.get('model') or None
+        )
+        print(f"[Startup] 视频服务已加载: provider={video_config.get('provider')}")
 
 
 # 启动时加载设置
@@ -98,6 +135,7 @@ class LocalConfig(BaseModel):
 class SettingsRequest(BaseModel):
     llm: ModelConfig
     image: ModelConfig
+    storyboard: Optional[ModelConfig] = None
     video: ModelConfig
     local: LocalConfig
 
@@ -128,7 +166,14 @@ class ChatRequest(BaseModel):
 
 class VideoRequest(BaseModel):
     imageUrl: str
-    prompt: str
+    prompt: str = ""
+    duration: float = 5.0
+    motionStrength: float = 0.5
+    seed: Optional[int] = None
+
+
+class VideoTaskStatusRequest(BaseModel):
+    taskId: str
 
 
 STYLE_PROMPTS = {
@@ -159,6 +204,15 @@ def get_image_service() -> ImageService:
     return image_service
 
 
+def get_storyboard_service() -> ImageService:
+    """获取分镜图像服务，如果未配置则回退到普通图像服务"""
+    global storyboard_service
+    if storyboard_service is not None:
+        return storyboard_service
+    # 回退到普通图像服务
+    return get_image_service()
+
+
 @app.get("/health")
 async def health_check():
     return {
@@ -172,7 +226,7 @@ async def health_check():
 @app.post("/api/settings")
 async def update_settings(request: SettingsRequest):
     """更新服务配置"""
-    global llm_service, image_service, current_settings
+    global llm_service, image_service, storyboard_service, video_service, current_settings
     
     current_settings = request.model_dump()
     
@@ -208,6 +262,39 @@ async def update_settings(request: SettingsRequest):
         )
         print(f"[Settings] 图像服务配置更新: API模式, provider={img_config.provider}, model={img_config.model}")
     
+    # 更新分镜图像服务
+    if request.storyboard:
+        sb_config = request.storyboard
+        if local_config.enabled and sb_config.provider in ['comfyui', 'sd-webui']:
+            storyboard_service = ImageService(
+                provider=sb_config.provider,
+                model=sb_config.model if sb_config.model else None,
+                comfyui_url=local_config.comfyuiUrl,
+                sd_webui_url=local_config.sdWebuiUrl
+            )
+        else:
+            storyboard_service = ImageService(
+                provider=sb_config.provider,
+                api_key=sb_config.apiKey,
+                base_url=sb_config.baseUrl if sb_config.baseUrl else None,
+                model=sb_config.model if sb_config.model else None
+            )
+        print(f"[Settings] 分镜图像服务配置更新: provider={sb_config.provider}, model={sb_config.model}")
+    
+    # 更新视频服务
+    video_config = request.video
+    if video_config.provider and video_config.provider != 'none':
+        video_service = VideoService(
+            provider=video_config.provider,
+            api_key=video_config.apiKey,
+            base_url=video_config.baseUrl if video_config.baseUrl else None,
+            model=video_config.model if video_config.model else None
+        )
+        print(f"[Settings] 视频服务配置更新: provider={video_config.provider}, model={video_config.model}")
+    else:
+        video_service = None
+        print("[Settings] 视频服务未配置")
+    
     # 持久化设置到文件
     storage.save_settings(current_settings)
     
@@ -237,7 +324,7 @@ async def parse_story(request: ParseStoryRequest):
 @app.post("/api/generate")
 async def generate_storyboards(request: GenerateRequest):
     llm = get_llm_service()
-    img = get_image_service()
+    img = get_storyboard_service()  # 使用分镜专用服务
     
     style_prompt = STYLE_PROMPTS.get(request.style, STYLE_PROMPTS["cinematic"])
     
@@ -251,11 +338,14 @@ async def generate_storyboards(request: GenerateRequest):
     for i, prompt in enumerate(prompts):
         full_prompt = f"{prompt}, {style_prompt}"
         
-        image_url = await img.generate(
+        result = await img.generate(
             prompt=full_prompt,
             reference_image=request.referenceImage,
             style=request.style
         )
+        
+        # 兼容新的返回格式
+        image_url = result["url"] if isinstance(result, dict) else result
         
         storyboards.append({
             "id": str(uuid.uuid4()),
@@ -270,15 +360,18 @@ async def generate_storyboards(request: GenerateRequest):
 
 @app.post("/api/regenerate")
 async def regenerate_image(request: RegenerateRequest):
-    img = get_image_service()
+    img = get_storyboard_service()  # 使用分镜专用服务
     style_prompt = STYLE_PROMPTS.get(request.style, STYLE_PROMPTS["cinematic"])
     full_prompt = f"{request.prompt}, {style_prompt}"
     
-    image_url = await img.generate(
+    result = await img.generate(
         prompt=full_prompt,
         reference_image=request.referenceImage,
         style=request.style
     )
+    
+    # 兼容新的返回格式
+    image_url = result["url"] if isinstance(result, dict) else result
     
     return {"imageUrl": image_url}
 
@@ -316,6 +409,24 @@ async def upload_reference(file: UploadFile = File(...)):
 class GenerateImageRequest(BaseModel):
     prompt: str
     negativePrompt: Optional[str] = "blurry, low quality, distorted, deformed, ugly"
+    width: int = 1024
+    height: int = 576
+    steps: int = 25
+    seed: Optional[int] = None
+    style: Optional[str] = None
+
+
+# 风格预设
+STYLE_PRESETS = {
+    "cinematic": "cinematic lighting, film grain, dramatic shadows, movie scene, professional cinematography",
+    "anime": "anime style, vibrant colors, cel shading, japanese animation, detailed illustration",
+    "realistic": "photorealistic, highly detailed, 8k resolution, professional photography, natural lighting",
+    "ink": "chinese ink painting style, traditional brush strokes, minimalist, elegant, monochrome with subtle colors",
+    "fantasy": "fantasy art, magical atmosphere, ethereal lighting, detailed illustration, epic scene",
+    "cyberpunk": "cyberpunk style, neon lights, futuristic city, high tech, dark atmosphere",
+    "watercolor": "watercolor painting, soft colors, artistic, delicate brushstrokes, dreamy atmosphere",
+    "oil_painting": "oil painting style, rich colors, textured brushstrokes, classical art, masterpiece"
+}
 
 
 @app.post("/api/generate-image")
@@ -327,13 +438,25 @@ async def generate_single_image(request: GenerateImageRequest):
     if image_service is None:
         image_service = ImageService(provider="placeholder")
     
-    print(f"[API] 图像生成请求: provider={image_service.provider}, model={image_service.model}")
+    # 处理风格预设
+    final_prompt = request.prompt
+    if request.style and request.style in STYLE_PRESETS:
+        final_prompt = f"{request.prompt}, {STYLE_PRESETS[request.style]}"
+    
+    print(f"[API] 图像生成请求: provider={image_service.provider}, model={image_service.model}, size={request.width}x{request.height}")
     
     try:
-        image_url = await image_service.generate(
-            prompt=request.prompt,
-            negative_prompt=request.negativePrompt or ""
+        result = await image_service.generate(
+            prompt=final_prompt,
+            negative_prompt=request.negativePrompt or "",
+            width=request.width,
+            height=request.height,
+            steps=request.steps,
+            seed=request.seed
         )
+        
+        image_url = result["url"]
+        actual_seed = result["seed"]
         
         # 保存到历史记录
         storage.save_generated_image(
@@ -341,26 +464,137 @@ async def generate_single_image(request: GenerateImageRequest):
             image_url=image_url,
             negative_prompt=request.negativePrompt or "",
             provider=image_service.provider,
-            model=image_service.model or ""
+            model=image_service.model or "",
+            width=request.width,
+            height=request.height,
+            steps=request.steps,
+            seed=actual_seed,
+            style=request.style
         )
         
-        return {"imageUrl": image_url}
+        return {
+            "imageUrl": image_url,
+            "seed": actual_seed,
+            "width": request.width,
+            "height": request.height,
+            "steps": request.steps
+        }
     except Exception as e:
         print(f"图像生成失败: {e}")
         # 返回占位图
         seed = abs(hash(request.prompt)) % 10000
-        return {"imageUrl": f"https://picsum.photos/seed/{seed}/512/512"}
+        return {"imageUrl": f"https://picsum.photos/seed/{seed}/512/512", "seed": seed}
+
+
+def get_video_service() -> VideoService:
+    """获取视频服务"""
+    global video_service
+    if video_service is None:
+        video_service = VideoService(provider="none")
+    return video_service
 
 
 @app.post("/api/generate-video")
 async def generate_video(request: VideoRequest):
-    """生成视频（预留接口）"""
-    # TODO: 实现视频生成
-    return {
-        "status": "not_implemented",
-        "message": "视频生成功能开发中",
-        "videoUrl": None
-    }
+    """生成视频（从图片）"""
+    service = get_video_service()
+    
+    print(f"[API] 视频生成请求: provider={service.provider}, model={service.model}")
+    
+    try:
+        result = await service.generate(
+            image_url=request.imageUrl,
+            prompt=request.prompt,
+            duration=request.duration,
+            motion_strength=request.motionStrength,
+            seed=request.seed
+        )
+        
+        # 保存到历史记录
+        storage.save_generated_video(
+            source_image=request.imageUrl,
+            prompt=request.prompt,
+            video_url=result.get("video_url"),
+            task_id=result.get("task_id"),
+            status=result.get("status"),
+            provider=service.provider,
+            model=service.model or "",
+            duration=request.duration,
+            seed=result.get("seed")
+        )
+        
+        return {
+            "taskId": result.get("task_id"),
+            "status": result.get("status"),
+            "videoUrl": result.get("video_url"),
+            "duration": result.get("duration"),
+            "seed": result.get("seed")
+        }
+    except Exception as e:
+        print(f"视频生成失败: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "videoUrl": None
+        }
+
+
+@app.post("/api/video-task-status")
+async def check_video_task_status(request: VideoTaskStatusRequest):
+    """检查视频生成任务状态"""
+    service = get_video_service()
+    
+    try:
+        result = await service.check_task_status(request.taskId)
+        
+        # 如果完成了，更新历史记录
+        if result.get("status") == "completed" and result.get("video_url"):
+            storage.update_video_status(
+                request.taskId,
+                "completed",
+                result.get("video_url")
+            )
+        
+        return {
+            "taskId": request.taskId,
+            "status": result.get("status"),
+            "videoUrl": result.get("video_url"),
+            "progress": result.get("progress", 0),
+            "error": result.get("error")
+        }
+    except Exception as e:
+        return {
+            "taskId": request.taskId,
+            "status": "error",
+            "error": str(e)
+        }
+
+
+@app.get("/api/videos/history")
+async def get_video_history(limit: int = 50):
+    """获取视频生成历史"""
+    videos = storage.list_generated_videos(limit)
+    return {"videos": videos}
+
+
+@app.delete("/api/videos/history/{video_id}")
+async def delete_video_history(video_id: str):
+    """删除单个视频历史记录"""
+    success = storage.delete_generated_video(video_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="视频记录不存在")
+    return {"status": "ok"}
+
+
+class DeleteVideosRequest(BaseModel):
+    ids: List[str]
+
+
+@app.post("/api/videos/history/delete-batch")
+async def delete_videos_batch(request: DeleteVideosRequest):
+    """批量删除视频历史记录"""
+    deleted = storage.delete_generated_videos_batch(request.ids)
+    return {"status": "ok", "deleted": deleted}
 
 
 # ========== 项目管理 API ==========
@@ -529,6 +763,49 @@ async def get_image_history(limit: int = 100):
     """获取图像生成历史"""
     images = storage.list_generated_images(limit)
     return {"images": images}
+
+
+@app.delete("/api/images/history/{image_id}")
+async def delete_image_history(image_id: str):
+    """删除单个图像历史记录"""
+    success = storage.delete_generated_image(image_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="图像记录不存在")
+    return {"status": "ok"}
+
+
+class DeleteImagesRequest(BaseModel):
+    ids: List[str]
+
+
+@app.post("/api/images/history/delete-batch")
+async def delete_images_batch(request: DeleteImagesRequest):
+    """批量删除图像历史记录"""
+    deleted = storage.delete_generated_images_batch(request.ids)
+    return {"status": "ok", "deleted": deleted}
+
+
+@app.get("/api/images/ref/{filename}")
+async def get_reference_image(filename: str):
+    """获取参考图文件"""
+    filepath = os.path.join(REF_IMAGES_DIR, filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="图片不存在")
+    return FileResponse(filepath, media_type="image/png")
+
+
+@app.get("/api/videos/ref/{filename}")
+async def get_video_reference_image(filename: str):
+    """获取视频参考图文件"""
+    from services.video_service import VIDEO_DIR
+    filepath = os.path.join(VIDEO_DIR, filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="图片不存在")
+    
+    # 根据扩展名确定 MIME 类型
+    ext = filename.split(".")[-1].lower()
+    media_type = "image/png" if ext == "png" else "image/jpeg"
+    return FileResponse(filepath, media_type=media_type)
 
 
 # ========== 对话历史 API ==========
