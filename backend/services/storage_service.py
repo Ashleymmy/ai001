@@ -61,6 +61,98 @@ class StorageService:
             return _load_yaml(SETTINGS_FILE)
         return None
     
+    # ==================== 自定义配置预设管理 ====================
+    
+    def _custom_providers_file(self) -> str:
+        return os.path.join(DATA_DIR, "custom_providers.yaml")
+    
+    def list_custom_providers(self, category: str = None) -> List[Dict[str, Any]]:
+        """获取自定义配置列表
+        
+        Args:
+            category: 可选，筛选类别 (llm/image/storyboard/video)
+        """
+        data = _load_yaml(self._custom_providers_file())
+        providers = data.get('providers', [])
+        
+        if category:
+            providers = [p for p in providers if p.get('category') == category]
+        
+        return providers
+    
+    def add_custom_provider(self, name: str, category: str, config: Dict[str, Any]) -> Dict[str, Any]:
+        """添加自定义配置预设
+        
+        Args:
+            name: 预设名称（如 "通义万相-文生图" 或 "自定义配置1"）
+            category: 类别 (llm/image/storyboard/video)
+            config: 配置内容 {apiKey, baseUrl, model, models}
+        """
+        data = _load_yaml(self._custom_providers_file())
+        if 'providers' not in data:
+            data['providers'] = []
+        
+        provider_id = f"custom_{_gen_id()}"  # 以 custom_ 前缀标识用户自定义
+        now = _now()
+        
+        provider = {
+            "id": provider_id,
+            "name": name,
+            "category": category,
+            "isCustom": True,  # 标识为用户自定义配置
+            "apiKey": config.get('apiKey', ''),
+            "baseUrl": config.get('baseUrl', ''),
+            "model": config.get('model', ''),
+            "models": config.get('models', []),  # 支持多个模型选项
+            "created_at": now,
+            "updated_at": now
+        }
+        
+        data['providers'].append(provider)
+        data['updated_at'] = now
+        _save_yaml(self._custom_providers_file(), data)
+        
+        return provider
+    
+    def get_custom_provider(self, provider_id: str) -> Optional[Dict[str, Any]]:
+        """获取单个自定义配置"""
+        data = _load_yaml(self._custom_providers_file())
+        for p in data.get('providers', []):
+            if p.get('id') == provider_id:
+                return p
+        return None
+    
+    def update_custom_provider(self, provider_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """更新自定义配置预设"""
+        data = _load_yaml(self._custom_providers_file())
+        
+        for p in data.get('providers', []):
+            if p.get('id') == provider_id:
+                allowed_fields = ['name', 'apiKey', 'baseUrl', 'model', 'models']
+                for key, value in updates.items():
+                    if key in allowed_fields:
+                        p[key] = value
+                p['updated_at'] = _now()
+                data['updated_at'] = _now()
+                _save_yaml(self._custom_providers_file(), data)
+                return p
+        
+        return None
+    
+    def delete_custom_provider(self, provider_id: str) -> bool:
+        """删除自定义配置预设"""
+        data = _load_yaml(self._custom_providers_file())
+        providers = data.get('providers', [])
+        
+        original_len = len(providers)
+        data['providers'] = [p for p in providers if p.get('id') != provider_id]
+        
+        if len(data['providers']) < original_len:
+            data['updated_at'] = _now()
+            _save_yaml(self._custom_providers_file(), data)
+            return True
+        return False
+    
     # ==================== 项目管理 ====================
     
     def _project_file(self, project_id: str) -> str:
@@ -829,6 +921,95 @@ class StorageService:
             "generated_images": images_count,
             "data_dir": DATA_DIR
         }
+    
+    # ==================== Agent 项目管理 ====================
+    
+    def _agent_projects_dir(self) -> str:
+        """Agent 项目目录"""
+        agent_dir = os.path.join(DATA_DIR, "agent_projects")
+        os.makedirs(agent_dir, exist_ok=True)
+        return agent_dir
+    
+    def _agent_project_file(self, project_id: str) -> str:
+        return os.path.join(self._agent_projects_dir(), f"{project_id}.yaml")
+    
+    def save_agent_project(self, project_data: Dict[str, Any]) -> Dict[str, Any]:
+        """保存 Agent 项目"""
+        project_id = project_data.get('id')
+        if not project_id:
+            project_id = f"agent_{_gen_id()}"
+            project_data['id'] = project_id
+        
+        project_data['updated_at'] = _now()
+        _save_yaml(self._agent_project_file(project_id), project_data)
+        return project_data
+    
+    def get_agent_project(self, project_id: str) -> Optional[Dict[str, Any]]:
+        """获取 Agent 项目"""
+        filepath = self._agent_project_file(project_id)
+        if not os.path.exists(filepath):
+            return None
+        return _load_yaml(filepath)
+    
+    def list_agent_projects(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """获取 Agent 项目列表"""
+        projects = []
+        agent_dir = self._agent_projects_dir()
+        
+        if not os.path.exists(agent_dir):
+            return []
+        
+        for filename in os.listdir(agent_dir):
+            if filename.endswith('.yaml'):
+                project = _load_yaml(os.path.join(agent_dir, filename))
+                if project:
+                    # 返回简要信息
+                    projects.append({
+                        "id": project.get("id"),
+                        "name": project.get("name"),
+                        "creative_brief": project.get("creative_brief", {}),
+                        "elements_count": len(project.get("elements", {})),
+                        "segments_count": len(project.get("segments", [])),
+                        "created_at": project.get("created_at"),
+                        "updated_at": project.get("updated_at")
+                    })
+        
+        projects.sort(key=lambda x: x.get('updated_at', ''), reverse=True)
+        return projects[:limit]
+    
+    def update_agent_project(self, project_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """更新 Agent 项目"""
+        print(f"[Storage] 更新 Agent 项目: {project_id}")
+        project = self.get_agent_project(project_id)
+        if not project:
+            print(f"[Storage] 项目不存在: {project_id}")
+            return None
+        
+        # 更新字段
+        for key, value in updates.items():
+            project[key] = value
+            print(f"[Storage] 更新字段: {key} = {type(value).__name__}")
+        
+        project['updated_at'] = _now()
+        filepath = self._agent_project_file(project_id)
+        print(f"[Storage] 保存到文件: {filepath}")
+        _save_yaml(filepath, project)
+        print(f"[Storage] 项目已保存")
+        return project
+    
+    def delete_agent_project(self, project_id: str) -> bool:
+        """删除 Agent 项目"""
+        filepath = self._agent_project_file(project_id)
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            return True
+        return False
+    
+    def get_custom_providers(self) -> Dict[str, Dict[str, Any]]:
+        """获取自定义配置字典（按 ID 索引）"""
+        data = _load_yaml(self._custom_providers_file())
+        providers = data.get('providers', [])
+        return {p.get('id'): p for p in providers if p.get('id')}
 
 
 # 全局实例

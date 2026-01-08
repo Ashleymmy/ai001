@@ -164,6 +164,11 @@ export async function generateVideo(
     duration?: number
     motionStrength?: number
     seed?: number
+    resolution?: string
+    ratio?: string
+    cameraFixed?: boolean
+    watermark?: boolean
+    generateAudio?: boolean
   }
 ): Promise<{
   taskId: string
@@ -178,7 +183,12 @@ export async function generateVideo(
     prompt,
     duration: options?.duration || 5,
     motionStrength: options?.motionStrength || 0.5,
-    seed: options?.seed
+    seed: options?.seed,
+    resolution: options?.resolution || '720p',
+    ratio: options?.ratio || '16:9',
+    cameraFixed: options?.cameraFixed || false,
+    watermark: options?.watermark || false,
+    generateAudio: options?.generateAudio !== false
   })
   return response.data
 }
@@ -548,4 +558,418 @@ export async function getImageStats(): Promise<{
 }> {
   const response = await api.get('/api/images/stats')
   return response.data
+}
+
+// ========== Agent API ==========
+
+export interface AgentChatResponse {
+  type: 'text' | 'structured' | 'action' | 'error'
+  content: string
+  data?: unknown
+  action?: string
+}
+
+export interface AgentProjectPlan {
+  creative_brief: {
+    title: string
+    video_type: string
+    narrative_driver: string
+    emotional_tone: string
+    visual_style: string
+    duration: string
+    aspect_ratio: string
+    language: string
+  }
+  elements: Array<{
+    id: string
+    name: string
+    type: string
+    description: string
+  }>
+  segments: Array<{
+    id: string
+    name: string
+    description: string
+    shots: Array<{
+      id: string
+      name: string
+      type: string
+      duration: string
+      description: string
+      prompt: string
+      narration: string
+    }>
+  }>
+  cost_estimate: {
+    elements: string
+    shots: string
+    audio: string
+    total: string
+  }
+}
+
+export interface AgentElement {
+  id: string
+  name: string
+  type: string
+  description: string
+  image_url?: string
+  created_at: string
+}
+
+export interface AgentSegment {
+  id: string
+  name: string
+  description: string
+  shots: AgentShot[]
+  created_at: string
+}
+
+export interface AgentShot {
+  id: string
+  name: string
+  type: string
+  description: string
+  prompt: string
+  narration: string
+  duration: number
+  start_image_url?: string
+  video_url?: string
+  status: string
+  created_at: string
+}
+
+export interface AgentProject {
+  id: string
+  name: string
+  creative_brief: Record<string, unknown>
+  elements: Record<string, AgentElement>
+  segments: AgentSegment[]
+  visual_assets: Array<{ id: string; url: string; duration?: string }>
+  audio_assets: Array<{ id: string; url: string; type: string }>
+  timeline: Array<{ id: string; type: string; start: number; duration: number }>
+  created_at: string
+  updated_at: string
+}
+
+export interface ShotType {
+  name: string
+  duration: string
+  description: string
+}
+
+// Agent 对话
+export async function agentChat(
+  message: string,
+  projectId?: string,
+  context?: Record<string, unknown>
+): Promise<AgentChatResponse> {
+  const response = await api.post('/api/agent/chat', {
+    message,
+    projectId,
+    context
+  })
+  return response.data
+}
+
+// Agent 项目规划
+export async function agentPlanProject(
+  userRequest: string,
+  style: string = '吉卜力2D'
+): Promise<{ success: boolean; plan?: AgentProjectPlan; error?: string }> {
+  const response = await api.post('/api/agent/plan', {
+    userRequest,
+    style
+  })
+  return response.data
+}
+
+// 生成元素提示词
+export async function agentGenerateElementPrompt(
+  elementName: string,
+  elementType: string,
+  baseDescription: string,
+  visualStyle: string = '吉卜力动画风格'
+): Promise<{ success: boolean; prompt?: string; negative_prompt?: string; recommended_resolution?: string; error?: string }> {
+  const response = await api.post('/api/agent/element-prompt', {
+    elementName,
+    elementType,
+    baseDescription,
+    visualStyle
+  })
+  return response.data
+}
+
+// 生成镜头提示词
+export async function agentGenerateShotPrompt(
+  shotName: string,
+  shotType: string,
+  shotDescription: string,
+  elements: string[],
+  visualStyle: string,
+  narration: string
+): Promise<{ success: boolean; image_prompt?: string; video_prompt?: string; camera_movement?: string; duration_seconds?: number; error?: string }> {
+  const response = await api.post('/api/agent/shot-prompt', {
+    shotName,
+    shotType,
+    shotDescription,
+    elements,
+    visualStyle,
+    narration
+  })
+  return response.data
+}
+
+// 获取镜头类型
+export async function getShotTypes(): Promise<Record<string, ShotType>> {
+  const response = await api.get('/api/agent/shot-types')
+  return response.data.shotTypes
+}
+
+// Agent 项目管理
+export async function createAgentProject(
+  name: string,
+  creativeBrief?: Record<string, unknown>
+): Promise<AgentProject> {
+  const response = await api.post('/api/agent/projects', {
+    name,
+    creativeBrief
+  })
+  return response.data
+}
+
+export async function listAgentProjects(limit: number = 50): Promise<AgentProject[]> {
+  const response = await api.get('/api/agent/projects', { params: { limit } })
+  return response.data.projects
+}
+
+export async function getAgentProject(projectId: string): Promise<AgentProject> {
+  const response = await api.get(`/api/agent/projects/${projectId}`)
+  return response.data
+}
+
+export async function updateAgentProject(
+  projectId: string,
+  updates: Partial<AgentProject>
+): Promise<AgentProject> {
+  const response = await api.put(`/api/agent/projects/${projectId}`, updates)
+  return response.data
+}
+
+export async function deleteAgentProject(projectId: string): Promise<void> {
+  await api.delete(`/api/agent/projects/${projectId}`)
+}
+
+export async function exportProjectAssets(projectId: string): Promise<Blob> {
+  const response = await api.post(`/api/agent/projects/${projectId}/export/assets`, {}, {
+    responseType: 'blob'
+  })
+  return response.data
+}
+
+export async function exportMergedVideo(projectId: string, resolution: string = '720p'): Promise<Blob> {
+  const response = await api.post(`/api/agent/projects/${projectId}/export/video?resolution=${resolution}`, {}, {
+    responseType: 'blob'
+  })
+  return response.data
+}
+
+// Agent 元素管理
+export async function addAgentElement(
+  projectId: string,
+  element: {
+    elementId: string
+    name: string
+    elementType: string
+    description: string
+    imageUrl?: string
+  }
+): Promise<AgentElement> {
+  const response = await api.post(`/api/agent/projects/${projectId}/elements`, element)
+  return response.data
+}
+
+// Agent 段落管理
+export async function addAgentSegment(
+  projectId: string,
+  segment: {
+    segmentId: string
+    name: string
+    description: string
+  }
+): Promise<AgentSegment> {
+  const response = await api.post(`/api/agent/projects/${projectId}/segments`, segment)
+  return response.data
+}
+
+// Agent 镜头管理
+export async function addAgentShot(
+  projectId: string,
+  shot: {
+    segmentId: string
+    shotId: string
+    name: string
+    shotType: string
+    description: string
+    prompt: string
+    narration: string
+    duration?: number
+  }
+): Promise<AgentShot> {
+  const response = await api.post(`/api/agent/projects/${projectId}/shots`, shot)
+  return response.data
+}
+
+// ========== Agent 批量生成 API ==========
+
+export interface GenerationResult {
+  success: boolean
+  generated: number
+  failed: number
+  total: number
+  results: Array<{
+    element_id?: string
+    shot_id?: string
+    status: string
+    image_url?: string
+    video_url?: string
+    task_id?: string
+    error?: string
+    message?: string
+  }>
+}
+
+export interface PipelineResult {
+  success: boolean
+  stages: {
+    elements?: GenerationResult
+    frames?: GenerationResult
+    videos?: GenerationResult
+  }
+  total_generated: number
+  total_failed: number
+  cancelled_at?: string
+}
+
+export interface ProjectStatus {
+  elements: { total: number; completed: number; pending: number }
+  frames: { total: number; completed: number; pending: number }
+  videos: { total: number; completed: number; processing: number; pending: number }
+  overall_progress: {
+    elements_percent: number
+    frames_percent: number
+    videos_percent: number
+  }
+}
+
+// 批量生成元素图片
+export async function generateProjectElements(
+  projectId: string,
+  visualStyle: string = '吉卜力动画风格'
+): Promise<GenerationResult> {
+  const response = await api.post(`/api/agent/projects/${projectId}/generate-elements`, {
+    visualStyle
+  })
+  return response.data
+}
+
+// 批量生成起始帧
+export async function generateProjectFrames(
+  projectId: string,
+  visualStyle: string = '吉卜力动画风格'
+): Promise<GenerationResult> {
+  const response = await api.post(`/api/agent/projects/${projectId}/generate-frames`, {
+    visualStyle
+  })
+  return response.data
+}
+
+// 批量生成视频
+export async function generateProjectVideos(
+  projectId: string,
+  resolution: string = '720p'
+): Promise<GenerationResult> {
+  const response = await api.post(`/api/agent/projects/${projectId}/generate-videos`, {
+    resolution
+  })
+  return response.data
+}
+
+// 执行完整流程
+export async function executeProjectPipeline(
+  projectId: string,
+  visualStyle: string = '吉卜力动画风格',
+  resolution: string = '720p'
+): Promise<PipelineResult> {
+  const response = await api.post(`/api/agent/projects/${projectId}/execute-pipeline`, {
+    visualStyle,
+    resolution
+  })
+  return response.data
+}
+
+// 获取项目生成状态
+export async function getProjectGenerationStatus(projectId: string): Promise<ProjectStatus> {
+  const response = await api.get(`/api/agent/projects/${projectId}/status`)
+  return response.data
+}
+
+// ========== 自定义配置预设 ==========
+
+export interface CustomProvider {
+  id: string
+  name: string
+  category: 'llm' | 'image' | 'storyboard' | 'video'
+  isCustom: boolean
+  apiKey: string
+  baseUrl: string
+  model: string
+  models: string[]
+  created_at: string
+  updated_at: string
+}
+
+export async function listCustomProviders(
+  category?: string
+): Promise<CustomProvider[]> {
+  const response = await api.get('/api/custom-providers', {
+    params: category ? { category } : {}
+  })
+  return response.data.providers
+}
+
+export async function addCustomProvider(
+  name: string,
+  category: string,
+  config: {
+    apiKey?: string
+    baseUrl?: string
+    model?: string
+    models?: string[]
+  }
+): Promise<CustomProvider> {
+  const response = await api.post('/api/custom-providers', {
+    name,
+    category,
+    ...config
+  })
+  return response.data
+}
+
+export async function updateCustomProvider(
+  providerId: string,
+  updates: {
+    name?: string
+    apiKey?: string
+    baseUrl?: string
+    model?: string
+    models?: string[]
+  }
+): Promise<CustomProvider> {
+  const response = await api.put(`/api/custom-providers/${providerId}`, updates)
+  return response.data
+}
+
+export async function deleteCustomProvider(providerId: string): Promise<void> {
+  await api.delete(`/api/custom-providers/${providerId}`)
 }

@@ -25,6 +25,14 @@ backend/data/exports/
 backend/data/videos/*.mp4
 backend/data/images/ref_*.png
 backend/data/images/ref_*.jpg
+backend/data/images/index.yaml
+backend/data/images/videos_index.yaml
+
+# Sensitive data - API Keys and Settings
+backend/data/settings.yaml
+backend/data/custom_providers.yaml
+backend/data/agent_projects/
+backend/outputs/
 
 # Temp files
 ~$*

@@ -10,7 +10,6 @@ import {
   Trash2,
   Copy,
   Clock,
-  Settings2,
   AlertCircle,
   Loader2,
   Film,
@@ -47,6 +46,12 @@ interface TaskItem {
   createdAt: string
   provider?: string
   model?: string
+  // 新增参数
+  resolution?: string
+  ratio?: string
+  cameraFixed?: boolean
+  watermark?: boolean
+  generateAudio?: boolean
 }
 
 export default function VideoPage() {
@@ -56,8 +61,6 @@ export default function VideoPage() {
   const [historyTasks, setHistoryTasks] = useState<TaskItem[]>([])
   // 选中的任务
   const [selectedTask, setSelectedTask] = useState<TaskItem | null>(null)
-  // 设置面板
-  const [showSettings, setShowSettings] = useState(false)
   // 播放状态
   const [isPlaying, setIsPlaying] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
@@ -69,8 +72,13 @@ export default function VideoPage() {
   const isConfigured = settings.video.provider !== 'none' && settings.video.apiKey
 
   // 默认参数
-  const [defaultDuration, setDefaultDuration] = useState(5)
-  const [defaultMotionStrength, setDefaultMotionStrength] = useState(0.5)
+  const [defaultDuration] = useState(5)
+  const [defaultMotionStrength] = useState(0.5) // 运动强度（部分 API 支持）
+  const [defaultResolution] = useState('720p')
+  const [defaultRatio] = useState('16:9')
+  const [defaultCameraFixed] = useState(false)
+  const [defaultWatermark] = useState(false)
+  const [defaultGenerateAudio] = useState(true)
 
   // 加载历史记录
   useEffect(() => {
@@ -127,7 +135,12 @@ export default function VideoPage() {
           duration: defaultDuration,
           motionStrength: defaultMotionStrength,
           seed: null,
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString(),
+          resolution: defaultResolution,
+          ratio: defaultRatio,
+          cameraFixed: defaultCameraFixed,
+          watermark: defaultWatermark,
+          generateAudio: defaultGenerateAudio
         }
         setCurrentTasks(prev => [newTask, ...prev])
         setSelectedTask(newTask)
@@ -213,7 +226,12 @@ export default function VideoPage() {
       const result = await generateVideo(task.sourceImage, task.prompt, {
         duration: task.duration,
         motionStrength: task.motionStrength,
-        seed: task.seed || undefined
+        seed: task.seed || undefined,
+        resolution: task.resolution || defaultResolution,
+        ratio: task.ratio || defaultRatio,
+        cameraFixed: task.cameraFixed ?? defaultCameraFixed,
+        watermark: task.watermark ?? defaultWatermark,
+        generateAudio: task.generateAudio ?? defaultGenerateAudio
       })
       
       if (result.status === 'completed' && result.videoUrl) {
@@ -227,7 +245,14 @@ export default function VideoPage() {
       }
     } catch (error: any) {
       console.error('视频生成失败:', error)
-      updateTask({ status: 'error', error: error.message || '生成失败' })
+      // 提取详细错误信息
+      let errorMessage = '生成失败'
+      if (error.response?.data?.detail) {
+        errorMessage = error.response.data.detail
+      } else if (error.message) {
+        errorMessage = error.message
+      }
+      updateTask({ status: 'error', error: errorMessage })
     }
   }
 
@@ -461,57 +486,7 @@ export default function VideoPage() {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowSettings(!showSettings)}
-              className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm transition-all ${
-                showSettings ? 'bg-green-500/20 text-green-400' : 'glass-button hover:bg-white/10'
-              }`}
-            >
-              <Settings2 size={16} />
-              参数
-            </button>
-          </div>
         </div>
-
-        {/* 参数设置 */}
-        {showSettings && (
-          <div className="px-6 py-4 glass-dark border-b border-white/5 animate-fadeIn">
-            <div className="flex items-center gap-6">
-              <div className="flex items-center gap-3">
-                <label className="text-sm text-gray-400">默认时长</label>
-                <select
-                  value={defaultDuration}
-                  onChange={(e) => setDefaultDuration(Number(e.target.value))}
-                  className="glass-input px-3 py-1.5 text-sm rounded-lg bg-gray-900/80"
-                >
-                  <option value={3} className="bg-gray-900">3 秒</option>
-                  <option value={5} className="bg-gray-900">5 秒</option>
-                  <option value={10} className="bg-gray-900">10 秒</option>
-                </select>
-              </div>
-              <div className="flex items-center gap-3">
-                <label className="text-sm text-gray-400">运动强度</label>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.1"
-                  value={defaultMotionStrength}
-                  onChange={(e) => setDefaultMotionStrength(Number(e.target.value))}
-                  className="w-24 accent-green-500"
-                />
-                <span className="text-sm text-gray-300 w-8">{Math.round(defaultMotionStrength * 100)}%</span>
-              </div>
-              {!isConfigured && (
-                <div className="flex items-center gap-2 text-yellow-400 text-sm">
-                  <AlertCircle size={14} />
-                  请先在设置中配置视频 API
-                </div>
-              )}
-            </div>
-          </div>
-        )}
 
         {/* 预览区 */}
         <div className="flex-1 p-6 flex flex-col overflow-auto">
@@ -614,9 +589,11 @@ export default function VideoPage() {
                   />
                 </div>
 
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-2 glass-button px-3 py-2 rounded-xl">
-                    <Clock size={14} className="text-gray-400" />
+                {/* 参数控制行 */}
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* 时长 */}
+                  <div className="flex items-center gap-1.5 glass-button px-2.5 py-1.5 rounded-lg">
+                    <Clock size={12} className="text-gray-400" />
                     <select
                       value={selectedTask.duration}
                       onChange={(e) => {
@@ -628,15 +605,106 @@ export default function VideoPage() {
                         }
                         setSelectedTask(prev => prev ? { ...prev, duration } : null)
                       }}
-                      className="bg-transparent text-sm outline-none"
-                      disabled={selectedTask.type === 'history' || selectedTask.status !== 'pending'}
+                      className="bg-transparent text-xs outline-none"
+                      disabled={selectedTask.type === 'history' || (selectedTask.status !== 'pending' && selectedTask.status !== 'error')}
                     >
-                      <option value={3} className="bg-gray-900">3秒</option>
                       <option value={5} className="bg-gray-900">5秒</option>
                       <option value={10} className="bg-gray-900">10秒</option>
                     </select>
                   </div>
+                  
+                  {/* 分辨率 */}
+                  <div className="flex items-center gap-1.5 glass-button px-2.5 py-1.5 rounded-lg">
+                    <span className="text-xs text-gray-400">分辨率</span>
+                    <select
+                      value={selectedTask.resolution || '720p'}
+                      onChange={(e) => {
+                        const resolution = e.target.value
+                        if (selectedTask.type === 'current') {
+                          setCurrentTasks(prev => prev.map(t => 
+                            t.id === selectedTask.id ? { ...t, resolution } : t
+                          ))
+                        }
+                        setSelectedTask(prev => prev ? { ...prev, resolution } : null)
+                      }}
+                      className="bg-transparent text-xs outline-none"
+                      disabled={selectedTask.type === 'history' || (selectedTask.status !== 'pending' && selectedTask.status !== 'error')}
+                    >
+                      <option value="720p" className="bg-gray-900">720p</option>
+                      <option value="1080p" className="bg-gray-900">1080p</option>
+                    </select>
+                  </div>
+                  
+                  {/* 比例 */}
+                  <div className="flex items-center gap-1.5 glass-button px-2.5 py-1.5 rounded-lg">
+                    <span className="text-xs text-gray-400">比例</span>
+                    <select
+                      value={selectedTask.ratio || '16:9'}
+                      onChange={(e) => {
+                        const ratio = e.target.value
+                        if (selectedTask.type === 'current') {
+                          setCurrentTasks(prev => prev.map(t => 
+                            t.id === selectedTask.id ? { ...t, ratio } : t
+                          ))
+                        }
+                        setSelectedTask(prev => prev ? { ...prev, ratio } : null)
+                      }}
+                      className="bg-transparent text-xs outline-none"
+                      disabled={selectedTask.type === 'history' || (selectedTask.status !== 'pending' && selectedTask.status !== 'error')}
+                    >
+                      <option value="16:9" className="bg-gray-900">16:9</option>
+                      <option value="9:16" className="bg-gray-900">9:16</option>
+                      <option value="1:1" className="bg-gray-900">1:1</option>
+                    </select>
+                  </div>
+                  
+                  {/* 固定镜头 */}
+                  <label className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg cursor-pointer transition-colors ${
+                    selectedTask.cameraFixed ? 'bg-green-500/20 text-green-400' : 'glass-button text-gray-400'
+                  } ${selectedTask.type === 'history' || (selectedTask.status !== 'pending' && selectedTask.status !== 'error') ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                    <input
+                      type="checkbox"
+                      checked={selectedTask.cameraFixed || false}
+                      onChange={(e) => {
+                        const cameraFixed = e.target.checked
+                        if (selectedTask.type === 'current') {
+                          setCurrentTasks(prev => prev.map(t => 
+                            t.id === selectedTask.id ? { ...t, cameraFixed } : t
+                          ))
+                        }
+                        setSelectedTask(prev => prev ? { ...prev, cameraFixed } : null)
+                      }}
+                      className="hidden"
+                      disabled={selectedTask.type === 'history' || (selectedTask.status !== 'pending' && selectedTask.status !== 'error')}
+                    />
+                    <span className="text-xs">固定镜头</span>
+                  </label>
+                  
+                  {/* 生成音频 */}
+                  <label className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg cursor-pointer transition-colors ${
+                    selectedTask.generateAudio !== false ? 'bg-green-500/20 text-green-400' : 'glass-button text-gray-400'
+                  } ${selectedTask.type === 'history' || (selectedTask.status !== 'pending' && selectedTask.status !== 'error') ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                    <input
+                      type="checkbox"
+                      checked={selectedTask.generateAudio !== false}
+                      onChange={(e) => {
+                        const generateAudio = e.target.checked
+                        if (selectedTask.type === 'current') {
+                          setCurrentTasks(prev => prev.map(t => 
+                            t.id === selectedTask.id ? { ...t, generateAudio } : t
+                          ))
+                        }
+                        setSelectedTask(prev => prev ? { ...prev, generateAudio } : null)
+                      }}
+                      className="hidden"
+                      disabled={selectedTask.type === 'history' || (selectedTask.status !== 'pending' && selectedTask.status !== 'error')}
+                    />
+                    <Volume2 size={12} />
+                    <span className="text-xs">音频</span>
+                  </label>
+                </div>
 
+                <div className="flex items-center gap-3">
                   <div className="flex-1" />
 
                   <button

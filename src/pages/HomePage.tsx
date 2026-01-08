@@ -2,6 +2,20 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { FileText, Image, Film, Video, Clock, ArrowRight, Plus, Trash2, FolderOpen, Sparkles, Layout, X } from 'lucide-react'
 import { useProjectStore } from '../store/projectStore'
+import { listAgentProjects, deleteAgentProject, type AgentProject } from '../services/api'
+
+// 统一的项目类型
+interface UnifiedProject {
+  id: string
+  name: string
+  description?: string
+  type: 'normal' | 'agent' | 'canvas'
+  thumbnail?: string
+  itemCount: number
+  itemLabel: string
+  updatedAt: string
+  createdAt: string
+}
 
 const MODULES = [
   {
@@ -49,10 +63,55 @@ export default function HomePage() {
   const [newProjectName, setNewProjectName] = useState('')
   const [newProjectDesc, setNewProjectDesc] = useState('')
   const [creating, setCreating] = useState(false)
+  
+  // Agent 项目
+  const [agentProjects, setAgentProjects] = useState<AgentProject[]>([])
+  const [loadingAgent, setLoadingAgent] = useState(false)
 
   useEffect(() => {
     fetchProjects()
+    loadAgentProjects()
   }, [fetchProjects])
+
+  const loadAgentProjects = async () => {
+    setLoadingAgent(true)
+    try {
+      const projects = await listAgentProjects(50)
+      setAgentProjects(projects)
+    } catch (error) {
+      console.error('加载 Agent 项目失败:', error)
+    } finally {
+      setLoadingAgent(false)
+    }
+  }
+
+  // 合并所有项目并按更新时间排序
+  const allProjects: UnifiedProject[] = [
+    // 普通项目
+    ...projects.map(p => ({
+      id: p.id,
+      name: p.name,
+      description: p.description,
+      type: 'normal' as const,
+      thumbnail: p.storyboards?.[0]?.imageUrl,
+      itemCount: p.storyboards?.length || 0,
+      itemLabel: '分镜',
+      updatedAt: p.updatedAt,
+      createdAt: p.createdAt
+    })),
+    // Agent 项目
+    ...agentProjects.map(p => ({
+      id: p.id,
+      name: p.name,
+      description: (p.creative_brief as Record<string, string>)?.visualStyle,
+      type: 'agent' as const,
+      thumbnail: Object.values(p.elements || {})[0]?.image_url,
+      itemCount: (p.segments || []).reduce((acc, s) => acc + (s.shots?.length || 0), 0),
+      itemLabel: '镜头',
+      updatedAt: p.updated_at,
+      createdAt: p.created_at
+    }))
+  ].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
 
   const handleCreateProject = async () => {
     if (!newProjectName.trim()) return
@@ -71,10 +130,15 @@ export default function HomePage() {
     }
   }
 
-  const handleDeleteProject = async (e: React.MouseEvent, id: string) => {
+  const handleDeleteProject = async (e: React.MouseEvent, id: string, type: 'normal' | 'agent' | 'canvas') => {
     e.stopPropagation()
     if (confirm('确定要删除这个项目吗？')) {
-      await deleteProject(id)
+      if (type === 'agent') {
+        await deleteAgentProject(id)
+        await loadAgentProjects()
+      } else {
+        await deleteProject(id)
+      }
     }
   }
 
@@ -171,7 +235,7 @@ export default function HomePage() {
               <FolderOpen size={20} className="text-gray-400" />
               <h2 className="text-lg font-semibold">我的项目</h2>
               <span className="text-sm text-gray-500 glass-button px-2 py-0.5 rounded-full">
-                {projects.length}
+                {allProjects.length}
               </span>
             </div>
             <button
@@ -246,12 +310,12 @@ export default function HomePage() {
             </div>
           )}
           
-          {loading ? (
+          {loading || loadingAgent ? (
             <div className="text-center py-16 glass-card">
               <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4" />
               <p className="text-gray-500">加载中...</p>
             </div>
-          ) : projects.length === 0 ? (
+          ) : allProjects.length === 0 ? (
             <div className="text-center py-16 glass-card">
               <FolderOpen size={56} className="mx-auto mb-5 text-gray-600" />
               <p className="text-gray-400 mb-2">暂无项目</p>
@@ -259,23 +323,46 @@ export default function HomePage() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {projects.map((project, index) => (
+              {allProjects.map((project, index) => (
                 <div
-                  key={project.id}
-                  onClick={() => navigate(`/project/${project.id}`)}
+                  key={`${project.type}-${project.id}`}
+                  onClick={() => {
+                    if (project.type === 'agent') {
+                      navigate(`/agent/${project.id}`)
+                    } else if (project.type === 'canvas') {
+                      navigate(`/canvas/${project.id}`)
+                    } else {
+                      navigate(`/project/${project.id}`)
+                    }
+                  }}
                   className="glass-card p-5 cursor-pointer group hover-lift animate-fadeInUp"
                   style={{ animationDelay: `${index * 0.05}s` }}
                 >
                   {/* 缩略图 */}
-                  <div className="aspect-video bg-gradient-to-br from-gray-800/50 to-gray-900/50 rounded-xl mb-4 overflow-hidden flex items-center justify-center">
-                    {project.storyboards.length > 0 && project.storyboards[0].imageUrl ? (
+                  <div className="aspect-video bg-gradient-to-br from-gray-800/50 to-gray-900/50 rounded-xl mb-4 overflow-hidden flex items-center justify-center relative">
+                    {project.thumbnail ? (
                       <img 
-                        src={project.storyboards[0].imageUrl} 
+                        src={project.thumbnail} 
                         alt="" 
                         className="w-full h-full object-cover transition-apple group-hover:scale-105"
                       />
+                    ) : project.type === 'agent' ? (
+                      <Sparkles size={36} className="text-purple-500" />
+                    ) : project.type === 'canvas' ? (
+                      <Layout size={36} className="text-blue-500" />
                     ) : (
                       <Film size={36} className="text-gray-600" />
+                    )}
+                    
+                    {/* 项目类型标签 */}
+                    {project.type !== 'normal' && (
+                      <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                        project.type === 'agent' 
+                          ? 'bg-gradient-to-r from-fuchsia-500 to-purple-500 text-white' 
+                          : 'bg-gradient-to-r from-cyan-500 to-blue-500 text-white'
+                      }`}>
+                        {project.type === 'agent' ? 'Agent' : 'Canvas'}
+                      </div>
                     )}
                   </div>
                   
@@ -292,14 +379,14 @@ export default function HomePage() {
                           {formatDate(project.updatedAt)}
                         </span>
                         <span className="glass-button px-2 py-0.5 rounded-full">
-                          {project.storyboards.length} 分镜
+                          {project.itemCount} {project.itemLabel}
                         </span>
                       </div>
                     </div>
                     
                     {/* 删除按钮 */}
                     <button
-                      onClick={(e) => handleDeleteProject(e, project.id)}
+                      onClick={(e) => handleDeleteProject(e, project.id, project.type)}
                       className="p-2.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-xl opacity-0 group-hover:opacity-100 transition-apple"
                       title="删除项目"
                     >

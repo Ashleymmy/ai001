@@ -38,7 +38,12 @@ class VideoService:
         fps: int = 24,
         aspect_ratio: str = "16:9",
         motion_strength: float = 0.5,
-        seed: Optional[int] = None
+        seed: Optional[int] = None,
+        resolution: str = "720p",
+        ratio: str = "16:9",
+        camera_fixed: bool = False,
+        watermark: bool = False,
+        generate_audio: bool = True
     ) -> Dict[str, Any]:
         """
         从图片生成视频
@@ -48,9 +53,14 @@ class VideoService:
             prompt: 运动描述提示词
             duration: 视频时长（秒）
             fps: 帧率
-            aspect_ratio: 宽高比
+            aspect_ratio: 宽高比 (旧参数，保留兼容)
             motion_strength: 运动强度 0-1
             seed: 随机种子
+            resolution: 分辨率 720p/1080p
+            ratio: 宽高比 16:9/9:16/1:1
+            camera_fixed: 是否固定镜头
+            watermark: 是否添加水印
+            generate_audio: 是否生成音频
         
         Returns:
             {
@@ -61,8 +71,18 @@ class VideoService:
                 "seed": int
             }
         """
+        # 检查是否配置了 API
         if self.provider == "none" or not self.api_key:
-            return await self._generate_placeholder(image_url, prompt, duration)
+            raise Exception("视频服务未配置，请在设置中配置视频生成 API")
+        
+        # 检查是否是自定义配置（以 custom_ 开头）
+        if self.provider.startswith("custom_"):
+            return await self._call_custom_provider(
+                image_url, prompt, duration, seed,
+                resolution=resolution, ratio=ratio,
+                camera_fixed=camera_fixed, watermark=watermark,
+                generate_audio=generate_audio
+            )
         
         if self.provider == "kling":
             return await self._generate_kling(image_url, prompt, duration, motion_strength, seed)
@@ -80,7 +100,7 @@ class VideoService:
                 return await self._generate_dashscope_video(image_url, prompt, duration, seed)
             return await self._generate_custom(image_url, prompt, duration, seed)
         else:
-            return await self._generate_placeholder(image_url, prompt, duration)
+            raise Exception(f"不支持的视频服务提供商: {self.provider}")
     
     async def check_task_status(self, task_id: str) -> Dict[str, Any]:
         """检查异步任务状态"""
@@ -94,24 +114,202 @@ class VideoService:
             return await self._check_luma_status(task_id)
         elif self.provider == "custom" and self.base_url and "dashscope" in self.base_url:
             return await self._check_dashscope_status(task_id)
+        elif self.provider.startswith("custom_"):
+            # 自定义配置，根据 base_url 判断
+            if self.base_url and ("dashscope" in self.base_url):
+                return await self._check_dashscope_status(task_id)
+            elif self.base_url and ("volces.com" in self.base_url or "ark.cn" in self.base_url):
+                return await self._check_volcengine_status(task_id)
+            # 其他自定义 API 暂不支持状态查询
+            return {"status": "completed", "video_url": None}
         else:
             return {"status": "completed", "video_url": None}
     
-    async def _generate_placeholder(
+    async def _call_custom_provider(
         self,
         image_url: str,
         prompt: str,
-        duration: float
+        duration: float,
+        seed: Optional[int],
+        resolution: str = "720p",
+        ratio: str = "16:9",
+        camera_fixed: bool = False,
+        watermark: bool = False,
+        generate_audio: bool = True
     ) -> Dict[str, Any]:
-        """占位符模式 - 返回示例视频"""
-        await asyncio.sleep(1)  # 模拟延迟
-        return {
-            "video_url": "https://www.w3schools.com/html/mov_bbb.mp4",
-            "task_id": str(uuid.uuid4()),
-            "status": "completed",
-            "duration": duration,
-            "seed": abs(hash(prompt)) % 10000
-        }
+        """调用自定义配置的视频生成 API - 自动检测 API 格式"""
+        if not self.api_key or not self.base_url:
+            raise Exception("缺少 API Key 或 Base URL，请在设置中配置")
+        
+        base_url = self.base_url.rstrip('/')
+        
+        # 检测是否是阿里云 DashScope API
+        if 'dashscope.aliyuncs.com' in base_url or 'dashscope' in base_url:
+            return await self._generate_dashscope_video(image_url, prompt, duration, seed)
+        
+        # 检测是否是火山引擎 API
+        if 'volces.com' in base_url or 'ark.cn' in base_url:
+            return await self._generate_volcengine_video(
+                image_url, prompt, duration, seed,
+                resolution=resolution, ratio=ratio,
+                camera_fixed=camera_fixed, watermark=watermark,
+                generate_audio=generate_audio
+            )
+        
+        # 默认尝试通用自定义格式
+        return await self._generate_custom(image_url, prompt, duration, seed)
+    
+    async def _generate_volcengine_video(
+        self,
+        image_url: str,
+        prompt: str,
+        duration: float,
+        seed: Optional[int],
+        resolution: str = "720p",
+        ratio: str = "16:9",
+        camera_fixed: bool = False,
+        watermark: bool = False,
+        generate_audio: bool = True
+    ) -> Dict[str, Any]:
+        """调用火山引擎视频生成 API - 使用官方 SDK"""
+        try:
+            from volcenginesdkarkruntime import Ark
+        except ImportError:
+            raise Exception("请安装火山引擎 SDK: pip install 'volcengine-python-sdk[ark]'")
+        
+        # 处理图片：火山引擎需要公网可访问的 URL 或 base64
+        # 如果是 localhost URL，需要转换为 base64
+        if image_url.startswith("http://localhost") or image_url.startswith("http://127.0.0.1"):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(image_url) as resp:
+                        if resp.status == 200:
+                            content = await resp.read()
+                            b64 = base64.b64encode(content).decode("utf-8")
+                            content_type = resp.headers.get("Content-Type", "image/jpeg")
+                            image_url = f"data:{content_type};base64,{b64}"
+                            print(f"[VideoService] 已将本地图片转换为 base64")
+            except Exception as e:
+                print(f"[VideoService] 转换本地图片失败: {e}")
+        
+        model = self.model or "doubao-seaweed-241128"
+        
+        # 初始化 Ark 客户端
+        client = Ark(
+            base_url=self.base_url or "https://ark.cn-beijing.volces.com/api/v3",
+            api_key=self.api_key
+        )
+        
+        # 火山引擎 seedance 模型支持的时长: 5秒或6秒
+        # 将时长限制在支持的范围内
+        supported_duration = 5 if duration <= 5 else 6
+        
+        # 构建参数字符串
+        # 支持的参数: --duration, --resolution, --ratio, --camerafixed, --watermark
+        params = f"--duration {supported_duration}"
+        params += f" --resolution {resolution}"
+        params += f" --ratio {ratio}"
+        params += f" --camerafixed {'true' if camera_fixed else 'false'}"
+        params += f" --watermark {'true' if watermark else 'false'}"
+        
+        # 构建 content
+        content = [
+            {
+                "type": "text",
+                "text": f"{prompt or '让图片动起来，生成自然流畅的视频'} {params}"
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": image_url
+                }
+            }
+        ]
+        
+        print(f"[VideoService] 火山引擎 SDK 调用: model={model}")
+        print(f"[VideoService] 参数: duration={supported_duration} (原始: {duration}), resolution={resolution}, ratio={ratio}, camera_fixed={camera_fixed}, watermark={watermark}")
+        print(f"[VideoService] 图片格式: {'base64' if image_url.startswith('data:') else 'URL'}")
+        
+        try:
+            # 使用 SDK 创建任务，添加 generate_audio 参数
+            create_result = client.content_generation.tasks.create(
+                model=model,
+                content=content,
+                generate_audio=generate_audio
+            )
+            
+            # create 返回的是 ContentGenerationTaskID，只有 id 属性
+            task_id = create_result.id
+            
+            print(f"[VideoService] 火山引擎任务已提交: {task_id}")
+            
+            # 任务创建后需要轮询状态，这里返回 processing 状态
+            return {
+                "task_id": task_id,
+                "status": "processing",
+                "video_url": None,
+                "duration": duration,
+                "seed": seed or 0
+            }
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[VideoService] 火山引擎 SDK 错误: {error_msg}")
+            raise Exception(f"火山引擎调用失败: {error_msg}")
+    
+    async def _check_volcengine_status(self, task_id: str) -> Dict[str, Any]:
+        """检查火山引擎视频生成任务状态 - 使用官方 SDK"""
+        try:
+            from volcenginesdkarkruntime import Ark
+        except ImportError:
+            return {"status": "error", "video_url": None, "error": "SDK 未安装"}
+        
+        client = Ark(
+            base_url=self.base_url or "https://ark.cn-beijing.volces.com/api/v3",
+            api_key=self.api_key
+        )
+        
+        try:
+            result = client.content_generation.tasks.get(task_id=task_id)
+            status = result.status
+            
+            print(f"[VideoService] 火山引擎任务 {task_id} 状态: {status}")
+            print(f"[VideoService] 火山引擎任务结果: {result}")
+            
+            if status == "succeeded":
+                video_url = None
+                # content 是一个 Content 对象，直接有 video_url 属性
+                if hasattr(result, 'content') and result.content:
+                    content = result.content
+                    # 直接访问 video_url 属性
+                    if hasattr(content, 'video_url'):
+                        video_url = content.video_url
+                    elif isinstance(content, dict):
+                        video_url = content.get('video_url')
+                
+                print(f"[VideoService] 火山引擎视频 URL: {video_url}")
+                return {
+                    "status": "completed",
+                    "video_url": video_url
+                }
+            elif status == "failed":
+                error_msg = "生成失败"
+                if hasattr(result, 'error') and result.error:
+                    error_msg = result.error.message if hasattr(result.error, 'message') else str(result.error)
+                return {
+                    "status": "error",
+                    "video_url": None,
+                    "error": error_msg
+                }
+            else:
+                return {
+                    "status": "processing",
+                    "video_url": None,
+                    "progress": 50
+                }
+        except Exception as e:
+            print(f"[VideoService] 火山引擎状态查询异常: {e}")
+            return {"status": "error", "video_url": None, "error": str(e)}
     
     async def _generate_kling(
         self,

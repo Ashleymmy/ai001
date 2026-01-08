@@ -1,0 +1,17 @@
+# 自定义服务提供商配置示例
+# 复制此文件为 custom_providers.yaml 并填入你的配置
+
+providers:
+  - id: "custom_xxxxx"
+    name: "我的图像服务"
+    type: "image"
+    api_key: "YOUR_API_KEY_HERE"
+    base_url: "https://your-api-endpoint.com"
+    model: "your-model-name"
+  
+  - id: "custom_yyyyy"
+    name: "我的视频服务"
+    type: "video"
+    api_key: "YOUR_API_KEY_HERE"
+    base_url: "https://your-api-endpoint.com"
+    model: "your-model-name"

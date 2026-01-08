@@ -66,13 +66,14 @@ class ImageService:
                 result["url"] = await self._call_stability(prompt, negative_prompt, width, height, steps, actual_seed)
             elif self.provider == "flux":
                 result["url"] = await self._call_flux(prompt, width, height)
-            elif self.provider == "custom":
+            elif self.provider == "custom" or self.provider.startswith("custom_"):
+                # 自定义配置，使用通用的 OpenAI 兼容调用
                 result["url"] = await self._call_custom(prompt, negative_prompt, width, height)
             else:
                 result["url"] = await self._call_openai_compatible(prompt, width, height)
         except Exception as e:
             print(f"[Image] 生成失败: {e}")
-            result["url"] = self._placeholder(prompt, actual_seed)
+            raise  # 直接抛出异常，不返回占位图
         
         return result
     
@@ -83,49 +84,149 @@ class ImageService:
         return f"https://picsum.photos/seed/{seed}/1024/576"
     
     async def _call_custom(self, prompt: str, negative_prompt: str = "", width: int = 1024, height: int = 1024) -> str:
-        """调用自定义 API（OpenAI 兼容格式）"""
+        """调用自定义 API - 自动检测 API 格式"""
         if not self.api_key or not self.base_url:
-            print("[Custom] 缺少 API Key 或 Base URL")
-            return self._placeholder(prompt)
+            raise Exception("缺少 API Key 或 Base URL，请在设置中配置")
         
+        base_url = self.base_url.rstrip('/')
+        
+        # 检测是否是阿里云 DashScope API
+        if 'dashscope.aliyuncs.com' in base_url:
+            return await self._call_dashscope_custom(prompt, width, height)
+        
+        # 检测是否是火山引擎 API
+        if 'volces.com' in base_url or 'ark.cn' in base_url:
+            return await self._call_volcengine_custom(prompt, width, height)
+        
+        # 默认尝试 OpenAI 兼容格式
+        return await self._call_openai_format(prompt, width, height)
+    
+    async def _call_dashscope_custom(self, prompt: str, width: int = 1024, height: int = 1024) -> str:
+        """调用阿里云 DashScope 图像生成 API"""
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                headers = {
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
-                }
-                
-                # 尝试 OpenAI 格式
-                payload = {
-                    "model": self.model or "dall-e-3",
-                    "prompt": prompt,
-                    "n": 1,
-                    "size": "1024x1024"
-                }
-                
-                url = self.base_url.rstrip('/') + '/images/generations'
-                print(f"[Custom] 调用: {url}")
-                
-                response = await client.post(url, headers=headers, json=payload)
-                print(f"[Custom] 响应状态: {response.status_code}")
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    # OpenAI 格式
-                    if "data" in data and len(data["data"]) > 0:
-                        return data["data"][0].get("url") or data["data"][0].get("b64_json", "")
-                    # 其他格式
-                    if "url" in data:
-                        return data["url"]
-                    if "image" in data:
-                        return data["image"]
-                else:
-                    print(f"[Custom] 错误响应: {response.text[:200]}")
-                
-                return self._placeholder(prompt)
+            from dashscope import ImageSynthesis
+            from http import HTTPStatus
+            
+            model = self.model or "wanx-v1"
+            size_str = f"{width}*{height}"
+            
+            print(f"[DashScope] 调用: model={model}, size={size_str}")
+            
+            rsp = ImageSynthesis.call(
+                api_key=self.api_key,
+                model=model,
+                prompt=prompt,
+                n=1,
+                size=size_str
+            )
+            
+            if rsp.status_code == HTTPStatus.OK:
+                results = rsp.output.results
+                if results:
+                    url = results[0].url
+                    print(f"[DashScope] 生成成功: {url[:50]}...")
+                    return url
+                raise Exception("DashScope 返回空结果")
+            else:
+                raise Exception(f"DashScope 调用失败: {rsp.code} - {rsp.message}")
+        except ImportError:
+            print("[DashScope] SDK 未安装，尝试 HTTP API")
+            return await self._call_qwen_image_http(prompt, None, width, height)
         except Exception as e:
-            print(f"[Custom] 错误: {e}")
-            return self._placeholder(prompt)
+            print(f"[DashScope] 错误: {e}")
+            raise
+    
+    async def _call_volcengine_custom(self, prompt: str, width: int = 1024, height: int = 1024) -> str:
+        """调用火山引擎（豆包）图像生成 API"""
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            model = self.model or "doubao-seedream"
+            
+            # 火山引擎要求最小像素数为 3686400 (约 1920x1920)
+            # 调整尺寸以满足要求，保持宽高比
+            min_pixels = 3700000  # 稍微多一点确保满足
+            current_pixels = width * height
+            if current_pixels < min_pixels:
+                scale = (min_pixels / current_pixels) ** 0.5
+                width = int(width * scale) + 64  # 额外加一些余量
+                height = int(height * scale) + 64
+                # 确保是 64 的倍数
+                width = ((width + 63) // 64) * 64
+                height = ((height + 63) // 64) * 64
+                print(f"[Volcengine] 调整尺寸为 {width}x{height} ({width*height} 像素) 以满足最小像素要求")
+            
+            payload = {
+                "model": model,
+                "prompt": prompt,
+                "size": f"{width}x{height}",
+                "n": 1
+            }
+            
+            url = f"{self.base_url.rstrip('/')}/images/generations"
+            print(f"[Volcengine] 调用: {url}, model={model}, size={width}x{height}")
+            
+            response = await client.post(url, headers=headers, json=payload)
+            print(f"[Volcengine] 响应状态: {response.status_code}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                print(f"[Volcengine] 响应数据: {str(data)[:300]}")
+                # 尝试多种响应格式
+                if "data" in data and len(data["data"]) > 0:
+                    item = data["data"][0]
+                    result_url = item.get("url") or item.get("b64_json")
+                    if result_url:
+                        return result_url
+                if "output" in data:
+                    output = data["output"]
+                    if isinstance(output, dict) and "image_url" in output:
+                        return output["image_url"]
+                    if isinstance(output, list) and len(output) > 0:
+                        return output[0].get("url")
+                raise Exception("火山引擎返回空结果")
+            else:
+                error_data = response.json()
+                error_msg = error_data.get("error", {}).get("message", response.text[:200])
+                raise Exception(f"火山引擎调用失败: {error_msg}")
+    
+    async def _call_openai_format(self, prompt: str, width: int = 1024, height: int = 1024) -> str:
+        """调用 OpenAI 格式的图像生成 API"""
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model": self.model or "dall-e-3",
+                "prompt": prompt,
+                "n": 1,
+                "size": f"{width}x{height}"
+            }
+            
+            url = f"{self.base_url.rstrip('/')}/images/generations"
+            print(f"[OpenAI-Format] 调用: {url}")
+            
+            response = await client.post(url, headers=headers, json=payload)
+            print(f"[OpenAI-Format] 响应状态: {response.status_code}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                if "data" in data and len(data["data"]) > 0:
+                    result_url = data["data"][0].get("url") or data["data"][0].get("b64_json")
+                    if result_url:
+                        return result_url
+                if "url" in data:
+                    return data["url"]
+                if "image" in data:
+                    return data["image"]
+                raise Exception("API 返回空结果")
+            else:
+                raise Exception(f"API 调用失败 ({response.status_code}): {response.text[:200]}")
     
     async def _call_openai_compatible(self, prompt: str, width: int = 1024, height: int = 1024) -> str:
         """调用 OpenAI 兼容的图像 API"""

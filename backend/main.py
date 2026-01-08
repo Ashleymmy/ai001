@@ -11,6 +11,7 @@ from services.llm_service import LLMService
 from services.image_service import ImageService
 from services.video_service import VideoService
 from services.storage_service import storage
+from services.agent_service import AgentService, AgentProject, AgentExecutor
 
 app = FastAPI(title="AI Storyboarder Backend")
 
@@ -27,6 +28,7 @@ llm_service: Optional[LLMService] = None
 image_service: Optional[ImageService] = None
 storyboard_service: Optional[ImageService] = None  # 分镜专用图像服务
 video_service: Optional[VideoService] = None  # 视频生成服务
+agent_service: Optional[AgentService] = None  # Agent 服务
 
 # 当前配置
 current_settings = {}
@@ -41,7 +43,7 @@ os.makedirs(REF_IMAGES_DIR, exist_ok=True)
 
 def load_saved_settings():
     """启动时加载已保存的设置"""
-    global llm_service, image_service, storyboard_service, video_service, current_settings
+    global llm_service, image_service, storyboard_service, video_service, agent_service, current_settings
     
     saved = storage.get_settings()
     if not saved:
@@ -111,6 +113,10 @@ def load_saved_settings():
             model=video_config.get('model') or None
         )
         print(f"[Startup] 视频服务已加载: provider={video_config.get('provider')}")
+    
+    # 初始化 Agent 服务
+    agent_service = AgentService(storage)
+    print("[Startup] Agent 服务已加载")
 
 
 # 启动时加载设置
@@ -170,6 +176,12 @@ class VideoRequest(BaseModel):
     duration: float = 5.0
     motionStrength: float = 0.5
     seed: Optional[int] = None
+    # 新增参数
+    resolution: str = "720p"  # 720p, 1080p
+    ratio: str = "16:9"  # 16:9, 9:16, 1:1
+    cameraFixed: bool = False  # 是否固定镜头
+    watermark: bool = False  # 是否添加水印
+    generateAudio: bool = True  # 是否生成音频
 
 
 class VideoTaskStatusRequest(BaseModel):
@@ -480,10 +492,9 @@ async def generate_single_image(request: GenerateImageRequest):
             "steps": request.steps
         }
     except Exception as e:
-        print(f"图像生成失败: {e}")
-        # 返回占位图
-        seed = abs(hash(request.prompt)) % 10000
-        return {"imageUrl": f"https://picsum.photos/seed/{seed}/512/512", "seed": seed}
+        error_msg = str(e)
+        print(f"图像生成失败: {error_msg}")
+        raise HTTPException(status_code=500, detail=f"图像生成失败: {error_msg}")
 
 
 def get_video_service() -> VideoService:
@@ -500,6 +511,7 @@ async def generate_video(request: VideoRequest):
     service = get_video_service()
     
     print(f"[API] 视频生成请求: provider={service.provider}, model={service.model}")
+    print(f"[API] 参数: duration={request.duration}, resolution={request.resolution}, ratio={request.ratio}")
     
     try:
         result = await service.generate(
@@ -507,7 +519,12 @@ async def generate_video(request: VideoRequest):
             prompt=request.prompt,
             duration=request.duration,
             motion_strength=request.motionStrength,
-            seed=request.seed
+            seed=request.seed,
+            resolution=request.resolution,
+            ratio=request.ratio,
+            camera_fixed=request.cameraFixed,
+            watermark=request.watermark,
+            generate_audio=request.generateAudio
         )
         
         # 保存到历史记录
@@ -531,12 +548,9 @@ async def generate_video(request: VideoRequest):
             "seed": result.get("seed")
         }
     except Exception as e:
-        print(f"视频生成失败: {e}")
-        return {
-            "status": "error",
-            "error": str(e),
-            "videoUrl": None
-        }
+        error_msg = str(e)
+        print(f"视频生成失败: {error_msg}")
+        raise HTTPException(status_code=500, detail=f"视频生成失败: {error_msg}")
 
 
 @app.post("/api/video-task-status")
@@ -938,6 +952,80 @@ async def import_project(file: UploadFile = File(...)):
     return project
 
 
+# ========== 自定义配置预设 API ==========
+
+class CustomProviderRequest(BaseModel):
+    name: str  # 用户自定义名称，如 "我的OpenAI" 或 "自定义配置1"
+    category: str  # llm / image / storyboard / video
+    apiKey: str = ""
+    baseUrl: str = ""
+    model: str = ""
+    models: List[str] = []  # 可选的模型列表
+
+
+class UpdateCustomProviderRequest(BaseModel):
+    name: Optional[str] = None
+    apiKey: Optional[str] = None
+    baseUrl: Optional[str] = None
+    model: Optional[str] = None
+    models: Optional[List[str]] = None
+
+
+@app.get("/api/custom-providers")
+async def list_custom_providers(category: Optional[str] = None):
+    """获取自定义配置预设列表"""
+    providers = storage.list_custom_providers(category)
+    return {"providers": providers}
+
+
+@app.post("/api/custom-providers")
+async def add_custom_provider(request: CustomProviderRequest):
+    """添加自定义配置预设
+    
+    用户可以添加多个自定义配置，每个配置有唯一的 id（以 custom_ 开头）和 isCustom=true 标识
+    """
+    if request.category not in ['llm', 'image', 'storyboard', 'video']:
+        raise HTTPException(status_code=400, detail="无效的类别，必须是 llm/image/storyboard/video")
+    
+    config = {
+        "apiKey": request.apiKey,
+        "baseUrl": request.baseUrl,
+        "model": request.model,
+        "models": request.models
+    }
+    
+    provider = storage.add_custom_provider(request.name, request.category, config)
+    return provider
+
+
+@app.get("/api/custom-providers/{provider_id}")
+async def get_custom_provider(provider_id: str):
+    """获取单个自定义配置预设"""
+    provider = storage.get_custom_provider(provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail="配置预设不存在")
+    return provider
+
+
+@app.put("/api/custom-providers/{provider_id}")
+async def update_custom_provider(provider_id: str, request: UpdateCustomProviderRequest):
+    """更新自定义配置预设"""
+    updates = request.model_dump(exclude_none=True)
+    provider = storage.update_custom_provider(provider_id, updates)
+    if not provider:
+        raise HTTPException(status_code=404, detail="配置预设不存在")
+    return provider
+
+
+@app.delete("/api/custom-providers/{provider_id}")
+async def delete_custom_provider(provider_id: str):
+    """删除自定义配置预设"""
+    success = storage.delete_custom_provider(provider_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="配置预设不存在")
+    return {"status": "ok"}
+
+
 # ========== 统计 API ==========
 
 @app.get("/api/stats")
@@ -952,6 +1040,499 @@ async def get_image_stats():
     """获取图像生成统计"""
     stats = storage.get_image_stats()
     return stats
+
+
+# ========== Agent API ==========
+
+class AgentChatRequest(BaseModel):
+    message: str
+    projectId: Optional[str] = None
+    context: Optional[dict] = None
+
+
+class AgentPlanRequest(BaseModel):
+    userRequest: str
+    style: str = "吉卜力2D"
+
+
+class AgentElementPromptRequest(BaseModel):
+    elementName: str
+    elementType: str  # character / object / scene
+    baseDescription: str
+    visualStyle: str = "吉卜力动画风格"
+
+
+class AgentShotPromptRequest(BaseModel):
+    shotName: str
+    shotType: str  # standard / quick / closeup / wide / montage
+    shotDescription: str
+    elements: List[str]
+    visualStyle: str
+    narration: str
+
+
+class AgentProjectRequest(BaseModel):
+    name: str
+    creativeBrief: Optional[dict] = None
+
+
+class AgentElementRequest(BaseModel):
+    elementId: str
+    name: str
+    elementType: str
+    description: str
+    imageUrl: Optional[str] = None
+
+
+class AgentSegmentRequest(BaseModel):
+    segmentId: str
+    name: str
+    description: str
+
+
+class AgentShotRequest(BaseModel):
+    segmentId: str
+    shotId: str
+    name: str
+    shotType: str
+    description: str
+    prompt: str
+    narration: str
+    duration: float = 5.0
+
+
+def get_agent_service() -> AgentService:
+    """获取 Agent 服务"""
+    global agent_service
+    if agent_service is None:
+        agent_service = AgentService(storage)
+    return agent_service
+
+
+@app.post("/api/agent/chat")
+async def agent_chat(request: AgentChatRequest):
+    """Agent 对话接口"""
+    service = get_agent_service()
+    
+    # 构建上下文
+    context = request.context or {}
+    if request.projectId:
+        # 加载项目数据作为上下文
+        project_data = storage.get_agent_project(request.projectId)
+        if project_data:
+            context["project"] = project_data
+    
+    result = await service.chat(request.message, context)
+    return result
+
+
+@app.post("/api/agent/plan")
+async def agent_plan_project(request: AgentPlanRequest):
+    """Agent 项目规划"""
+    service = get_agent_service()
+    result = await service.plan_project(request.userRequest, request.style)
+    return result
+
+
+@app.post("/api/agent/element-prompt")
+async def agent_generate_element_prompt(request: AgentElementPromptRequest):
+    """生成元素的图像提示词"""
+    service = get_agent_service()
+    result = await service.generate_element_prompt(
+        request.elementName,
+        request.elementType,
+        request.baseDescription,
+        request.visualStyle
+    )
+    return result
+
+
+@app.post("/api/agent/shot-prompt")
+async def agent_generate_shot_prompt(request: AgentShotPromptRequest):
+    """生成镜头的视频提示词"""
+    service = get_agent_service()
+    result = await service.generate_shot_prompt(
+        request.shotName,
+        request.shotType,
+        request.shotDescription,
+        request.elements,
+        request.visualStyle,
+        request.narration
+    )
+    return result
+
+
+@app.get("/api/agent/shot-types")
+async def get_shot_types():
+    """获取支持的镜头类型"""
+    from services.agent_service import SHOT_TYPES
+    return {"shotTypes": SHOT_TYPES}
+
+
+# Agent 项目管理
+
+@app.post("/api/agent/projects")
+async def create_agent_project(request: AgentProjectRequest):
+    """创建 Agent 项目"""
+    project = AgentProject()
+    project.name = request.name
+    if request.creativeBrief:
+        project.creative_brief = request.creativeBrief
+    
+    # 保存到存储
+    storage.save_agent_project(project.to_dict())
+    return project.to_dict()
+
+
+@app.get("/api/agent/projects")
+async def list_agent_projects(limit: int = 50):
+    """获取 Agent 项目列表"""
+    projects = storage.list_agent_projects(limit)
+    return {"projects": projects}
+
+
+@app.get("/api/agent/projects/{project_id}")
+async def get_agent_project(project_id: str):
+    """获取 Agent 项目详情"""
+    project = storage.get_agent_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return project
+
+
+@app.put("/api/agent/projects/{project_id}")
+async def update_agent_project(project_id: str, updates: dict):
+    """更新 Agent 项目"""
+    print(f"[API] 更新 Agent 项目: {project_id}")
+    print(f"[API] 更新数据: {list(updates.keys())}")
+    
+    project = storage.update_agent_project(project_id, updates)
+    if not project:
+        print(f"[API] 项目不存在: {project_id}")
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    print(f"[API] 项目已更新: {project.get('name')}")
+    return project
+
+
+@app.delete("/api/agent/projects/{project_id}")
+async def delete_agent_project(project_id: str):
+    """删除 Agent 项目"""
+    success = storage.delete_agent_project(project_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return {"status": "ok"}
+
+
+@app.post("/api/agent/projects/{project_id}/export/assets")
+async def export_project_assets(project_id: str):
+    """导出项目所有素材（打包成 ZIP）"""
+    from services.export_service import export_service
+    from fastapi.responses import FileResponse
+    
+    print(f"[API] 导出项目素材: {project_id}")
+    
+    project = storage.get_agent_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    try:
+        print(f"[API] 项目数据: name={project.get('name')}, elements={len(project.get('elements', {}))}, segments={len(project.get('segments', []))}")
+        
+        zip_path = await export_service.export_project_assets(
+            project_id=project_id,
+            project_name=project.get('name', 'Untitled'),
+            elements=project.get('elements', {}),
+            segments=project.get('segments', []),
+            visual_assets=project.get('visual_assets', [])
+        )
+        
+        print(f"[API] ZIP 文件已创建: {zip_path}")
+        
+        return FileResponse(
+            zip_path,
+            media_type='application/zip',
+            filename=os.path.basename(zip_path)
+        )
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"[API] 导出素材失败:\n{error_detail}")
+        raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
+
+
+@app.post("/api/agent/projects/{project_id}/export/video")
+async def export_merged_video(project_id: str, resolution: str = "720p"):
+    """导出拼接后的视频"""
+    from services.export_service import export_service
+    from fastapi.responses import FileResponse
+    
+    project = storage.get_agent_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    try:
+        video_path = await export_service.export_merged_video(
+            project_id=project_id,
+            project_name=project.get('name', 'Untitled'),
+            segments=project.get('segments', []),
+            output_resolution=resolution
+        )
+        
+        return FileResponse(
+            video_path,
+            media_type='video/mp4',
+            filename=os.path.basename(video_path)
+        )
+    except Exception as e:
+        print(f"[API] 导出视频失败: {e}")
+        raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
+
+
+@app.post("/api/agent/projects/{project_id}/elements")
+async def add_agent_element(project_id: str, request: AgentElementRequest):
+    """添加元素到项目"""
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    project = AgentProject.from_dict(project_data)
+    element = project.add_element(
+        request.elementId,
+        request.name,
+        request.elementType,
+        request.description,
+        request.imageUrl
+    )
+    
+    storage.save_agent_project(project.to_dict())
+    return element
+
+
+@app.post("/api/agent/projects/{project_id}/segments")
+async def add_agent_segment(project_id: str, request: AgentSegmentRequest):
+    """添加段落到项目"""
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    project = AgentProject.from_dict(project_data)
+    segment = project.add_segment(
+        request.segmentId,
+        request.name,
+        request.description
+    )
+    
+    storage.save_agent_project(project.to_dict())
+    return segment
+
+
+@app.post("/api/agent/projects/{project_id}/shots")
+async def add_agent_shot(project_id: str, request: AgentShotRequest):
+    """添加镜头到段落"""
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    project = AgentProject.from_dict(project_data)
+    shot = project.add_shot(
+        request.segmentId,
+        request.shotId,
+        request.name,
+        request.shotType,
+        request.description,
+        request.prompt,
+        request.narration,
+        request.duration
+    )
+    
+    if not shot:
+        raise HTTPException(status_code=404, detail="段落不存在")
+    
+    storage.save_agent_project(project.to_dict())
+    return shot
+
+
+# ========== Agent 批量生成 API ==========
+
+class GenerateElementsRequest(BaseModel):
+    visualStyle: str = "吉卜力动画风格"
+
+
+class GenerateFramesRequest(BaseModel):
+    visualStyle: str = "吉卜力动画风格"
+
+
+class GenerateVideosRequest(BaseModel):
+    resolution: str = "720p"
+
+
+class ExecutePipelineRequest(BaseModel):
+    visualStyle: str = "吉卜力动画风格"
+    resolution: str = "720p"
+
+
+def get_agent_executor() -> AgentExecutor:
+    """获取 Agent 执行器"""
+    return AgentExecutor(
+        agent_service=get_agent_service(),
+        image_service=get_image_service(),
+        video_service=get_video_service(),
+        storage=storage
+    )
+
+
+@app.post("/api/agent/projects/{project_id}/generate-elements")
+async def generate_project_elements(project_id: str, request: GenerateElementsRequest):
+    """批量生成项目的所有元素图片
+    
+    Flova 风格：生成完成后返回结果，前端可以展示并让用户确认
+    """
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    project = AgentProject.from_dict(project_data)
+    executor = get_agent_executor()
+    
+    try:
+        result = await executor.generate_all_elements(
+            project,
+            visual_style=request.visualStyle
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成失败: {str(e)}")
+
+
+@app.post("/api/agent/projects/{project_id}/generate-frames")
+async def generate_project_frames(project_id: str, request: GenerateFramesRequest):
+    """批量生成项目的所有镜头起始帧
+    
+    需要先生成元素图片，起始帧会引用元素
+    """
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    project = AgentProject.from_dict(project_data)
+    executor = get_agent_executor()
+    
+    try:
+        result = await executor.generate_all_start_frames(
+            project,
+            visual_style=request.visualStyle
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成失败: {str(e)}")
+
+
+@app.post("/api/agent/projects/{project_id}/generate-videos")
+async def generate_project_videos(project_id: str, request: GenerateVideosRequest):
+    """批量生成项目的所有视频
+    
+    需要先生成起始帧，视频基于起始帧生成
+    """
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    project = AgentProject.from_dict(project_data)
+    executor = get_agent_executor()
+    
+    try:
+        result = await executor.generate_all_videos(
+            project,
+            resolution=request.resolution
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成失败: {str(e)}")
+
+
+@app.post("/api/agent/projects/{project_id}/execute-pipeline")
+async def execute_project_pipeline(project_id: str, request: ExecutePipelineRequest):
+    """执行完整的生成流程
+    
+    Flova 风格的一键生成：
+    1. 生成所有元素图片
+    2. 生成所有起始帧
+    3. 生成所有视频
+    
+    返回每个阶段的结果
+    """
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    project = AgentProject.from_dict(project_data)
+    executor = get_agent_executor()
+    
+    try:
+        result = await executor.execute_full_pipeline(
+            project,
+            visual_style=request.visualStyle,
+            resolution=request.resolution
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"执行失败: {str(e)}")
+
+
+@app.get("/api/agent/projects/{project_id}/status")
+async def get_project_generation_status(project_id: str):
+    """获取项目的生成状态统计"""
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    elements = project_data.get("elements", {})
+    segments = project_data.get("segments", [])
+    
+    # 统计元素状态
+    elements_total = len(elements)
+    elements_with_image = sum(1 for e in elements.values() if e.get("image_url"))
+    
+    # 统计镜头状态
+    shots_total = 0
+    shots_with_frame = 0
+    shots_with_video = 0
+    shots_processing = 0
+    
+    for segment in segments:
+        for shot in segment.get("shots", []):
+            shots_total += 1
+            if shot.get("start_image_url"):
+                shots_with_frame += 1
+            if shot.get("video_url"):
+                shots_with_video += 1
+            if shot.get("status") == "video_processing":
+                shots_processing += 1
+    
+    return {
+        "elements": {
+            "total": elements_total,
+            "completed": elements_with_image,
+            "pending": elements_total - elements_with_image
+        },
+        "frames": {
+            "total": shots_total,
+            "completed": shots_with_frame,
+            "pending": shots_total - shots_with_frame
+        },
+        "videos": {
+            "total": shots_total,
+            "completed": shots_with_video,
+            "processing": shots_processing,
+            "pending": shots_total - shots_with_video - shots_processing
+        },
+        "overall_progress": {
+            "elements_percent": round(elements_with_image / elements_total * 100) if elements_total > 0 else 0,
+            "frames_percent": round(shots_with_frame / shots_total * 100) if shots_total > 0 else 0,
+            "videos_percent": round(shots_with_video / shots_total * 100) if shots_total > 0 else 0
+        }
+    }
 
 
 if __name__ == "__main__":

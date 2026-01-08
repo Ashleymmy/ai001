@@ -169,9 +169,11 @@ export default function ImagePage() {
             : img
         )
       )
-    } catch (err) {
+    } catch (err: any) {
       console.error('生成失败:', err)
-      setError('图像生成失败，请检查设置中的图像模型配置')
+      // 提取详细错误信息
+      const errorDetail = err?.response?.data?.detail || err?.message || '未知错误'
+      setError(`图像生成失败: ${errorDetail}`)
       setImages((prev) =>
         prev.map((img) =>
           img.id === tempId ? { ...img, status: 'error' as const } : img
