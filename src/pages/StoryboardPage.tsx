@@ -582,7 +582,10 @@ ${storyboards.map(sb => `<div class="sb"><img src="${sb.imageUrl}"><div class="i
         </div>
 
         {/* 分镜展示区 */}
-        <div className="flex-1 p-6 overflow-auto">
+        <div 
+          className="flex-1 p-6 overflow-y-auto"
+          style={{ overscrollBehavior: 'contain' }}
+        >
           {storyboards.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-gray-500 animate-fadeIn">
               <div className="w-20 h-20 rounded-2xl glass-card flex items-center justify-center mb-4">
@@ -837,7 +840,10 @@ function HistoryModal({ projects, onLoad, onDelete, onClose }: {
           </button>
         </div>
         
-        <div className="p-4 max-h-[60vh] overflow-auto">
+        <div 
+          className="p-4 max-h-[60vh] overflow-y-auto"
+          style={{ overscrollBehavior: 'contain' }}
+        >
           {projects.length === 0 ? (
             <div className="text-center py-12 text-gray-500">
               <Clock size={32} className="mx-auto mb-2 opacity-50" />

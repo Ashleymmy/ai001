@@ -4,6 +4,7 @@ dist-electron/
 .env
 .env.local
 *.log
+_export_test.zip
 __pycache__/
 *.pyc
 .venv/
@@ -27,10 +28,13 @@ backend/data/images/ref_*.png
 backend/data/images/ref_*.jpg
 backend/data/images/index.yaml
 backend/data/images/videos_index.yaml
+backend/data/images/
+backend/data/videos/
+backend/uploads/
 
 # Sensitive data - API Keys and Settings
-backend/data/settings.yaml
-backend/data/custom_providers.yaml
+backend/data/settings.local.yaml
+backend/data/custom_providers.local.yaml
 backend/data/agent_projects/
 backend/outputs/
 

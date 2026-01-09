@@ -1,0 +1,72 @@
+providers:
+  - id: custom_955a1127
+    name: 我的GPT服务
+    category: llm
+    isCustom: true
+    apiKey: ""
+    baseUrl: https://api.openai.com/v1
+    model: gpt-4
+    models:
+      - gpt-4
+      - gpt-4-turbo
+      - gpt-3.5-turbo
+  - id: custom_c33653cb
+    name: 通义万相(自定义)
+    category: image
+    isCustom: true
+    apiKey: ""
+    baseUrl: https://dashscope.aliyuncs.com/api/v1
+    model: wanx2.1-t2i-turbo
+    models:
+      - wanx2.1-t2i-turbo
+      - wanx-v1
+  - id: custom_56b7aec2
+    name: Midjourney代理
+    category: image
+    isCustom: true
+    apiKey: ""
+    baseUrl: https://my-mj-proxy.com/api
+    model: mj-v6
+    models: []
+  - id: custom_a599e7d2
+    name: 通义万相
+    category: image
+    isCustom: true
+    apiKey: ""
+    baseUrl: https://dashscope.aliyuncs.com/api/v1
+    model: wan2.6-i2v
+    models: []
+  - id: custom_8aacd3e1
+    name: 通义万相-视频
+    category: video
+    isCustom: true
+    apiKey: ""
+    baseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
+    model: wan2.6-i2v
+    models: []
+  - id: custom_8036d120
+    name: Doubao-Seedream-4.5
+    category: image
+    isCustom: true
+    apiKey: ""
+    baseUrl: https://ark.cn-beijing.volces.com/api/v3
+    model: ep-20260107170506-p4w79
+    models:
+      - ep-20260107170506-p4w79
+  - id: custom_35d1bdd9
+    name: Doubao-Seedance-1.5-pro
+    category: video
+    isCustom: true
+    apiKey: ""
+    baseUrl: https://ark.cn-beijing.volces.com/api/v3
+    model: ep-20260107171231-8l7lx
+    models:
+      - ep-20260107171231-8l7lx
+  - id: custom_afb4c2b5
+    name: doubao-seed-1-8-251228
+    category: llm
+    isCustom: true
+    apiKey: ""
+    baseUrl: https://ark.cn-beijing.volces.com/api/v3
+    model: doubao-seed-1-8-251228
+    models: []

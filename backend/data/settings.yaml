@@ -1,30 +1,29 @@
 llm:
-  provider: doubao
-  apiKey: afa76b36-bc0f-4f06-85f8-31cb0108be58
+  provider: custom_afb4c2b5
+  apiKey: ""
   baseUrl: https://ark.cn-beijing.volces.com/api/v3
-  model: doubao-seed-1-6-251015
-  customProvider: null
+  model: ep-20260109091420-trzc4
+  customProvider: doubao-seed-1-8-251228
 image:
-  provider: qwen-image
-  apiKey: sk-91eeefd017df40f090e92a30143d2fe5
-  baseUrl: https://dashscope.aliyuncs.com/api/v1
-  model: wanx2.1-t2i-turbo
-  customProvider: 万象
+  provider: custom_8036d120
+  apiKey: ""
+  baseUrl: https://ark.cn-beijing.volces.com/api/v3
+  model: ep-20260107170506-p4w79
+  customProvider: seeddrame-4.5
 storyboard:
-  provider: custom
-  apiKey: sk-91eeefd017df40f090e92a30143d2fe5
+  provider: custom_a599e7d2
+  apiKey: ""
   baseUrl: https://dashscope.aliyuncs.com/api/v1
   model: wan2.6-i2v
   customProvider: 通义万相
 video:
-  provider: custom
-  apiKey: sk-3b3a69aad6b84ed5be66c30e66dc3e1d
-  baseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
-  model: wan2.6-i2v
-  customProvider: 通义万相
+  provider: custom_35d1bdd9
+  apiKey: ""
+  baseUrl: https://ark.cn-beijing.volces.com/api/v3
+  model: ep-20260107171231-8l7lx
+  customProvider: Doubao-Seedance-1.5-pro
 local:
   enabled: false
   comfyuiUrl: http://127.0.0.1:8188
   sdWebuiUrl: http://127.0.0.1:7860
   vramStrategy: auto
-updated_at: '2026-01-02T18:09:36.183357'

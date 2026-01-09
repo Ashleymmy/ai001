@@ -1,14 +1,134 @@
 images:
-- id: e35e6e92
+- id: 3cd95b6c
+  prompt: 5-year-old little girl named Duoduo, black pigtails with light pink bows
+    at the ends, round chubby cheeks, big sparkling eyes, small round nose, slight
+    upward curve at the corners of her mouth, fair and delicate skin, wearing a bright
+    yellow dress and white small leather shoes, cute gentle posture tilting her head
+    slightly, cartoon picture book style, Miyazaki-style healing vibe, rounded soft
+    lines without any sharp edges, vibrant and bright color palette, warm-toned soft
+    natural light, cozy heartwarming atmosphere, gentle soft shadows, 8k, ultra-high
+    resolution, highly detailed, professional children's book illustration, smooth
+    texture, clear intricate details, cinematic soft lighting
+  negative_prompt: sharp edges, dark dull color palette, realistic photography style,
+    serious or frowning expression, rough or blemished skin, distorted limbs, blurry
+    or pixelated details, low resolution, messy cluttered background, mismatched clothing,
+    harsh shadows, over-saturated colors, flat lighting, rigid stiff lines
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021767938579122d6b0e46812eb6ca5f421e6552139c58cff28ac_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260109%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260109T060312Z&X-Tos-Expires=86400&X-Tos-Signature=fc9d9b2499fdc06586354f9e0a0af8d6ae71610d6acb3dced3b9349289f75979&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_8036d120
+  model: ep-20260107170506-p4w79
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 2140008659
+  style: null
+  created_at: '2026-01-09T14:03:11.125989'
+- id: cd9b0bcd
+  prompt: 5-year-old toddler girl named Duoduo, black pigtails with light pink bows
+    at the ends, round chubby cheeks, big sparkling eyes, small rounded nose, cherry-shaped
+    mouth with a slight upward curve, fair and delicate skin, wearing a bright yellow
+    dress and tiny white leather shoes, in a gentle playful pose with hands behind
+    back, cartoon picture book style, Hayao Miyazaki's warm healing aesthetic, all
+    lines rounded without sharp edges, soft warm ambient light, bright and vivid colors,
+    cozy heartwarming atmosphere, masterpiece, ultra-detailed, 8k resolution, intricate
+    character details, smooth soft textures, professional children's illustration
+  negative_prompt: sharp angular lines, adult facial features, dull muted colors,
+    low resolution, blurry, distorted limbs, messy unkempt hair, asymmetrical facial
+    features, grainy, noisy, dark gloomy atmosphere, realistic photography, extra
+    limbs, missing facial features, harsh shadows
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/02176793849660924cd8c2b443d441736f36bc6f7cec06018a31a_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260109%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260109T060147Z&X-Tos-Expires=86400&X-Tos-Signature=56774e2a7ae591caf2764b92905b685e5a0faf952f7df6dfeb2159c49511f0a3&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_8036d120
+  model: ep-20260107170506-p4w79
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 2141010267
+  style: null
+  created_at: '2026-01-09T14:01:46.542871'
+- id: 868d025d
+  prompt: 5-year-old toddler girl named Duoduo, black pigtails with light pink bows
+    at the ends, round chubby cheeks, big sparkling eyes, small rounded nose, cherry-shaped
+    small mouth with a slight upward curve, fair smooth delicate skin, wearing a bright
+    yellow dress and white small leather shoes, relaxed playful standing pose, all
+    features with rounded soft edges no sharp lines, cartoon picture book style, Hayao
+    Miyazaki inspired heartwarming healing aesthetic, whimsical gentle illustration
+    style, warm soft diffused lighting, bright vivid cheerful color palette, cozy
+    comforting atmosphere, ultra-detailed, high resolution, crisp clean soft lines,
+    soft textured rendering, professional children's book illustration, 8K, sharp
+    focus, clear refined details
+  negative_prompt: Sharp edges, angular features, realistic photography style, dark
+    muted color palette, blurry details, distorted limbs, facial deformities, messy
+    rough lines, low resolution, grainy texture, gloomy depressing atmosphere, mature
+    adult facial features, harsh bright lighting, overexposed areas, dull colors,
+    asymmetrical features
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217679309402112811cc565cd59e977023febe5c684c876d5f88_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260109%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260109T035552Z&X-Tos-Expires=86400&X-Tos-Signature=caef389abb52213c5368801a388f0ee0a6b7529bacbbc8e120b39a6451a59359&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_8036d120
+  model: ep-20260107170506-p4w79
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 844891881
+  style: null
+  created_at: '2026-01-09T11:55:51.944862'
+- id: de807ea0
+  prompt: 5-year-old little girl named Duoduo, black pigtails with light pink bows
+    at the ends, round chubby cheeks, big sparkling eyes, small rounded nose, slight
+    smile with mouth corners slightly upturned, fair and delicate skin, wearing a
+    bright yellow dress and white small leather shoes, natural cute posture (slightly
+    tilting her head), cartoon picture book style, Hayao Miyazaki-style healing vibe,
+    all lines are rounded without sharp edges, soft and rounded character design,
+    warm tone, soft gentle lighting, bright and vivid colors, cozy heartwarming atmosphere,
+    highly detailed, ultra high resolution, sharp focus, clear textures, professional
+    illustration, masterpiece, 8k, high quality
+  negative_prompt: sharp edges, dark dull colors, rough skin, distorted facial features,
+    deformed body parts, unrealistic proportions, low resolution, blurry images, messy
+    lines, gloomy atmosphere, grainy, low quality, ugly, over-saturated colors, flat
+    lighting, stiff posture
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217679287212475ed129591da48e074cf9db74a161503ff58b1e_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260109%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260109T031852Z&X-Tos-Expires=86400&X-Tos-Signature=fbf65f43ad8da8e4aadeff6b00e6ade3963b26514c4ecf05ce249ce7664025a4&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_8036d120
+  model: ep-20260107170506-p4w79
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1973686830
+  style: null
+  created_at: '2026-01-09T11:18:51.399180'
+- id: b79528a0
+  prompt: 16-year-old Disney 3D princess with golden curly hair tied in a pink satin
+    ribbon, large sparkling blue eyes, fair skin with subtle cheek blush, wearing
+    a pink ball gown with intricate rose embroidery on layered tulle skirt and fitted
+    bodice, small golden rose crown perched on her head, curious gentle expression
+    with a soft smile, holding a fresh pink rose bloom in her hand, standing in a
+    sunlit rose garden with blooming roses and lush green foliage, Disney 3D Animation
+    style, vibrant warm color palette, soft rounded character features, ultra-detailed
+    textures (gown embroidery, individual hair curls, polished gold crown accents),
+    soft natural golden hour lighting, sunlight filtering through leafy canopy, dreamy
+    whimsical atmosphere, high resolution, ultra-detailed, cinematic composition,
+    crisp textures, professional 3D rendering, smooth edges, realistic fabric sheen
+    and hair physics, sharp focus on character
+  negative_prompt: distorted facial features, low resolution, blurry, pixelated, flat
+    2D art, harsh lighting, unflattering shadows, messy hair, mismatched colors, extra
+    limbs, bad anatomy, ugly proportions, dull colors, cluttered background, non-Disney
+    3D style, rough textures, over-saturated hues, out of focus, cartoonish flat rendering,
+    jagged edges
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021767841563364ae767af4c69fa8400a91dada77a1314db0ac9d_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260108%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260108T030615Z&X-Tos-Expires=86400&X-Tos-Signature=17991975e189b8ec90291b0c6157d587267122c5d51ef85be8397877e9289d48&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_8036d120
+  model: ep-20260107170506-p4w79
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1406525459
+  style: null
+  created_at: '2026-01-08T11:06:15.485004'
+- id: 3356aabc
   prompt: 一只猫
   negative_prompt: blurry, low quality, distorted, deformed, ugly
-  image_url: https://dashscope-result-wlcb-acdr-1.oss-cn-wulanchabu-acdr-1.aliyuncs.com/1d/10/20260102/77c9ad12/658845d5-ca99-45c0-ae5a-6f45fc69ab734087597843.png?Expires=1767429524&OSSAccessKeyId=LTAI5tKPD3TMqf2Lna1fASuh&Signature=N%2FoWg0n1fWzz8e9PE4rlH%2BRhFvo%3D
-  provider: qwen-image
-  model: wanx2.1-t2i-turbo
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/02176777853822659df61006bd304ecb5213de71e9f0ab51c15ac_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260107%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260107T093546Z&X-Tos-Expires=86400&X-Tos-Signature=7b1ad15701c6367f22611e22a69d1cc7a1d5f71cc2045f54189d3cba1a8e0f01&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  provider: custom_8036d120
+  model: ep-20260107170506-p4w79
   width: 1024
   height: 576
   steps: 25
-  seed: 1305032470
-  style: null
-  created_at: '2026-01-02T16:38:47.331666'
-updated_at: '2026-01-02T18:24:46.101138'
+  seed: 1545869874
+  style: ''
+  created_at: '2026-01-07T17:35:45.571061'
+updated_at: '2026-01-09T14:03:11.125989'

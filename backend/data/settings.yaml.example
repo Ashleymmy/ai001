@@ -1,26 +1,40 @@
-# 配置文件示例
-# 复制此文件为 settings.yaml 并填入你的 API Key
+# 配置文件示例（不会包含真实 API Key）
+# 推荐用法：
+# 1) 复制为 `settings.local.yaml`（该文件已在 `.gitignore` 中忽略）
+# 2) 填入你的真实 `apiKey`，或改用环境变量：
+#    - LLM_API_KEY / IMAGE_API_KEY / STORYBOARD_API_KEY / VIDEO_API_KEY
+# 3) 后端启动时优先读取 `settings.local.yaml`，不存在则读取仓库自带的 `settings.yaml`
 
 llm:
-  provider: "doubao"  # 可选: openai, doubao, qwen, custom
-  api_key: "YOUR_API_KEY_HERE"
-  base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "doubao-seed-1-6-251015"
+  provider: custom_afb4c2b5
+  apiKey: "YOUR_API_KEY_HERE"
+  baseUrl: https://ark.cn-beijing.volces.com/api/v3
+  model: ep-20260109091420-trzc4
+  customProvider: doubao-seed-1-8-251228
 
 image:
-  provider: "custom_xxxxx"
-  api_key: "YOUR_API_KEY_HERE"
-  base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "your-model-endpoint"
+  provider: custom_8036d120
+  apiKey: "YOUR_API_KEY_HERE"
+  baseUrl: https://ark.cn-beijing.volces.com/api/v3
+  model: ep-20260107170506-p4w79
+  customProvider: seeddrame-4.5
 
-storyboard_image:
-  provider: "custom_xxxxx"
-  api_key: "YOUR_API_KEY_HERE"
-  base_url: "https://dashscope.aliyuncs.com/api/v1"
-  model: "wan2.6-i2v"
+storyboard:
+  provider: custom_a599e7d2
+  apiKey: "YOUR_API_KEY_HERE"
+  baseUrl: https://dashscope.aliyuncs.com/api/v1
+  model: wan2.6-i2v
+  customProvider: 通义万相
 
 video:
-  provider: "custom_xxxxx"
-  api_key: "YOUR_API_KEY_HERE"
-  base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "your-video-endpoint"
+  provider: custom_35d1bdd9
+  apiKey: "YOUR_API_KEY_HERE"
+  baseUrl: https://ark.cn-beijing.volces.com/api/v3
+  model: ep-20260107171231-8l7lx
+  customProvider: Doubao-Seedance-1.5-pro
+
+local:
+  enabled: false
+  comfyuiUrl: http://127.0.0.1:8188
+  sdWebuiUrl: http://127.0.0.1:7860
+  vramStrategy: auto

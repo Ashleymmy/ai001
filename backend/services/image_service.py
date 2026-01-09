@@ -5,7 +5,7 @@ import uuid
 import asyncio
 import base64
 import random
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import httpx
 
 
@@ -32,6 +32,7 @@ class ImageService:
         self,
         prompt: str,
         reference_image: Optional[str] = None,
+        reference_images: Optional[List[str]] = None,  # 支持多张参考图
         style: str = "cinematic",
         negative_prompt: str = "blurry, low quality, distorted, deformed, ugly",
         width: int = 1024,
@@ -39,9 +40,30 @@ class ImageService:
         steps: int = 25,
         seed: Optional[int] = None
     ) -> Dict[str, Any]:
-        """生成图像，返回包含 URL 和参数的字典"""
+        """生成图像，返回包含 URL 和参数的字典
+        
+        Args:
+            prompt: 文本提示词
+            reference_image: 单张参考图 URL
+            reference_images: 多张参考图 URL 列表（用于角色一致性）
+            style: 风格
+            negative_prompt: 负面提示词
+            width: 宽度
+            height: 高度
+            steps: 步数
+            seed: 随机种子
+        """
         actual_seed = seed if seed is not None else random.randint(0, 2147483647)
-        print(f"[Image] 生成请求: provider={self.provider}, prompt={prompt[:50]}..., size={width}x{height}, steps={steps}, seed={actual_seed}")
+        
+        # 合并参考图
+        all_ref_images = []
+        if reference_images:
+            all_ref_images.extend(reference_images)
+        if reference_image and reference_image not in all_ref_images:
+            all_ref_images.append(reference_image)
+        
+        ref_count = len(all_ref_images)
+        print(f"[Image] 生成请求: provider={self.provider}, prompt={prompt[:50]}..., size={width}x{height}, steps={steps}, seed={actual_seed}, ref_images={ref_count}")
         
         result = {
             "url": "",
@@ -68,7 +90,7 @@ class ImageService:
                 result["url"] = await self._call_flux(prompt, width, height)
             elif self.provider == "custom" or self.provider.startswith("custom_"):
                 # 自定义配置，使用通用的 OpenAI 兼容调用
-                result["url"] = await self._call_custom(prompt, negative_prompt, width, height)
+                result["url"] = await self._call_custom(prompt, negative_prompt, width, height, all_ref_images)
             else:
                 result["url"] = await self._call_openai_compatible(prompt, width, height)
         except Exception as e:
@@ -83,7 +105,7 @@ class ImageService:
             seed = abs(hash(prompt)) % 10000
         return f"https://picsum.photos/seed/{seed}/1024/576"
     
-    async def _call_custom(self, prompt: str, negative_prompt: str = "", width: int = 1024, height: int = 1024) -> str:
+    async def _call_custom(self, prompt: str, negative_prompt: str = "", width: int = 1024, height: int = 1024, reference_images: Optional[List[str]] = None) -> str:
         """调用自定义 API - 自动检测 API 格式"""
         if not self.api_key or not self.base_url:
             raise Exception("缺少 API Key 或 Base URL，请在设置中配置")
@@ -96,7 +118,7 @@ class ImageService:
         
         # 检测是否是火山引擎 API
         if 'volces.com' in base_url or 'ark.cn' in base_url:
-            return await self._call_volcengine_custom(prompt, width, height)
+            return await self._call_volcengine_custom(prompt, width, height, reference_images)
         
         # 默认尝试 OpenAI 兼容格式
         return await self._call_openai_format(prompt, width, height)
@@ -136,8 +158,8 @@ class ImageService:
             print(f"[DashScope] 错误: {e}")
             raise
     
-    async def _call_volcengine_custom(self, prompt: str, width: int = 1024, height: int = 1024) -> str:
-        """调用火山引擎（豆包）图像生成 API"""
+    async def _call_volcengine_custom(self, prompt: str, width: int = 1024, height: int = 1024, reference_images: Optional[List[str]] = None) -> str:
+        """调用火山引擎（豆包）图像生成 API，支持参考图"""
         async with httpx.AsyncClient(timeout=180.0) as client:
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
@@ -165,6 +187,15 @@ class ImageService:
                 "size": f"{width}x{height}",
                 "n": 1
             }
+            
+            # 添加参考图支持
+            if reference_images and len(reference_images) > 0:
+                # 过滤掉无效的 URL
+                valid_refs = [url for url in reference_images if url and url.startswith('http')]
+                if valid_refs:
+                    # 豆包支持最多 10 张参考图
+                    payload["image"] = valid_refs[:10]
+                    print(f"[Volcengine] 使用 {len(valid_refs)} 张参考图进行角色一致性生成")
             
             url = f"{self.base_url.rstrip('/')}/images/generations"
             print(f"[Volcengine] 调用: {url}, model={model}, size={width}x{height}")

@@ -638,9 +638,28 @@ class AgentExecutor:
                 
                 image_url = image_result.get("url")
                 
+                # 创建图片历史记录
+                image_record = {
+                    "id": f"img_{uuid.uuid4().hex[:8]}",
+                    "url": image_url,
+                    "created_at": datetime.utcnow().isoformat() + "Z",
+                    "is_favorite": False
+                }
+                
+                # 获取现有历史，将新图片插入到最前面
+                image_history = element.get("image_history", [])
+                image_history.insert(0, image_record)
+                
+                # 检查是否有收藏的图片
+                has_favorite = any(img.get("is_favorite") for img in image_history)
+                
                 # 更新元素
-                project.elements[element["id"]]["image_url"] = image_url
+                project.elements[element["id"]]["image_history"] = image_history
                 project.elements[element["id"]]["prompt"] = prompt
+                
+                # 如果没有收藏的图片，使用最新生成的
+                if not has_favorite:
+                    project.elements[element["id"]]["image_url"] = image_url
                 
                 # 添加到视觉资产
                 project.visual_assets.append({
@@ -654,7 +673,8 @@ class AgentExecutor:
                 result = {
                     "element_id": element["id"],
                     "status": "success",
-                    "image_url": image_url
+                    "image_url": image_url,
+                    "image_id": image_record["id"]
                 }
                 results.append(result)
                 
@@ -727,26 +747,52 @@ class AgentExecutor:
                 # 解析元素引用，构建完整提示词
                 prompt = shot.get("prompt", shot.get("description", ""))
                 
-                # 替换 [Element_XXX] 引用
+                # 替换 [Element_XXX] 引用，使用完整角色描述
                 resolved_prompt = self._resolve_element_references(prompt, project.elements)
                 
-                # 添加风格和质量关键词
-                full_prompt = f"{resolved_prompt}, {visual_style}, cinematic lighting, high quality, detailed"
+                # 收集镜头中涉及的角色参考图（使用收藏的图片）
+                reference_images = self._collect_element_reference_images(prompt, project.elements)
                 
-                # 生成图片
+                # 收集镜头中涉及的角色，构建角色一致性提示
+                character_consistency = self._build_character_consistency_prompt(prompt, project.elements)
+                
+                # 添加风格、角色一致性和质量关键词
+                full_prompt = f"{resolved_prompt}, {character_consistency}, {visual_style}, cinematic composition, consistent character design, same art style throughout, high quality, detailed"
+                
+                # 生成图片，传入角色参考图
                 image_result = await self.image_service.generate(
                     prompt=full_prompt,
-                    negative_prompt="blurry, low quality, distorted, deformed",
+                    reference_images=reference_images,  # 传入角色参考图
+                    negative_prompt="blurry, low quality, distorted, deformed, inconsistent character, different art style, multiple styles",
                     width=1280,
                     height=720
                 )
                 
                 image_url = image_result.get("url")
                 
+                # 创建图片历史记录
+                image_record = {
+                    "id": f"frame_{uuid.uuid4().hex[:8]}",
+                    "url": image_url,
+                    "created_at": datetime.utcnow().isoformat() + "Z",
+                    "is_favorite": False
+                }
+                
+                # 获取现有历史，将新图片插入到最前面
+                image_history = shot.get("start_image_history", [])
+                image_history.insert(0, image_record)
+                
+                # 检查是否有收藏的图片
+                has_favorite = any(img.get("is_favorite") for img in image_history)
+                
                 # 更新镜头
-                shot["start_image_url"] = image_url
+                shot["start_image_history"] = image_history
                 shot["resolved_prompt"] = resolved_prompt
                 shot["status"] = "frame_ready"
+                
+                # 如果没有收藏的图片，使用最新生成的
+                if not has_favorite:
+                    shot["start_image_url"] = image_url
                 
                 # 添加到视觉资产
                 project.visual_assets.append({
@@ -760,7 +806,8 @@ class AgentExecutor:
                 result = {
                     "shot_id": shot["id"],
                     "status": "success",
-                    "image_url": image_url
+                    "image_url": image_url,
+                    "image_id": image_record["id"]
                 }
                 results.append(result)
                 
@@ -791,6 +838,122 @@ class AgentExecutor:
             "results": results
         }
     
+    async def regenerate_single_frame(
+        self,
+        project: AgentProject,
+        shot_id: str,
+        visual_style: str = "吉卜力动画风格"
+    ) -> Dict[str, Any]:
+        """重新生成单个镜头的起始帧（带角色参考图）
+        
+        Args:
+            project: 项目对象
+            shot_id: 镜头ID
+            visual_style: 视觉风格
+        
+        Returns:
+            {success: bool, image_url: str, image_id: str, ...}
+        """
+        # 找到目标镜头
+        target_shot = None
+        target_segment = None
+        for segment in project.segments:
+            for shot in segment.get("shots", []):
+                if shot.get("id") == shot_id:
+                    target_shot = shot
+                    target_segment = segment
+                    break
+            if target_shot:
+                break
+        
+        if not target_shot:
+            return {"success": False, "error": "镜头不存在"}
+        
+        try:
+            # 解析元素引用，构建完整提示词
+            prompt = target_shot.get("prompt", target_shot.get("description", ""))
+            
+            # 替换 [Element_XXX] 引用，使用完整角色描述
+            resolved_prompt = self._resolve_element_references(prompt, project.elements)
+            
+            # 收集镜头中涉及的角色参考图（使用收藏的图片）
+            reference_images = self._collect_element_reference_images(prompt, project.elements)
+            
+            # 收集镜头中涉及的角色，构建角色一致性提示
+            character_consistency = self._build_character_consistency_prompt(prompt, project.elements)
+            
+            # 添加风格、角色一致性和质量关键词
+            full_prompt = f"{resolved_prompt}, {character_consistency}, {visual_style}, cinematic composition, consistent character design, same art style throughout, high quality, detailed"
+            
+            # 生成图片，传入角色参考图
+            image_result = await self.image_service.generate(
+                prompt=full_prompt,
+                reference_images=reference_images,  # 传入角色参考图
+                negative_prompt="blurry, low quality, distorted, deformed, inconsistent character, different art style, multiple styles",
+                width=1280,
+                height=720
+            )
+            
+            image_url = image_result.get("url")
+            
+            # 创建图片历史记录
+            image_record = {
+                "id": f"frame_{uuid.uuid4().hex[:8]}",
+                "url": image_url,
+                "created_at": datetime.utcnow().isoformat() + "Z",
+                "is_favorite": False
+            }
+            
+            # 获取现有历史
+            image_history = target_shot.get("start_image_history", [])
+            
+            # 如果历史为空但有旧图片，先把旧图片加入历史
+            if not image_history and target_shot.get("start_image_url"):
+                old_image_record = {
+                    "id": f"frame_old_{uuid.uuid4().hex[:8]}",
+                    "url": target_shot["start_image_url"],
+                    "created_at": target_shot.get("created_at", datetime.utcnow().isoformat() + "Z"),
+                    "is_favorite": False
+                }
+                image_history.append(old_image_record)
+            
+            # 将新图片插入到最前面
+            image_history.insert(0, image_record)
+            
+            # 检查是否有收藏的图片
+            has_favorite = any(img.get("is_favorite") for img in image_history)
+            
+            # 更新镜头
+            target_shot["start_image_history"] = image_history
+            target_shot["resolved_prompt"] = resolved_prompt
+            target_shot["status"] = "frame_ready"
+            
+            # 如果没有收藏的图片，使用最新生成的
+            if not has_favorite:
+                target_shot["start_image_url"] = image_url
+            
+            # 保存项目
+            self.storage.save_agent_project(project.to_dict())
+            
+            return {
+                "success": True,
+                "shot_id": shot_id,
+                "image_url": image_url,
+                "image_id": image_record["id"],
+                "start_image_url": target_shot["start_image_url"],
+                "start_image_history": image_history,
+                "reference_images_count": len(reference_images)
+            }
+            
+        except Exception as e:
+            target_shot["status"] = "frame_failed"
+            self.storage.save_agent_project(project.to_dict())
+            return {
+                "success": False,
+                "shot_id": shot_id,
+                "error": str(e)
+            }
+    
     async def generate_all_videos(
         self,
         project: AgentProject,
@@ -814,6 +977,9 @@ class AgentExecutor:
             for shot in segment.get("shots", []):
                 if shot.get("start_image_url"):
                     all_shots.append((segment["id"], shot))
+
+        # Track shots that already had videos before this run, so we can report counts correctly.
+        already_has_video_ids = {shot.get("id") for _, shot in all_shots if shot.get("video_url")}
         
         total = len(all_shots)
         generated = 0
@@ -902,8 +1068,16 @@ class AgentExecutor:
         # 轮询等待所有任务完成
         if pending_tasks and not self._cancelled:
             await self._poll_video_tasks(project, pending_tasks, on_progress)
-            generated = sum(1 for t in pending_tasks if t["shot"].get("video_url"))
-            failed += sum(1 for t in pending_tasks if t["shot"].get("status") == "video_failed")
+
+        # Recalculate counts after polling (pending_tasks may be empty by now).
+        generated = sum(
+            1 for _, shot in all_shots
+            if shot.get("video_url") and shot.get("id") not in already_has_video_ids
+        )
+        failed = sum(
+            1 for _, shot in all_shots
+            if shot.get("status") == "video_failed" and shot.get("id") not in already_has_video_ids
+        )
         
         # 保存项目
         self.storage.save_agent_project(project.to_dict())
@@ -960,7 +1134,7 @@ class AgentExecutor:
                                 "video_url": shot["video_url"]
                             })
                     
-                    elif status == "failed":
+                    elif status in ["failed", "error"]:
                         shot = task_info["shot"]
                         shot["status"] = "video_failed"
                         shot["error"] = result.get("error", "视频生成失败")
@@ -977,9 +1151,93 @@ class AgentExecutor:
             
             if pending_tasks:
                 await asyncio.sleep(poll_interval)
+
+    async def poll_project_video_tasks(self, project: AgentProject) -> Dict[str, Any]:
+        """Poll all pending video tasks in a project once and persist any completed results.
+
+        Keeps old assets for user selection; only updates shots that have a `video_task_id`
+        but no `video_url` yet.
+        """
+        checked = 0
+        completed = 0
+        failed = 0
+        processing = 0
+        updated: List[Dict[str, Any]] = []
+
+        for segment in project.segments:
+            for shot in segment.get("shots", []):
+                task_id = shot.get("video_task_id")
+                if not task_id:
+                    continue
+                if shot.get("video_url"):
+                    continue
+
+                checked += 1
+                try:
+                    result = await self.video_service.check_task_status(task_id)
+                except Exception as e:
+                    processing += 1
+                    updated.append({
+                        "shot_id": shot.get("id"),
+                        "task_id": task_id,
+                        "status": "error",
+                        "error": str(e)
+                    })
+                    continue
+
+                status = result.get("status")
+
+                if status in ["completed", "succeeded"] and result.get("video_url"):
+                    shot["video_url"] = result.get("video_url")
+                    shot["status"] = "video_ready"
+
+                    project.visual_assets.append({
+                        "id": f"video_{shot.get('id')}_{uuid.uuid4().hex[:8]}",
+                        "url": shot["video_url"],
+                        "type": "video",
+                        "shot_id": shot.get("id"),
+                        "duration": shot.get("duration")
+                    })
+
+                    completed += 1
+                    updated.append({
+                        "shot_id": shot.get("id"),
+                        "task_id": task_id,
+                        "status": "completed",
+                        "video_url": shot["video_url"]
+                    })
+
+                elif status in ["failed", "error"]:
+                    shot["status"] = "video_failed"
+                    shot["error"] = result.get("error", "视频生成失败")
+                    failed += 1
+                    updated.append({
+                        "shot_id": shot.get("id"),
+                        "task_id": task_id,
+                        "status": "failed",
+                        "error": shot.get("error")
+                    })
+                else:
+                    processing += 1
+                    updated.append({
+                        "shot_id": shot.get("id"),
+                        "task_id": task_id,
+                        "status": status or "processing",
+                        "progress": result.get("progress")
+                    })
+
+        self.storage.save_agent_project(project.to_dict())
+
+        return {
+            "checked": checked,
+            "completed": completed,
+            "failed": failed,
+            "processing": processing,
+            "updated": updated
+        }
     
     def _resolve_element_references(self, prompt: str, elements: Dict[str, Dict]) -> str:
-        """解析提示词中的元素引用"""
+        """解析提示词中的元素引用，使用完整描述确保角色一致性"""
         def replace_element(match):
             element_id = match.group(0)  # 完整匹配 [Element_XXX]
             element_key = match.group(1)  # XXX 部分
@@ -989,13 +1247,93 @@ class AgentExecutor:
             element = elements.get(full_id) or elements.get(element_id) or elements.get(element_key)
             
             if element:
-                # 如果元素有图片，使用简短描述；否则使用完整描述
-                if element.get("image_url"):
-                    return element.get("name", element_key)
-                return element.get("description", element_key)
+                # 始终使用完整描述以保持角色一致性
+                # 格式：角色名（详细描述）
+                name = element.get("name", element_key)
+                description = element.get("description", "")
+                if description:
+                    return f"{name} ({description})"
+                return name
             return match.group(0)
         
         return re.sub(r'\[Element_(\w+)\]', replace_element, prompt)
+    
+    def _build_character_consistency_prompt(self, prompt: str, elements: Dict[str, Dict]) -> str:
+        """构建角色一致性提示词
+        
+        提取镜头中涉及的角色，生成强调一致性的提示词
+        """
+        # 找出所有引用的元素
+        referenced_elements = []
+        for match in re.finditer(r'\[Element_(\w+)\]', prompt):
+            element_key = match.group(1)
+            full_id = f"Element_{element_key}"
+            element = elements.get(full_id) or elements.get(element_key)
+            if element and element.get("type") == "character":
+                referenced_elements.append(element)
+        
+        if not referenced_elements:
+            return ""
+        
+        # 构建角色一致性描述
+        consistency_parts = []
+        for elem in referenced_elements:
+            name = elem.get("name", "")
+            # 提取关键特征（发型、服装、颜色等）
+            desc = elem.get("description", "")
+            if name and desc:
+                # 提取关键词
+                key_features = []
+                # 发型相关
+                if "黑色" in desc or "black" in desc.lower():
+                    key_features.append("black hair")
+                if "棕色" in desc or "brown" in desc.lower():
+                    key_features.append("brown hair")
+                if "羊角辫" in desc or "pigtails" in desc.lower():
+                    key_features.append("pigtails")
+                if "长发" in desc or "long hair" in desc.lower():
+                    key_features.append("long hair")
+                if "卷发" in desc or "curly" in desc.lower():
+                    key_features.append("curly hair")
+                # 服装相关
+                if "黄色" in desc and ("裙" in desc or "dress" in desc.lower()):
+                    key_features.append("yellow dress")
+                if "围裙" in desc or "apron" in desc.lower():
+                    key_features.append("apron")
+                # 年龄相关
+                if "5岁" in desc or "幼儿" in desc:
+                    key_features.append("5-year-old child")
+                if "30岁" in desc:
+                    key_features.append("30-year-old woman")
+                
+                if key_features:
+                    consistency_parts.append(f"{name} with {', '.join(key_features)}")
+        
+        if consistency_parts:
+            return f"maintaining character consistency: {'; '.join(consistency_parts)}"
+        return ""
+    
+    def _collect_element_reference_images(self, prompt: str, elements: Dict[str, Dict]) -> List[str]:
+        """收集镜头中涉及的元素参考图
+        
+        提取镜头提示词中引用的所有元素的图片 URL，用于图文混合生成
+        """
+        reference_images = []
+        
+        # 找出所有引用的元素
+        for match in re.finditer(r'\[Element_(\w+)\]', prompt):
+            element_key = match.group(1)
+            full_id = f"Element_{element_key}"
+            element = elements.get(full_id) or elements.get(element_key)
+            
+            if element and element.get("image_url"):
+                image_url = element["image_url"]
+                # 确保是有效的 URL
+                if image_url and image_url.startswith('http') and image_url not in reference_images:
+                    reference_images.append(image_url)
+                    print(f"[AgentExecutor] 添加参考图: {element.get('name', element_key)} -> {image_url[:50]}...")
+        
+        return reference_images
     
     async def execute_full_pipeline(
         self,

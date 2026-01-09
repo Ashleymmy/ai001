@@ -572,7 +572,10 @@ export default function ImagePage() {
         </div>
 
         {/* 图像展示区 */}
-        <div className="flex-1 p-6 overflow-auto">
+        <div 
+          className="flex-1 p-6 overflow-y-auto"
+          style={{ overscrollBehavior: 'contain' }}
+        >
           {isLoading ? (
             <div className="flex flex-col items-center justify-center h-full text-gray-500 animate-fadeIn">
               <div className="w-16 h-16 rounded-2xl glass-card flex items-center justify-center mb-4 animate-pulse-glow">
@@ -819,7 +822,10 @@ function ImagePreviewModal({
             </button>
           </div>
           
-          <div className="flex-1 overflow-auto space-y-4">
+          <div 
+            className="flex-1 overflow-y-auto space-y-4"
+            style={{ overscrollBehavior: 'contain' }}
+          >
             {/* 提示词 */}
             <div>
               <label className="text-xs text-gray-500 block mb-1">提示词</label>

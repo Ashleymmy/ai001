@@ -15,7 +15,10 @@ SCRIPTS_DIR = os.path.join(DATA_DIR, "scripts")
 IMAGES_DIR = os.path.join(DATA_DIR, "images")
 CHAT_DIR = os.path.join(DATA_DIR, "chat")
 EXPORT_DIR = os.path.join(DATA_DIR, "exports")
-SETTINGS_FILE = os.path.join(DATA_DIR, "settings.yaml")
+SETTINGS_TEMPLATE_FILE = os.path.join(DATA_DIR, "settings.yaml")
+SETTINGS_LOCAL_FILE = os.path.join(DATA_DIR, "settings.local.yaml")
+CUSTOM_PROVIDERS_TEMPLATE_FILE = os.path.join(DATA_DIR, "custom_providers.yaml")
+CUSTOM_PROVIDERS_LOCAL_FILE = os.path.join(DATA_DIR, "custom_providers.local.yaml")
 
 # 确保目录存在
 for d in [DATA_DIR, PROJECTS_DIR, SCRIPTS_DIR, IMAGES_DIR, CHAT_DIR, EXPORT_DIR]:
@@ -52,19 +55,23 @@ class StorageService:
     def save_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         """保存设置"""
         settings['updated_at'] = _now()
-        _save_yaml(SETTINGS_FILE, settings)
+        _save_yaml(SETTINGS_LOCAL_FILE, settings)
         return settings
     
     def get_settings(self) -> Optional[Dict[str, Any]]:
         """获取设置"""
-        if os.path.exists(SETTINGS_FILE):
-            return _load_yaml(SETTINGS_FILE)
+        if os.path.exists(SETTINGS_LOCAL_FILE):
+            return _load_yaml(SETTINGS_LOCAL_FILE)
+        if os.path.exists(SETTINGS_TEMPLATE_FILE):
+            return _load_yaml(SETTINGS_TEMPLATE_FILE)
         return None
     
     # ==================== 自定义配置预设管理 ====================
     
     def _custom_providers_file(self) -> str:
-        return os.path.join(DATA_DIR, "custom_providers.yaml")
+        if os.path.exists(CUSTOM_PROVIDERS_LOCAL_FILE):
+            return CUSTOM_PROVIDERS_LOCAL_FILE
+        return CUSTOM_PROVIDERS_TEMPLATE_FILE
     
     def list_custom_providers(self, category: str = None) -> List[Dict[str, Any]]:
         """获取自定义配置列表

@@ -408,7 +408,10 @@ export default function VideoPage() {
         </div>
 
         {/* 任务列表 */}
-        <div className="flex-1 overflow-auto">
+        <div 
+          className="flex-1 overflow-y-auto"
+          style={{ overscrollBehavior: 'contain' }}
+        >
           {allTasks.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-gray-500 p-6">
               <div className="w-16 h-16 rounded-2xl glass-card flex items-center justify-center mb-4">
@@ -489,7 +492,10 @@ export default function VideoPage() {
         </div>
 
         {/* 预览区 */}
-        <div className="flex-1 p-6 flex flex-col overflow-auto">
+        <div 
+          className="flex-1 p-6 flex flex-col overflow-y-auto"
+          style={{ overscrollBehavior: 'contain' }}
+        >
           {selectedTask ? (
             <>
               {/* 视频/图片预览 */}

@@ -78,7 +78,7 @@ def load_saved_settings():
     elif img_config.get('provider') and img_config.get('provider') != 'placeholder':
         image_service = ImageService(
             provider=img_config.get('provider'),
-            api_key=img_config.get('apiKey', ''),
+            api_key=img_config.get('apiKey') or os.getenv("IMAGE_API_KEY", ""),
             base_url=img_config.get('baseUrl') or None,
             model=img_config.get('model') or None
         )
@@ -97,7 +97,7 @@ def load_saved_settings():
         else:
             storyboard_service = ImageService(
                 provider=sb_config.get('provider'),
-                api_key=sb_config.get('apiKey', ''),
+                api_key=sb_config.get('apiKey') or os.getenv("STORYBOARD_API_KEY", "") or os.getenv("IMAGE_API_KEY", ""),
                 base_url=sb_config.get('baseUrl') or None,
                 model=sb_config.get('model') or None
             )
@@ -108,7 +108,7 @@ def load_saved_settings():
     if video_config.get('provider') and video_config.get('provider') != 'none':
         video_service = VideoService(
             provider=video_config.get('provider'),
-            api_key=video_config.get('apiKey', ''),
+            api_key=video_config.get('apiKey') or os.getenv("VIDEO_API_KEY", ""),
             base_url=video_config.get('baseUrl') or None,
             model=video_config.get('model') or None
         )
@@ -416,6 +416,181 @@ async def upload_reference(file: UploadFile = File(...)):
         "dataUrl": f"data:{mime_type};base64,{base64_data}",
         "filename": file.filename
     }
+
+
+# 支持的文件类型
+ALLOWED_FILE_TYPES = {
+    # 图片
+    'image/jpeg': {'ext': '.jpg', 'category': 'image', 'max_size': 20 * 1024 * 1024},
+    'image/png': {'ext': '.png', 'category': 'image', 'max_size': 20 * 1024 * 1024},
+    'image/gif': {'ext': '.gif', 'category': 'image', 'max_size': 20 * 1024 * 1024},
+    'image/webp': {'ext': '.webp', 'category': 'image', 'max_size': 20 * 1024 * 1024},
+    # 文档
+    'application/pdf': {'ext': '.pdf', 'category': 'document', 'max_size': 50 * 1024 * 1024},
+    'text/plain': {'ext': '.txt', 'category': 'document', 'max_size': 10 * 1024 * 1024},
+    'text/markdown': {'ext': '.md', 'category': 'document', 'max_size': 10 * 1024 * 1024},
+    'application/msword': {'ext': '.doc', 'category': 'document', 'max_size': 50 * 1024 * 1024},
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': {'ext': '.docx', 'category': 'document', 'max_size': 50 * 1024 * 1024},
+    # 表格
+    'text/csv': {'ext': '.csv', 'category': 'spreadsheet', 'max_size': 30 * 1024 * 1024},
+    'application/vnd.ms-excel': {'ext': '.xls', 'category': 'spreadsheet', 'max_size': 30 * 1024 * 1024},
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': {'ext': '.xlsx', 'category': 'spreadsheet', 'max_size': 30 * 1024 * 1024},
+    # 代码
+    'application/json': {'ext': '.json', 'category': 'code', 'max_size': 10 * 1024 * 1024},
+    'text/html': {'ext': '.html', 'category': 'code', 'max_size': 10 * 1024 * 1024},
+    'text/css': {'ext': '.css', 'category': 'code', 'max_size': 10 * 1024 * 1024},
+    'text/javascript': {'ext': '.js', 'category': 'code', 'max_size': 10 * 1024 * 1024},
+    'application/xml': {'ext': '.xml', 'category': 'code', 'max_size': 10 * 1024 * 1024},
+    # 视频
+    'video/mp4': {'ext': '.mp4', 'category': 'video', 'max_size': 100 * 1024 * 1024},
+    'video/webm': {'ext': '.webm', 'category': 'video', 'max_size': 100 * 1024 * 1024},
+    'video/quicktime': {'ext': '.mov', 'category': 'video', 'max_size': 100 * 1024 * 1024},
+    # 音频
+    'audio/mpeg': {'ext': '.mp3', 'category': 'audio', 'max_size': 25 * 1024 * 1024},
+    'audio/wav': {'ext': '.wav', 'category': 'audio', 'max_size': 25 * 1024 * 1024},
+    'audio/mp4': {'ext': '.m4a', 'category': 'audio', 'max_size': 25 * 1024 * 1024},
+    'audio/ogg': {'ext': '.ogg', 'category': 'audio', 'max_size': 25 * 1024 * 1024},
+}
+
+# 上传文件目录
+UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+@app.post("/api/upload")
+async def upload_file(file: UploadFile = File(...)):
+    """通用文件上传接口"""
+    import time
+    
+    # 检查文件类型
+    content_type = file.content_type or 'application/octet-stream'
+    
+    # 根据扩展名推断类型
+    ext = os.path.splitext(file.filename or '')[1].lower()
+    category = 'unknown'
+    max_size = 10 * 1024 * 1024  # 默认 10MB
+    
+    if content_type in ALLOWED_FILE_TYPES:
+        file_config = ALLOWED_FILE_TYPES[content_type]
+        category = file_config['category']
+        max_size = file_config['max_size']
+    elif content_type.startswith('image/'):
+        category = 'image'
+        max_size = 20 * 1024 * 1024
+    elif content_type.startswith('video/'):
+        category = 'video'
+        max_size = 100 * 1024 * 1024
+    elif content_type.startswith('audio/'):
+        category = 'audio'
+        max_size = 25 * 1024 * 1024
+    elif content_type.startswith('text/') or ext in ['.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.cpp', '.c', '.go', '.rs', '.sql', '.yaml', '.yml']:
+        category = 'code'
+        max_size = 10 * 1024 * 1024
+    
+    # 读取文件内容
+    content = await file.read()
+    file_size = len(content)
+    
+    # 检查文件大小
+    if file_size > max_size:
+        raise HTTPException(status_code=400, detail=f"文件过大，最大允许 {max_size // 1024 // 1024}MB")
+    
+    # 生成唯一文件名
+    timestamp = int(time.time() * 1000)
+    safe_filename = f"{timestamp}_{file.filename}"
+    
+    # 按类别创建子目录
+    category_dir = os.path.join(UPLOAD_DIR, category)
+    os.makedirs(category_dir, exist_ok=True)
+    
+    # 保存文件
+    file_path = os.path.join(category_dir, safe_filename)
+    with open(file_path, 'wb') as f:
+        f.write(content)
+    
+    # 生成访问 URL
+    file_url = f"/api/uploads/{category}/{safe_filename}"
+    
+    # 对于图片，也返回 base64 预览
+    preview_url = None
+    if category == 'image':
+        base64_data = base64.b64encode(content).decode("utf-8")
+        preview_url = f"data:{content_type};base64,{base64_data}"
+    
+    # 对于文本文件，返回内容
+    text_content = None
+    if category in ['code', 'document'] and file_size < 1024 * 1024:  # 小于 1MB 的文本文件
+        try:
+            text_content = content.decode('utf-8')
+        except:
+            pass
+    
+    # 解析 Word 文档 (.docx)
+    if ext == '.docx' and text_content is None:
+        try:
+            from docx import Document
+            from io import BytesIO
+            doc = Document(BytesIO(content))
+            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+            text_content = '\n'.join(paragraphs)
+            print(f"[Upload] 解析 Word 文档成功，提取 {len(paragraphs)} 段落")
+        except Exception as e:
+            print(f"[Upload] 解析 Word 文档失败: {e}")
+    
+    # 解析 PDF 文档
+    if ext == '.pdf' and text_content is None:
+        try:
+            from PyPDF2 import PdfReader
+            from io import BytesIO
+            reader = PdfReader(BytesIO(content))
+            pages_text = []
+            for page in reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    pages_text.append(page_text)
+            text_content = '\n\n'.join(pages_text)
+            print(f"[Upload] 解析 PDF 文档成功，提取 {len(reader.pages)} 页")
+        except Exception as e:
+            print(f"[Upload] 解析 PDF 文档失败: {e}")
+    
+    print(f"[Upload] 文件已上传: {file.filename} -> {file_path} ({file_size} bytes, {category})")
+    
+    return {
+        "success": True,
+        "file": {
+            "id": f"upload_{timestamp}",
+            "name": file.filename,
+            "size": file_size,
+            "type": content_type,
+            "category": category,
+            "url": file_url,
+            "previewUrl": preview_url,
+            "content": text_content
+        }
+    }
+
+
+@app.get("/api/uploads/{category}/{filename}")
+async def get_uploaded_file(category: str, filename: str):
+    """获取上传的文件"""
+    file_path = os.path.join(UPLOAD_DIR, category, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="文件不存在")
+    
+    # 根据扩展名确定 MIME 类型
+    ext = os.path.splitext(filename)[1].lower()
+    mime_types = {
+        '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+        '.gif': 'image/gif', '.webp': 'image/webp',
+        '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+        '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4',
+        '.pdf': 'application/pdf', '.txt': 'text/plain', '.md': 'text/markdown',
+        '.json': 'application/json', '.xml': 'application/xml',
+        '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript',
+    }
+    media_type = mime_types.get(ext, 'application/octet-stream')
+    
+    return FileResponse(file_path, media_type=media_type)
 
 
 class GenerateImageRequest(BaseModel):
@@ -882,6 +1057,38 @@ async def export_all_data(include_images: bool = True):
     """导出所有数据"""
     export_path = storage.export_all(include_images)
     return {"path": export_path, "filename": os.path.basename(export_path)}
+
+
+@app.get("/api/proxy/download")
+async def proxy_download(url: str):
+    """代理下载远程文件（解决 CORS 问题）"""
+    import httpx
+    from fastapi.responses import Response
+    
+    print(f"[Proxy] 下载文件: {url[:100]}...")
+    
+    try:
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            response = await client.get(url)
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code, detail="下载失败")
+            
+            # 获取内容类型
+            content_type = response.headers.get('content-type', 'application/octet-stream')
+            
+            print(f"[Proxy] 下载成功, 大小: {len(response.content)}, 类型: {content_type}")
+            
+            return Response(
+                content=response.content,
+                media_type=content_type,
+                headers={
+                    "Content-Disposition": "attachment"
+                }
+            )
+    except Exception as e:
+        print(f"[Proxy] 下载失败: {e}")
+        raise HTTPException(status_code=500, detail=f"下载失败: {str(e)}")
 
 
 @app.get("/api/export/download/{filename}")
@@ -1353,6 +1560,96 @@ async def add_agent_shot(project_id: str, request: AgentShotRequest):
     return shot
 
 
+# ========== 图片收藏 API ==========
+
+class FavoriteImageRequest(BaseModel):
+    imageId: str
+
+
+@app.post("/api/agent/projects/{project_id}/elements/{element_id}/favorite")
+async def favorite_element_image(project_id: str, element_id: str, request: FavoriteImageRequest):
+    """收藏元素图片 - 将指定图片设为当前使用的图片"""
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    project = AgentProject.from_dict(project_data)
+    element = project.elements.get(element_id)
+    if not element:
+        raise HTTPException(status_code=404, detail="元素不存在")
+    
+    # 获取图片历史
+    image_history = element.get("image_history", [])
+    
+    # 找到要收藏的图片
+    target_image = None
+    for img in image_history:
+        if img.get("id") == request.imageId:
+            target_image = img
+            img["is_favorite"] = True
+        else:
+            img["is_favorite"] = False
+    
+    if not target_image:
+        raise HTTPException(status_code=404, detail="图片不存在")
+    
+    # 更新当前使用的图片
+    element["image_url"] = target_image["url"]
+    element["image_history"] = image_history
+    
+    # 保存项目
+    storage.save_agent_project(project.to_dict())
+    
+    return {"success": True, "element": element}
+
+
+@app.post("/api/agent/projects/{project_id}/shots/{shot_id}/favorite")
+async def favorite_shot_image(project_id: str, shot_id: str, request: FavoriteImageRequest):
+    """收藏镜头起始帧 - 将指定图片设为当前使用的起始帧"""
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    project = AgentProject.from_dict(project_data)
+    
+    # 在所有段落中查找镜头
+    target_shot = None
+    for segment in project.segments:
+        for shot in segment.get("shots", []):
+            if shot.get("id") == shot_id:
+                target_shot = shot
+                break
+        if target_shot:
+            break
+    
+    if not target_shot:
+        raise HTTPException(status_code=404, detail="镜头不存在")
+    
+    # 获取图片历史
+    image_history = target_shot.get("start_image_history", [])
+    
+    # 找到要收藏的图片
+    target_image = None
+    for img in image_history:
+        if img.get("id") == request.imageId:
+            target_image = img
+            img["is_favorite"] = True
+        else:
+            img["is_favorite"] = False
+    
+    if not target_image:
+        raise HTTPException(status_code=404, detail="图片不存在")
+    
+    # 更新当前使用的起始帧
+    target_shot["start_image_url"] = target_image["url"]
+    target_shot["start_image_history"] = image_history
+    
+    # 保存项目
+    storage.save_agent_project(project.to_dict())
+    
+    return {"success": True}
+
+
 # ========== Agent 批量生成 API ==========
 
 class GenerateElementsRequest(BaseModel):
@@ -1382,6 +1679,11 @@ def get_agent_executor() -> AgentExecutor:
     )
 
 
+from fastapi.responses import FileResponse, StreamingResponse
+import json
+import asyncio
+
+
 @app.post("/api/agent/projects/{project_id}/generate-elements")
 async def generate_project_elements(project_id: str, request: GenerateElementsRequest):
     """批量生成项目的所有元素图片
@@ -1398,6 +1700,142 @@ async def generate_project_elements(project_id: str, request: GenerateElementsRe
     try:
         result = await executor.generate_all_elements(
             project,
+            visual_style=request.visualStyle
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成失败: {str(e)}")
+
+
+@app.get("/api/agent/projects/{project_id}/generate-elements-stream")
+async def generate_project_elements_stream(project_id: str, visualStyle: str = "吉卜力动画风格"):
+    """流式生成项目的所有元素图片 (SSE)
+    
+    每生成一张图片就推送一次进度
+    """
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    project = AgentProject.from_dict(project_data)
+    executor = get_agent_executor()
+    
+    async def event_generator():
+        elements = list(project.elements.values())
+        total = len(elements)
+        generated = 0
+        failed = 0
+        
+        # 发送开始事件
+        yield f"data: {json.dumps({'type': 'start', 'total': total})}\n\n"
+        
+        for i, element in enumerate(elements):
+            # 跳过已有图片的元素
+            if element.get("image_url"):
+                yield f"data: {json.dumps({'type': 'skip', 'element_id': element['id'], 'current': i + 1, 'total': total})}\n\n"
+                continue
+            
+            try:
+                # 发送生成中事件
+                yield f"data: {json.dumps({'type': 'generating', 'element_id': element['id'], 'element_name': element['name'], 'current': i + 1, 'total': total})}\n\n"
+                
+                # 生成优化的提示词
+                prompt_result = await executor.agent.generate_element_prompt(
+                    element["name"],
+                    element["type"],
+                    element["description"],
+                    visualStyle
+                )
+                
+                if not prompt_result.get("success"):
+                    prompt = f"{element['description']}, {visualStyle}, high quality, detailed"
+                    negative_prompt = "blurry, low quality, distorted"
+                else:
+                    prompt = prompt_result.get("prompt", element["description"])
+                    negative_prompt = prompt_result.get("negative_prompt", "blurry, low quality")
+                
+                # 生成图片
+                image_result = await executor.image_service.generate(
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    width=1024,
+                    height=1024
+                )
+                
+                image_url = image_result.get("url")
+                
+                # 更新元素
+                project.elements[element["id"]]["image_url"] = image_url
+                project.elements[element["id"]]["prompt"] = prompt
+                
+                # 添加到视觉资产
+                project.visual_assets.append({
+                    "id": f"asset_{element['id']}",
+                    "url": image_url,
+                    "type": "element",
+                    "element_id": element["id"]
+                })
+                
+                # 保存项目（每生成一张就保存）
+                storage.save_agent_project(project.to_dict())
+                
+                generated += 1
+                
+                # 发送完成事件
+                yield f"data: {json.dumps({'type': 'complete', 'element_id': element['id'], 'image_url': image_url, 'current': i + 1, 'total': total, 'generated': generated})}\n\n"
+                
+            except Exception as e:
+                failed += 1
+                yield f"data: {json.dumps({'type': 'error', 'element_id': element['id'], 'error': str(e), 'current': i + 1, 'total': total})}\n\n"
+        
+        # 发送结束事件
+        yield f"data: {json.dumps({'type': 'done', 'generated': generated, 'failed': failed, 'total': total})}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+class RegenerateShotFrameRequest(BaseModel):
+    visualStyle: str = "吉卜力动画风格"
+
+
+@app.post("/api/agent/projects/{project_id}/shots/{shot_id}/regenerate-frame")
+async def regenerate_shot_frame(project_id: str, shot_id: str, request: RegenerateShotFrameRequest):
+    """重新生成单个镜头的起始帧（带角色参考图）"""
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    project = AgentProject.from_dict(project_data)
+    executor = get_agent_executor()
+    
+    # 找到目标镜头
+    target_shot = None
+    target_segment = None
+    for segment in project.segments:
+        for shot in segment.get("shots", []):
+            if shot.get("id") == shot_id:
+                target_shot = shot
+                target_segment = segment
+                break
+        if target_shot:
+            break
+    
+    if not target_shot:
+        raise HTTPException(status_code=404, detail="镜头不存在")
+    
+    try:
+        # 使用 agent_service 的方法生成单个起始帧
+        result = await executor.regenerate_single_frame(
+            project,
+            shot_id,
             visual_style=request.visualStyle
         )
         return result
@@ -1449,6 +1887,23 @@ async def generate_project_videos(project_id: str, request: GenerateVideosReques
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"生成失败: {str(e)}")
+
+
+@app.post("/api/agent/projects/{project_id}/poll-video-tasks")
+async def poll_project_video_tasks(project_id: str):
+    """Poll pending video tasks for a project once and persist any completed results."""
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project = AgentProject.from_dict(project_data)
+    executor = get_agent_executor()
+
+    try:
+        result = await executor.poll_project_video_tasks(project)
+        return {"success": True, **result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Poll failed: {str(e)}")
 
 
 @app.post("/api/agent/projects/{project_id}/execute-pipeline")

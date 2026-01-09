@@ -903,7 +903,10 @@ function NodeComponent({
 
         {/* 文本/剧本内容显示 */}
         {(node.type === 'text' || node.type === 'script') && node.status === 'done' && node.content && (
-          <div className="text-sm text-gray-300 mb-3 max-h-32 overflow-auto whitespace-pre-wrap bg-white/5 rounded-lg p-2">
+          <div 
+            className="text-sm text-gray-300 mb-3 max-h-32 overflow-y-auto whitespace-pre-wrap bg-white/5 rounded-lg p-2"
+            style={{ overscrollBehavior: 'contain' }}
+          >
             {node.content}
           </div>
         )}

@@ -7,6 +7,9 @@ import zipfile
 import subprocess
 import tempfile
 import shutil
+import base64
+import re
+import urllib.parse
 from typing import Dict, Any, List, Optional
 import httpx
 import asyncio
@@ -38,10 +41,29 @@ class ExportService:
         
         # 创建临时目录
         temp_dir = tempfile.mkdtemp()
-        project_dir = os.path.join(temp_dir, project_name)
+        safe_project_name = str(project_name or "").strip() or str(project_id)
+        safe_project_name = safe_project_name.replace("\n", " ").replace("\r", " ")
+        safe_project_name = re.sub(r'[\\\\/:*?"<>|]+', "_", safe_project_name)[:120]
+        project_dir = os.path.join(temp_dir, safe_project_name)
         os.makedirs(project_dir, exist_ok=True)
         
         try:
+            def sanitize_filename(name: str, fallback: str = "unnamed") -> str:
+                value = str(name or "").strip() or fallback
+                value = value.replace("\n", " ").replace("\r", " ")
+                value = re.sub(r'[\\\\/:*?"<>|]+', "_", value)
+                return value[:120]
+
+            def infer_ext(url: str, default_ext: str) -> str:
+                try:
+                    path = urllib.parse.urlparse(url).path
+                    ext = os.path.splitext(path)[1].lower()
+                    if ext and len(ext) <= 5:
+                        return ext
+                except Exception:
+                    pass
+                return default_ext
+
             # 创建分类目录
             elements_dir = os.path.join(project_dir, "1_角色元素")
             frames_dir = os.path.join(project_dir, "2_镜头起始帧")
@@ -52,13 +74,26 @@ class ExportService:
             
             # 下载角色元素图片
             element_count = 0
+            failed_count = 0
+            failed_records: List[Dict[str, str]] = []
             for elem_id, elem in elements.items():
                 if elem.get('image_url'):
-                    filename = f"{elem.get('name', elem_id)}.png"
+                    safe_name = sanitize_filename(elem.get('name', elem_id), fallback=str(elem_id))
+                    filename = f"{safe_name}{infer_ext(elem['image_url'], '.png')}"
                     filepath = os.path.join(elements_dir, filename)
-                    await self._download_file(elem['image_url'], filepath)
-                    element_count += 1
-                    print(f"[ExportService] 已下载角色: {filename}")
+                    try:
+                        await self._download_file(elem['image_url'], filepath)
+                        element_count += 1
+                        print(f"[ExportService] 已下载角色: {filename}")
+                    except Exception as e:
+                        failed_count += 1
+                        failed_records.append({
+                            "type": "element",
+                            "name": str(elem.get("name") or elem_id),
+                            "url": str(elem.get("image_url") or ""),
+                            "error": str(e),
+                        })
+                        print(f"[ExportService] 角色下载失败: {filename} ({e})")
             
             # 下载镜头起始帧和视频
             frame_count = 0
@@ -66,22 +101,46 @@ class ExportService:
             for seg in segments:
                 for shot in seg.get('shots', []):
                     shot_name = shot.get('name', shot.get('id', 'unknown'))
+                    safe_shot_name = sanitize_filename(shot_name, fallback=str(shot.get('id', 'unknown')))
+                    shot_id = str(shot.get('id') or "")
+                    unique_suffix = f"_{shot_id}" if shot_id and shot_id not in safe_shot_name else ""
                     
                     # 起始帧
-                    if shot.get('start_frame_url'):
-                        filename = f"{shot_name}_frame.png"
+                    start_frame_url = shot.get('start_image_url') or shot.get('start_frame_url')
+                    if start_frame_url:
+                        filename = f"{safe_shot_name}{unique_suffix}_frame{infer_ext(start_frame_url, '.png')}"
                         filepath = os.path.join(frames_dir, filename)
-                        await self._download_file(shot['start_frame_url'], filepath)
-                        frame_count += 1
-                        print(f"[ExportService] 已下载起始帧: {filename}")
+                        try:
+                            await self._download_file(start_frame_url, filepath)
+                            frame_count += 1
+                            print(f"[ExportService] 已下载起始帧: {filename}")
+                        except Exception as e:
+                            failed_count += 1
+                            failed_records.append({
+                                "type": "start_frame",
+                                "name": str(shot.get("name") or shot.get("id") or "unknown"),
+                                "url": str(start_frame_url),
+                                "error": str(e),
+                            })
+                            print(f"[ExportService] 起始帧下载失败: {filename} ({e})")
                     
                     # 视频
                     if shot.get('video_url'):
-                        filename = f"{shot_name}.mp4"
+                        filename = f"{safe_shot_name}{unique_suffix}{infer_ext(shot['video_url'], '.mp4')}"
                         filepath = os.path.join(videos_dir, filename)
-                        await self._download_file(shot['video_url'], filepath)
-                        video_count += 1
-                        print(f"[ExportService] 已下载视频: {filename}")
+                        try:
+                            await self._download_file(shot['video_url'], filepath)
+                            video_count += 1
+                            print(f"[ExportService] 已下载视频: {filename}")
+                        except Exception as e:
+                            failed_count += 1
+                            failed_records.append({
+                                "type": "video",
+                                "name": str(shot.get("name") or shot.get("id") or "unknown"),
+                                "url": str(shot.get("video_url") or ""),
+                                "error": str(e),
+                            })
+                            print(f"[ExportService] 视频下载失败: {filename} ({e})")
             
             # 创建项目信息文件
             info_file = os.path.join(project_dir, "项目信息.txt")
@@ -92,6 +151,7 @@ class ExportService:
                 f.write(f"角色元素: {element_count} 个\n")
                 f.write(f"镜头起始帧: {frame_count} 个\n")
                 f.write(f"视频片段: {video_count} 个\n")
+                f.write(f"下载失败: {failed_count} 个\n")
                 f.write(f"\n=== 分镜列表 ===\n")
                 for i, seg in enumerate(segments, 1):
                     f.write(f"\n段落 {i}: {seg.get('name', 'Unnamed')}\n")
@@ -100,9 +160,18 @@ class ExportService:
                         f.write(f"  镜头 {j}: {shot.get('name', 'Unnamed')}\n")
                         f.write(f"    时长: {shot.get('duration', 5)}秒\n")
                         f.write(f"    描述: {shot.get('description', 'N/A')}\n")
+
+            if failed_records:
+                failed_file = os.path.join(project_dir, "导出失败列表.txt")
+                with open(failed_file, "w", encoding="utf-8") as f:
+                    f.write("以下素材下载失败（可能是链接过期/跨域/网络问题），请在项目内重新生成或替换后再导出。\n\n")
+                    for rec in failed_records:
+                        f.write(f"[{rec.get('type')}] {rec.get('name')}\n")
+                        f.write(f"URL: {rec.get('url')}\n")
+                        f.write(f"错误: {rec.get('error')}\n\n")
             
             # 打包成 ZIP
-            zip_filename = f"{project_name}_{project_id}.zip"
+            zip_filename = f"{safe_project_name}_{project_id}.zip"
             zip_path = os.path.join(self.output_dir, zip_filename)
             
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -233,30 +302,81 @@ class ExportService:
             # 清理临时目录
             shutil.rmtree(temp_dir, ignore_errors=True)
     
+    def _resolve_local_path(self, url: str) -> Optional[str]:
+        parsed = urllib.parse.urlparse(url)
+        path = urllib.parse.unquote(parsed.path or "")
+
+        base_dir = os.path.dirname(os.path.dirname(__file__))
+
+        # file:// URLs
+        if parsed.scheme == "file":
+            file_path = path
+            if os.name == "nt" and file_path.startswith("/") and len(file_path) >= 3 and file_path[2] == ":":
+                file_path = file_path[1:]
+            return file_path
+
+        is_local_http = parsed.scheme in ("http", "https") and (parsed.hostname in ("localhost", "127.0.0.1"))
+        is_local_path = parsed.scheme == "" and path.startswith("/api/")
+        if not (is_local_http or is_local_path):
+            return None
+
+        if path.startswith("/api/images/ref/"):
+            filename = path[len("/api/images/ref/"):]
+            filename = os.path.basename(filename)
+            return os.path.join(base_dir, "data", "images", filename)
+
+        if path.startswith("/api/videos/ref/"):
+            filename = path[len("/api/videos/ref/"):]
+            filename = os.path.basename(filename)
+            return os.path.join(base_dir, "data", "videos", filename)
+
+        if path.startswith("/api/uploads/"):
+            rest = path[len("/api/uploads/"):].replace("/", os.sep)
+            rest = os.path.normpath(rest).lstrip("\\/")
+            candidate = os.path.abspath(os.path.join(base_dir, "uploads", rest))
+            uploads_root = os.path.abspath(os.path.join(base_dir, "uploads"))
+            if candidate.startswith(uploads_root + os.sep) or candidate == uploads_root:
+                return candidate
+            return None
+
+        if path.startswith("/api/"):
+            rest = path[len("/api/"):].replace("/", os.sep)
+            rest = os.path.normpath(rest).lstrip("\\/")
+            candidate = os.path.abspath(os.path.join(base_dir, "data", rest))
+            data_root = os.path.abspath(os.path.join(base_dir, "data"))
+            if candidate.startswith(data_root + os.sep) or candidate == data_root:
+                return candidate
+
+        return None
+
     async def _download_file(self, url: str, filepath: str):
         """下载文件"""
-        # 如果是本地文件，直接复制
-        if url.startswith('http://localhost') or url.startswith('http://127.0.0.1'):
-            # 从 URL 提取本地路径
-            import urllib.parse
-            parsed = urllib.parse.urlparse(url)
-            local_path = os.path.join(
-                os.path.dirname(os.path.dirname(__file__)),
-                'data',
-                parsed.path.lstrip('/api/')
-            )
-            if os.path.exists(local_path):
-                shutil.copy2(local_path, filepath)
-                return
+        # data: URL（base64）
+        if url.startswith("data:"):
+            try:
+                header, data = url.split(",", 1)
+                if ";base64" in header:
+                    raw = base64.b64decode(data)
+                    with open(filepath, "wb") as f:
+                        f.write(raw)
+                    return
+            except Exception:
+                pass
+
+        # 如果是本地 URL，直接复制文件，避免走 http
+        local_path = self._resolve_local_path(url)
+        if local_path and os.path.exists(local_path):
+            shutil.copy2(local_path, filepath)
+            return
         
         # 下载远程文件
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(url)
-            if response.status_code == 200:
-                with open(filepath, 'wb') as f:
-                    f.write(response.content)
-            else:
-                raise Exception(f"下载失败: {url} (status: {response.status_code})")
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            async with client.stream("GET", url) as response:
+                if response.status_code != 200:
+                    raise Exception(f"下载失败: {url} (status: {response.status_code})")
+                with open(filepath, "wb") as f:
+                    async for chunk in response.aiter_bytes():
+                        f.write(chunk)
     
     def _check_ffmpeg(self) -> bool:
         """检查 FFmpeg 是否可用"""

@@ -1,6 +1,6 @@
 {
   "name": "ai-storyboarder",
-  "version": "0.1.0-beta.1",
+  "version": "1.0.0-beta",
   "description": "AI 视频分镜制作助手",
   "author": "AI Storyboarder Team",
   "main": "electron/main.js",
@@ -26,6 +26,7 @@
     "zustand": "^4.4.7"
   },
   "devDependencies": {
+    "@types/file-saver": "^2.0.7",
     "@types/react": "^18.2.43",
     "@types/react-dom": "^18.2.17",
     "@vitejs/plugin-react": "^4.2.1",

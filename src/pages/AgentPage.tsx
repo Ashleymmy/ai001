@@ -1,26 +1,42 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
+import { saveAs } from 'file-saver'
 import { 
   Sparkles, Layers, Film, Clock, ChevronDown, ChevronRight,
   Plus, RotateCcw, Image as ImageIcon,
   Play, Pause, SkipBack, SkipForward, Maximize2, Bot, ChevronLeft, Save,
   Wand2, Loader2, Trash2, Edit3, Check, Zap, CheckCircle, AlertCircle,
-  FileText, Music, Mic, Volume2, Settings2, Eye, Download, Package
+  FileText, Music, Mic, Volume2, Settings2, Eye, Download, Package, Star
 } from 'lucide-react'
 import { 
   agentChat, agentPlanProject, agentGenerateElementPrompt,
   createAgentProject, getAgentProject, updateAgentProject, listAgentProjects,
   generateImage, generateVideo, checkVideoTaskStatus,
-  generateProjectElements, generateProjectFrames,
+  generateProjectElements, generateProjectFrames, generateProjectElementsStream,
   generateProjectVideos, executeProjectPipeline,
+  pollProjectVideoTasks,
   exportProjectAssets, exportMergedVideo,
+  favoriteElementImage, favoriteShotImage, regenerateShotFrame,
   type AgentProject, type AgentElement, type AgentSegment, type AgentShot
 } from '../services/api'
-import ChatInput from '../components/ChatInput'
+import ChatInput, { UploadedFile } from '../components/ChatInput'
 
 type ModuleType = 'elements' | 'storyboard' | 'timeline'
 type GenerationStage = 'idle' | 'planning' | 'elements' | 'frames' | 'videos' | 'audio' | 'complete'
 type TaskCardType = 'brief' | 'storyboard' | 'visual' | 'genPath' | 'narration' | 'music' | 'timeline'
+
+type ExportDialogPhase = 'packing' | 'downloading' | 'saving' | 'done' | 'error' | 'canceled'
+type ExportToastMode = 'floating' | 'pinned' | 'completed'
+
+interface ExportDialogState {
+  open: boolean
+  mode: ExportToastMode
+  phase: ExportDialogPhase
+  loaded: number
+  total?: number
+  percent?: number
+  error?: string
+}
 
 interface ChatMessage {
   id: string
@@ -50,6 +66,8 @@ interface VisualAsset {
   url: string
   duration?: string
   type: 'element' | 'start_frame' | 'video'
+  elementId?: string
+  shotId?: string
   status?: 'pending' | 'generating' | 'completed' | 'failed'
 }
 
@@ -97,12 +115,16 @@ export default function AgentPage() {
   const [visualAssets, setVisualAssets] = useState<VisualAsset[]>([])
   const [audioAssets, setAudioAssets] = useState<AudioAsset[]>([])
   const [creativeBrief, setCreativeBrief] = useState<CreativeBrief>({})
+  const shouldPollVideos = !!projectId && segments.some(seg => seg.shots?.some(shot => shot.status === 'video_processing' && !shot.video_url))
 
   // 生成状态
   const [generationStage, setGenerationStage] = useState<GenerationStage>('idle')
   
   // 任务卡片展开状态
   const [expandedCards, setExpandedCards] = useState<Set<TaskCardType>>(new Set(['brief']))
+
+  // 图片预览状态
+  const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null)
 
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -143,9 +165,61 @@ export default function AgentPage() {
   const [retryingShot, setRetryingShot] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
   const [showExportMenu, setShowExportMenu] = useState(false)
+  const exportAbortControllerRef = useRef<AbortController | null>(null)
+  const exportToastAutoPinTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const exportToastHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [exportToastEntered, setExportToastEntered] = useState(false)
+  const [viewportWidth, setViewportWidth] = useState<number>(() => window.innerWidth)
+  const [exportDialog, setExportDialog] = useState<ExportDialogState>({
+    open: false,
+    mode: 'floating',
+    phase: 'packing',
+    loaded: 0
+  })
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
   
   const chatEndRef = useRef<HTMLDivElement>(null)
   const exportMenuRef = useRef<HTMLDivElement>(null)
+  const videoPollingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const videoPollingInFlightRef = useRef(false)
+  const mainPanelRef = useRef<HTMLElement | null>(null)
+
+  // 可调整面板宽度
+  const [rightPanelWidth, setRightPanelWidth] = useState(420) // 像素
+  const [isResizingRight, setIsResizingRight] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // 处理分隔条拖拽
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!containerRef.current) return
+      const containerRect = containerRef.current.getBoundingClientRect()
+      
+      if (isResizingRight) {
+        const newWidth = containerRect.right - e.clientX
+        // 限制右侧面板宽度在 280-600 像素之间
+        setRightPanelWidth(Math.max(280, Math.min(600, newWidth)))
+      }
+    }
+    
+    const handleMouseUp = () => {
+      setIsResizingRight(false)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    
+    if (isResizingRight) {
+      document.body.style.cursor = 'col-resize'
+      document.body.style.userSelect = 'none'
+      document.addEventListener('mousemove', handleMouseMove)
+      document.addEventListener('mouseup', handleMouseUp)
+    }
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [isResizingRight])
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -189,7 +263,45 @@ export default function AgentPage() {
     }
   }, [urlProjectId])
 
-  const loadProject = async (id: string) => {
+  // Auto-poll backend to update video_url for shots that are still processing.
+  useEffect(() => {
+    if (!projectId || !shouldPollVideos) {
+      if (videoPollingTimerRef.current) {
+        clearInterval(videoPollingTimerRef.current)
+        videoPollingTimerRef.current = null
+      }
+      return
+    }
+
+    const pollOnce = async () => {
+      if (!projectId || videoPollingInFlightRef.current) return
+      videoPollingInFlightRef.current = true
+      try {
+        const pollResult = await pollProjectVideoTasks(projectId)
+        if (pollResult.completed > 0 || pollResult.failed > 0 || pollResult.processing === 0) {
+          await loadProject(projectId)
+        }
+      } catch (error) {
+        console.error('[AgentPage] poll video tasks failed:', error)
+      } finally {
+        videoPollingInFlightRef.current = false
+      }
+    }
+
+    pollOnce()
+    if (!videoPollingTimerRef.current) {
+      videoPollingTimerRef.current = setInterval(pollOnce, 5000)
+    }
+
+    return () => {
+      if (videoPollingTimerRef.current) {
+        clearInterval(videoPollingTimerRef.current)
+        videoPollingTimerRef.current = null
+      }
+    }
+  }, [projectId, shouldPollVideos])
+
+  const loadProject = async (id: string): Promise<AgentProject | null> => {
     try {
       setIsLoading(true)
       const project = await getAgentProject(id)
@@ -200,16 +312,19 @@ export default function AgentPage() {
       setCreativeBrief((project.creative_brief || {}) as CreativeBrief)
       
       // 转换 visual_assets
-      const assets: VisualAsset[] = (project.visual_assets || []).map((a: { id: string; url: string; duration?: string; type?: string }) => ({
+      const assets: VisualAsset[] = (project.visual_assets || []).map((a: { id: string; url: string; duration?: string; type?: string; element_id?: string; shot_id?: string }) => ({
         id: a.id,
         name: a.id.replace(/^(asset_|frame_|video_)/, ''),
         url: a.url,
         duration: a.duration,
         type: (a.type as 'element' | 'start_frame' | 'video') || 'element',
+        elementId: a.element_id,
+        shotId: a.shot_id,
         status: 'completed' as const
       }))
       setVisualAssets(assets)
       setHasUnsavedChanges(false)
+      return project
     } catch (error: unknown) {
       console.error('加载项目失败:', error)
       
@@ -234,6 +349,7 @@ export default function AgentPage() {
 
 请告诉我你想制作什么视频，我会帮你完成从创意到成片的全流程。`)
       }
+      return null
     } finally {
       setIsLoading(false)
     }
@@ -275,7 +391,14 @@ export default function AgentPage() {
         creative_brief: creativeBrief,
         elements,
         segments,
-        visual_assets: visualAssets.map(a => ({ id: a.id, url: a.url, duration: a.duration, type: a.type }))
+        visual_assets: visualAssets.map(a => ({
+          id: a.id,
+          url: a.url,
+          duration: a.duration,
+          type: a.type,
+          element_id: a.elementId,
+          shot_id: a.shotId
+        }))
       }
       
       console.log('[AgentPage] 保存项目:', { projectId, projectData })
@@ -310,7 +433,14 @@ export default function AgentPage() {
     }
   }, [projectId, projectName, creativeBrief, elements, segments, visualAssets, navigate, addMessage])
 
-  const getBackTarget = () => urlProjectId ? `/project/${urlProjectId}` : '/'
+  const getBackTarget = () => {
+    // 如果 URL 中的项目 ID 是 Agent 项目（以 agent_ 开头），返回首页
+    // 否则返回对应的普通项目页面
+    if (urlProjectId && !urlProjectId.startsWith('agent_')) {
+      return `/project/${urlProjectId}`
+    }
+    return '/'
+  }
 
   const handleBack = () => {
     if (hasUnsavedChanges) {
@@ -426,11 +556,40 @@ export default function AgentPage() {
 
   // 发送消息
   const handleSendMessage = async () => {
-    if (!inputMessage.trim() || sending) return
+    if ((!inputMessage.trim() && uploadedFiles.length === 0) || sending) return
     
     const userMsg = inputMessage
-    addMessage('user', userMsg)
+    const files = uploadedFiles
+    
+    // 构建包含文件信息的消息（用于显示）
+    let displayContent = userMsg
+    if (files.length > 0) {
+      const fileInfo = files.map(f => `[附件: ${f.name}]`).join(' ')
+      displayContent = userMsg ? `${userMsg}\n${fileInfo}` : fileInfo
+    }
+    
+    // 构建发送给 AI 的消息（包含文件内容）
+    let aiMessageContent = userMsg
+    if (files.length > 0) {
+      const fileContents: string[] = []
+      for (const f of files) {
+        if (f.content) {
+          // 文本文件，直接使用内容
+          fileContents.push(`\n\n--- 文件: ${f.name} ---\n${f.content}\n--- 文件结束 ---`)
+        } else if (f.type === 'image' && f.dataUrl) {
+          // 图片文件，提供 URL 引用
+          fileContents.push(`\n[图片: ${f.name}, URL: ${f.url || f.dataUrl}]`)
+        } else {
+          // 其他文件，提供基本信息
+          fileContents.push(`\n[文件: ${f.name}, 类型: ${f.mimeType}, 大小: ${(f.size / 1024).toFixed(1)}KB]`)
+        }
+      }
+      aiMessageContent = userMsg + fileContents.join('')
+    }
+    
+    addMessage('user', displayContent)
     setInputMessage('')
+    setUploadedFiles([]) // 清空上传的文件
     setSending(true)
     
     // 创建新的 AbortController
@@ -470,7 +629,7 @@ export default function AgentPage() {
           { label: 'Agent分析中', completed: false }
         ])
         
-        const planResult = await agentPlanProject(userMsg)
+        const planResult = await agentPlanProject(aiMessageContent)
         
         if (planResult.success && planResult.plan) {
           const plan = planResult.plan
@@ -624,7 +783,7 @@ ${plan.elements.map(e => `- ${e.name} (${e.type})`).join('\n')}
 
   // ========== 批量生成功能 ==========
   
-  // 生成所有元素图片
+  // 生成所有元素图片（流式）
   const handleGenerateAllElements = async () => {
     if (!projectId) {
       await handleSaveProject(false)
@@ -642,41 +801,76 @@ ${plan.elements.map(e => `- ${e.name} (${e.type})`).join('\n')}
 **第二步** 调用图像生成模型 (Nano Banana Pro)
 **第三步** 生成 2K 高清角色设计图
 
-共 ${elementCount} 个角色，预计需要 ${elementCount * 15} 秒...`, undefined, undefined, undefined, [
+共 ${elementCount} 个角色，实时展示生成进度...`, undefined, undefined, undefined, [
       { label: '生成角色图片', completed: false }
     ])
     
     try {
-      const result = await generateProjectElements(pid, creativeBrief.visualStyle || '吉卜力动画风格')
-      
-      await loadProject(pid)
-      
-      const successMsg = result.failed === 0 
-        ? `✅ **角色图片生成完成！**
+      // 使用流式生成
+      await new Promise<void>((resolve, reject) => {
+        const cancel = generateProjectElementsStream(
+          pid,
+          creativeBrief.visualStyle || '吉卜力动画风格',
+          (event) => {
+            if (event.type === 'generating') {
+              // 更新生成中状态
+              setGeneratingElement(event.element_id || null)
+            } else if (event.type === 'complete') {
+              // 实时更新元素图片
+              if (event.element_id && event.image_url) {
+                setElements(prev => ({
+                  ...prev,
+                  [event.element_id!]: {
+                    ...prev[event.element_id!],
+                    image_url: event.image_url
+                  }
+                }))
+              }
+              setGeneratingElement(null)
+            } else if (event.type === 'done') {
+              // 生成完成
+              const successMsg = event.failed === 0 
+                ? `✅ **角色图片生成完成！**
 
-成功生成 ${result.generated} 个角色设计图。
+成功生成 ${event.generated} 个角色设计图。
 
-你可以在右侧「Visual Assets」卡片中查看所有生成的图片。`
-        : `⚠️ **角色图片生成部分完成**
+你可以在左侧「关键元素」面板中查看所有生成的图片。`
+                : `⚠️ **角色图片生成部分完成**
 
-- 成功：${result.generated} 个
-- 失败：${result.failed} 个
+- 成功：${event.generated} 个
+- 失败：${event.failed} 个
 
 失败的角色可以在左侧面板单独重试。`
+              
+              addMessage('assistant', successMsg, undefined, undefined, 
+                { label: '继续生成起始帧', action: 'generate_frames' },
+                [
+                  { label: '生成角色图片', completed: true },
+                  { label: '生成起始帧', completed: false }
+                ]
+              )
+              
+              setGenerationStage('idle')
+              setGeneratingElement(null)
+              resolve()
+            } else if (event.type === 'error') {
+              console.error('元素生成失败:', event.element_id, event.error)
+            }
+          },
+          (error) => {
+            reject(error)
+          }
+        )
+        
+        // 保存取消函数以便需要时取消
+        // cancelRef.current = cancel
+      })
       
-      addMessage('assistant', successMsg, undefined, undefined, 
-        { label: '继续生成起始帧', action: 'generate_frames' },
-        [
-          { label: '生成角色图片', completed: true },
-          { label: '生成起始帧', completed: false }
-        ]
-      )
-      
-      setGenerationStage('idle')
     } catch (error) {
       console.error('生成失败:', error)
       addMessage('assistant', `❌ 生成失败：${error instanceof Error ? error.message : '未知错误'}`)
       setGenerationStage('idle')
+      setGeneratingElement(null)
     }
   }
   
@@ -751,8 +945,21 @@ ${result.failed > 0 ? `\n⚠️ ${result.failed} 个镜头生成失败` : ''}
     
     try {
       const result = await generateProjectVideos(projectId, '720p')
-      
-      await loadProject(projectId)
+
+      const project = await loadProject(projectId)
+      const stillProcessing = !!project && project.segments
+        .flatMap(s => s.shots || [])
+        .some(s => s.status === 'video_processing' && !s.video_url)
+
+      if (stillProcessing) {
+        addMessage('assistant', `⏳ **视频任务已提交，正在后台生成中...**
+
+我会每 5 秒自动刷新任务状态，完成后会自动加载视频。`, undefined, [
+          { id: 'view_timeline', label: '🎞️查看时间轴', value: 'view_timeline' }
+        ])
+        setGenerationStage('videos')
+        return
+      }
       
       addMessage('assistant', `🎉 **视频生成完成！**
 
@@ -877,12 +1084,45 @@ ${result.success
           { width: 1024, height: 1024 }
         )
         
+        // 创建新的图片历史记录
+        const newImageRecord = {
+          id: `img_${Date.now()}`,
+          url: imageResult.imageUrl,
+          created_at: new Date().toISOString(),
+          is_favorite: false
+        }
+        
+        // 获取现有历史
+        let existingHistory = element.image_history || []
+        
+        // 如果历史为空但有旧图片，先把旧图片加入历史
+        if (existingHistory.length === 0 && element.image_url) {
+          const oldImageRecord = {
+            id: `img_old_${Date.now() - 1}`,
+            url: element.image_url,
+            created_at: element.created_at || new Date().toISOString(),
+            is_favorite: false
+          }
+          existingHistory = [oldImageRecord]
+        }
+        
+        // 将新图片插入到最前面
+        const newHistory = [newImageRecord, ...existingHistory]
+        
+        // 检查是否有收藏的图片
+        const hasFavorite = newHistory.some(img => img.is_favorite)
+        
+        // 更新后的元素数据
+        const updatedElement = {
+          ...element,
+          image_url: hasFavorite ? element.image_url : imageResult.imageUrl,
+          image_history: newHistory
+        }
+        
+        // 更新前端状态
         setElements(prev => ({
           ...prev,
-          [elementId]: {
-            ...prev[elementId],
-            image_url: imageResult.imageUrl
-          }
+          [elementId]: updatedElement
         }))
         
         setVisualAssets(prev => [...prev, {
@@ -890,8 +1130,24 @@ ${result.success
           name: element.name,
           url: imageResult.imageUrl,
           type: 'element',
+          elementId: element.id,
           status: 'completed'
         }])
+        
+        // 立即保存到后端
+        if (projectId) {
+          try {
+            await updateAgentProject(projectId, {
+              elements: {
+                ...elements,
+                [elementId]: updatedElement
+              }
+            })
+            console.log('[AgentPage] 元素图片历史已保存')
+          } catch (saveError) {
+            console.error('[AgentPage] 保存元素图片历史失败:', saveError)
+          }
+        }
         
         setHasUnsavedChanges(true)
       }
@@ -900,6 +1156,83 @@ ${result.success
       addMessage('assistant', `❌ 生成 ${element.name} 图片失败：${error instanceof Error ? error.message : '未知错误'}`)
     } finally {
       setGeneratingElement(null)
+    }
+  }
+  
+  // 收藏元素图片
+  const handleFavoriteElementImage = async (elementId: string, imageId: string) => {
+    if (!projectId) return
+    
+    try {
+      const result = await favoriteElementImage(projectId, elementId, imageId)
+      if (result.success) {
+        // 更新本地状态
+        setElements(prev => {
+          const element = prev[elementId]
+          if (!element) return prev
+          
+          const updatedHistory = (element.image_history || []).map(img => ({
+            ...img,
+            is_favorite: img.id === imageId
+          }))
+          
+          // 找到收藏的图片
+          const favoriteImg = updatedHistory.find(img => img.id === imageId)
+          
+          return {
+            ...prev,
+            [elementId]: {
+              ...element,
+              image_url: favoriteImg?.url || element.image_url,
+              image_history: updatedHistory
+            }
+          }
+        })
+        
+        setHasUnsavedChanges(true)
+      }
+    } catch (error) {
+      console.error('收藏图片失败:', error)
+    }
+  }
+
+  // 收藏镜头起始帧
+  const handleFavoriteShotImage = async (segmentId: string, shotId: string, imageId: string) => {
+    if (!projectId) return
+    
+    try {
+      const result = await favoriteShotImage(projectId, shotId, imageId)
+      if (result.success) {
+        // 更新本地状态
+        setSegments(prev => prev.map(segment => {
+          if (segment.id !== segmentId) return segment
+          
+          return {
+            ...segment,
+            shots: segment.shots.map(shot => {
+              if (shot.id !== shotId) return shot
+              
+              const updatedHistory = (shot.start_image_history || []).map(img => ({
+                ...img,
+                is_favorite: img.id === imageId
+              }))
+              
+              // 找到收藏的图片
+              const favoriteImg = updatedHistory.find(img => img.id === imageId)
+              
+              return {
+                ...shot,
+                start_image_url: favoriteImg?.url || shot.start_image_url,
+                start_image_history: updatedHistory
+              }
+            })
+          }
+        }))
+        
+        setHasUnsavedChanges(true)
+      }
+    } catch (error) {
+      console.error('收藏起始帧失败:', error)
     }
   }
 
@@ -967,49 +1300,55 @@ ${result.success
     setHasUnsavedChanges(true)
   }
 
-  // 重新生成单个镜头的起始帧
+  // 重新生成单个镜头的起始帧（使用后端API，带角色参考图）
   const handleRetryFrame = async (shotId: string) => {
     if (!projectId) return
     
     setRetryingShot(shotId)
     try {
-      // 找到镜头
-      let targetShot: AgentShot | null = null
+      // 找到镜头名称用于提示
+      let shotName = shotId
       for (const seg of segments) {
         const shot = seg.shots.find(s => s.id === shotId)
         if (shot) {
-          targetShot = shot
+          shotName = shot.name
           break
         }
       }
       
-      if (!targetShot) {
-        addMessage('assistant', '❌ 找不到该镜头')
-        return
+      // 调用后端API，会自动使用角色参考图
+      const result = await regenerateShotFrame(
+        projectId,
+        shotId,
+        creativeBrief.visualStyle || '吉卜力动画风格'
+      )
+      
+      console.log('[handleRetryFrame] API返回结果:', result)
+      
+      if (result.success) {
+        // 更新本地状态
+        setSegments(prev => prev.map(seg => ({
+          ...seg,
+          shots: seg.shots.map(s => {
+            if (s.id === shotId) {
+              const updated = { 
+                ...s, 
+                start_image_url: result.start_image_url || result.image_url,
+                start_image_history: result.start_image_history || [],
+                status: 'frame_ready' as const
+              }
+              console.log('[handleRetryFrame] 更新后的shot:', updated)
+              return updated
+            }
+            return s
+          })
+        })))
+        
+        const refCount = result.reference_images_count || 0
+        addMessage('assistant', `✅ 镜头「${shotName}」起始帧已重新生成${refCount > 0 ? `（参考了 ${refCount} 张角色图片）` : ''}`)
+      } else {
+        addMessage('assistant', `❌ 重新生成失败：${result.error || '未知错误'}`)
       }
-      
-      // 构建提示词
-      const prompt = targetShot.prompt || targetShot.description
-      const resolvedPrompt = prompt.replace(/\[Element_(\w+)\]/g, (match, id) => {
-        const fullId = `Element_${id}`
-        const element = elements[fullId]
-        return element ? element.description || element.name : match
-      })
-      
-      const fullPrompt = `${resolvedPrompt}, ${creativeBrief.visualStyle || '吉卜力动画风格'}, cinematic lighting, high quality, detailed`
-      
-      // 生成图片
-      const result = await generateImage(fullPrompt, 'blurry, low quality, distorted', { width: 1920, height: 1080 })
-      
-      // 更新镜头
-      setSegments(prev => prev.map(seg => ({
-        ...seg,
-        shots: seg.shots.map(s => s.id === shotId ? { ...s, start_image_url: result.imageUrl, status: 'frame_ready' } : s)
-      })))
-      
-      // 保存项目
-      await handleSaveProject(false)
-      addMessage('assistant', `✅ 镜头「${targetShot.name}」起始帧已重新生成`)
     } catch (error) {
       console.error('重新生成起始帧失败:', error)
       addMessage('assistant', `❌ 重新生成失败：${error instanceof Error ? error.message : '未知错误'}`)
@@ -1070,10 +1409,22 @@ ${result.success
               ...seg,
               shots: seg.shots.map(s => s.id === shotId ? { ...s, video_url: status.videoUrl || '', status: 'video_ready' } : s)
             })))
+            const videoUrl = status.videoUrl || ''
+            if (videoUrl) {
+              setVisualAssets(prev => prev.some(a => a.url === videoUrl) ? prev : [...prev, {
+                id: `video_${shotId}_${Date.now()}`,
+                name: targetShot.name,
+                url: videoUrl,
+                type: 'video',
+                shotId,
+                duration: `${targetShot.duration || 5}s`,
+                status: 'completed'
+              }])
+            }
             await handleSaveProject(false)
             addMessage('assistant', `✅ 镜头「${targetShot.name}」视频已重新生成`)
             return
-          } else if (status.status === 'failed') {
+          } else if (status.status === 'failed' || status.status === 'error') {
             throw new Error(status.error || '视频生成失败')
           }
           
@@ -1087,6 +1438,18 @@ ${result.success
           ...seg,
           shots: seg.shots.map(s => s.id === shotId ? { ...s, video_url: result.videoUrl || '', status: 'video_ready' } : s)
         })))
+        const videoUrl = result.videoUrl || ''
+        if (videoUrl) {
+          setVisualAssets(prev => prev.some(a => a.url === videoUrl) ? prev : [...prev, {
+            id: `video_${shotId}_${Date.now()}`,
+            name: targetShot.name,
+            url: videoUrl,
+            type: 'video',
+            shotId,
+            duration: `${targetShot.duration || 5}s`,
+            status: 'completed'
+          }])
+        }
         await handleSaveProject(false)
         addMessage('assistant', `✅ 镜头「${targetShot.name}」视频已重新生成`)
       }
@@ -1103,117 +1466,113 @@ ${result.success
     }
   }
 
-  // 导出项目素材（纯前端实现）
+  const formatBytes = (bytes: number) => {
+    if (!Number.isFinite(bytes) || bytes <= 0) return '0 KB'
+    const mb = 1024 * 1024
+    if (bytes >= mb) return `${(bytes / mb).toFixed(1)} MB`
+    return `${Math.max(1, Math.round(bytes / 1024))} KB`
+  }
+
+  const pinExportToast = useCallback(() => {
+    setExportDialog(prev => {
+      if (!prev.open) return prev
+      if (prev.mode === 'pinned' || prev.mode === 'completed') return prev
+      return { ...prev, mode: 'pinned' }
+    })
+  }, [])
+
+  const scheduleHideExportToast = useCallback((delayMs: number) => {
+    if (exportToastHideTimerRef.current) clearTimeout(exportToastHideTimerRef.current)
+    exportToastHideTimerRef.current = setTimeout(() => {
+      setExportDialog(prev => ({ ...prev, open: false }))
+    }, delayMs)
+  }, [])
+
+  useEffect(() => {
+    const handleResize = () => setViewportWidth(window.innerWidth)
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
+  useEffect(() => {
+    if (exportDialog.open) {
+      setExportToastEntered(false)
+      requestAnimationFrame(() => setExportToastEntered(true))
+      return
+    }
+    setExportToastEntered(false)
+  }, [exportDialog.open])
+
+  useEffect(() => {
+    return () => {
+      if (exportToastAutoPinTimerRef.current) clearTimeout(exportToastAutoPinTimerRef.current)
+      if (exportToastHideTimerRef.current) clearTimeout(exportToastHideTimerRef.current)
+      exportAbortControllerRef.current?.abort()
+    }
+  }, [])
+
+  // 导出项目素材（后端打包 ZIP，避免前端动态依赖加载问题）
   const handleExportAssets = async () => {
     if (!projectId) {
       addMessage('assistant', '⚠️ 请先保存项目')
       return
     }
-    
+
+    // 若上一次导出还在进行，先中断
+    exportAbortControllerRef.current?.abort()
+    const controller = new AbortController()
+    exportAbortControllerRef.current = controller
+
     setExporting(true)
     setShowExportMenu(false)
-    
+    if (exportToastAutoPinTimerRef.current) clearTimeout(exportToastAutoPinTimerRef.current)
+    if (exportToastHideTimerRef.current) clearTimeout(exportToastHideTimerRef.current)
+    setExportDialog({ open: true, mode: 'floating', phase: 'packing', loaded: 0 })
+    exportToastAutoPinTimerRef.current = setTimeout(() => pinExportToast(), 5000)
+
     try {
-      addMessage('assistant', '📦 正在打包项目素材...')
-      
-      // 动态导入 JSZip
-      const JSZip = (await import('jszip')).default
-      const { saveAs } = await import('file-saver')
-      
-      const zip = new JSZip()
-      
-      // 创建文件夹
-      const elementsFolder = zip.folder('1_角色元素')
-      const framesFolder = zip.folder('2_镜头起始帧')
-      const videosFolder = zip.folder('3_视频片段')
-      
-      let elementCount = 0
-      let frameCount = 0
-      let videoCount = 0
-      
-      // 下载角色元素图片
-      for (const [elemId, elem] of Object.entries(elements)) {
-        if (elem.image_url) {
-          try {
-            const response = await fetch(elem.image_url)
-            const blob = await response.blob()
-            elementsFolder?.file(`${elem.name || elemId}.png`, blob)
-            elementCount++
-          } catch (error) {
-            console.error(`下载角色失败: ${elem.name}`, error)
-          }
+      addMessage('assistant', '📦 正在导出项目素材...')
+      const blob = await exportProjectAssets(projectId, {
+        signal: controller.signal,
+        onProgress: (progress) => {
+          setExportDialog(prev => ({
+            ...prev,
+            open: true,
+            phase: prev.phase === 'packing' ? 'downloading' : prev.phase,
+            loaded: progress.loaded,
+            total: progress.total,
+            percent: progress.percent
+          }))
         }
-      }
-      
-      // 下载镜头起始帧和视频
-      for (const seg of segments) {
-        for (const shot of seg.shots) {
-          const shotName = shot.name || shot.id
-          
-          // 起始帧
-          if (shot.start_frame_url) {
-            try {
-              const response = await fetch(shot.start_frame_url)
-              const blob = await response.blob()
-              framesFolder?.file(`${shotName}_frame.png`, blob)
-              frameCount++
-            } catch (error) {
-              console.error(`下载起始帧失败: ${shotName}`, error)
-            }
-          }
-          
-          // 视频
-          if (shot.video_url) {
-            try {
-              const response = await fetch(shot.video_url)
-              const blob = await response.blob()
-              videosFolder?.file(`${shotName}.mp4`, blob)
-              videoCount++
-            } catch (error) {
-              console.error(`下载视频失败: ${shotName}`, error)
-            }
-          }
-        }
-      }
-      
-      // 创建项目信息文件
-      let infoText = `项目名称: ${projectName}\n`
-      infoText += `项目ID: ${projectId}\n\n`
-      infoText += `=== 素材统计 ===\n`
-      infoText += `角色元素: ${elementCount} 个\n`
-      infoText += `镜头起始帧: ${frameCount} 个\n`
-      infoText += `视频片段: ${videoCount} 个\n\n`
-      infoText += `=== 分镜列表 ===\n`
-      
-      segments.forEach((seg, i) => {
-        infoText += `\n段落 ${i + 1}: ${seg.name || 'Unnamed'}\n`
-        infoText += `描述: ${seg.description || 'N/A'}\n`
-        seg.shots.forEach((shot, j) => {
-          infoText += `  镜头 ${j + 1}: ${shot.name || 'Unnamed'}\n`
-          infoText += `    时长: ${shot.duration || 5}秒\n`
-          infoText += `    描述: ${shot.description || 'N/A'}\n`
-        })
       })
-      
-      zip.file('项目信息.txt', infoText)
-      
-      // 生成 ZIP 文件
-      const content = await zip.generateAsync({ type: 'blob' })
-      saveAs(content, `${projectName}_${projectId}_assets.zip`)
-      
-      addMessage('assistant', `✅ 项目素材已导出！
 
-📦 已打包：
-- 角色元素: ${elementCount} 个
-- 镜头起始帧: ${frameCount} 个
-- 视频片段: ${videoCount} 个
-
-文件已开始下载。`)
+      setExportDialog(prev => ({ ...prev, phase: 'saving' }))
+      const safeName = (projectName || 'project').replace(/[\\/:*?"<>|]+/g, '_')
+      saveAs(blob, `${safeName}_${projectId}_assets.zip`)
+      setExportDialog(prev => ({ ...prev, mode: 'completed', phase: 'done', percent: 100 }))
+      addMessage('assistant', '✅ 文件已开始下载。')
+      scheduleHideExportToast(2200)
     } catch (error) {
       console.error('导出素材失败:', error)
-      addMessage('assistant', `❌ 导出失败：${error instanceof Error ? error.message : '未知错误'}`)
+      const errorCode = (error as { code?: string } | null)?.code
+      const isAbort = errorCode === 'ERR_CANCELED' || (error instanceof DOMException && error.name === 'AbortError')
+      if (isAbort) {
+        setExportDialog(prev => ({ ...prev, mode: 'completed', phase: 'canceled' }))
+        addMessage('assistant', '⏹️ 已取消导出。')
+        scheduleHideExportToast(2000)
+      } else {
+        setExportDialog(prev => ({
+          ...prev,
+          mode: 'completed',
+          phase: 'error',
+          error: error instanceof Error ? error.message : '未知错误'
+        }))
+        addMessage('assistant', `❌ 导出失败：${error instanceof Error ? error.message : '未知错误'}`)
+        scheduleHideExportToast(2600)
+      }
     } finally {
       setExporting(false)
+      exportAbortControllerRef.current = null
     }
   }
 
@@ -1260,6 +1619,27 @@ ${result.success
     { id: 'storyboard' as ModuleType, icon: Film, label: '分镜' },
     { id: 'timeline' as ModuleType, icon: Clock, label: '时间线' }
   ]
+
+  const visualAssetGroups = (() => {
+    const groups = new Map<string, { key: string; type: VisualAsset['type']; name: string; items: VisualAsset[] }>()
+    const typeLabel: Record<VisualAsset['type'], string> = {
+      element: '元素',
+      start_frame: '起始帧',
+      video: '视频'
+    }
+    for (const asset of visualAssets) {
+      const groupId = asset.type === 'element'
+        ? (asset.elementId || asset.id)
+        : (asset.shotId || asset.id)
+      const key = `${asset.type}:${groupId}`
+      if (!groups.has(key)) {
+        const name = asset.name || `${typeLabel[asset.type]} ${groupId}`
+        groups.set(key, { key, type: asset.type, name, items: [] })
+      }
+      groups.get(key)!.items.push(asset)
+    }
+    return { groups: Array.from(groups.values()), typeLabel }
+  })()
 
   if (isLoading) {
     return (
@@ -1376,7 +1756,11 @@ ${result.success
   }
 
   return (
-    <div className="flex h-full animate-fadeIn">
+    <div 
+      ref={containerRef} 
+      className="flex h-screen w-screen animate-fadeIn bg-gradient-to-br from-[#0a0a12] via-[#0f0f1a] to-[#0a0a15]" 
+      style={{ overflow: 'hidden', position: 'fixed', top: 0, left: 0 }}
+    >
       {/* 退出确认对话框 */}
       {showExitDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center modal-backdrop animate-fadeIn">
@@ -1390,6 +1774,103 @@ ${result.success
             </div>
           </div>
         </div>
+      )}
+      
+      {/* 图片预览 Modal */}
+      <ImagePreviewModal image={previewImage} onClose={() => setPreviewImage(null)} />
+
+      {/* 导出灵动岛 Toast */}
+      {exportDialog.open && (
+        (() => {
+          const isCompactProgress = exportDialog.mode === 'pinned' && exportDialog.phase !== 'done' && exportDialog.phase !== 'error' && exportDialog.phase !== 'canceled'
+          const toastWidth = isCompactProgress ? 220 : 292
+          const viewportCenterX = viewportWidth / 2
+          const mainRect = mainPanelRef.current?.getBoundingClientRect()
+          const rightEdge = mainRect?.right ?? viewportWidth
+          const topEdge = mainRect?.top ?? 0
+          const targetCenterX = rightEdge - 18 - toastWidth / 2
+          const dx = (exportDialog.mode === 'floating') ? 0 : (targetCenterX - viewportCenterX)
+          const dy = exportToastEntered ? 0 : -16
+          const opacity = exportToastEntered ? 1 : 0
+          const topPx = exportDialog.mode === 'floating' ? 12 : Math.max(8, topEdge + 10)
+
+          const showCheck = exportDialog.phase === 'done'
+          const showError = exportDialog.phase === 'error'
+          const showCanceled = exportDialog.phase === 'canceled'
+
+          const statusText =
+            exportDialog.phase === 'packing' ? '正在打包...' :
+            exportDialog.phase === 'downloading' ? '正在下载...' :
+            exportDialog.phase === 'saving' ? '准备下载...' :
+            exportDialog.phase === 'done' ? '下载完成' :
+            exportDialog.phase === 'canceled' ? '已取消' :
+            '导出失败'
+
+          const percentText = exportDialog.percent != null ? `${Math.max(0, Math.min(100, exportDialog.percent))}%` : ''
+          const detailText = exportDialog.total
+            ? `${formatBytes(exportDialog.loaded)} / ${formatBytes(exportDialog.total)}`
+            : (exportDialog.loaded > 0 ? formatBytes(exportDialog.loaded) : '')
+
+          return (
+            <div
+              className="fixed left-1/2 z-[999] pointer-events-auto select-none"
+              style={{
+                top: topPx,
+                transform: `translate(-50%, 0) translateX(${dx}px) translateY(${dy}px)`,
+                opacity,
+                transition: 'transform 600ms cubic-bezier(0.2, 0.9, 0.2, 1), opacity 300ms ease'
+              }}
+              onClick={() => pinExportToast()}
+            >
+              <div
+                className={`glass-card border border-white/10 shadow-xl ${isCompactProgress ? 'rounded-full px-2 py-2' : 'rounded-full px-3 py-2.5'} transition-all duration-500 ease-out`}
+                style={{ width: toastWidth }}
+                title="点击收起到右上角进度条"
+              >
+                {isCompactProgress ? (
+                  <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full ${exportDialog.percent != null ? 'bg-gradient-to-r from-primary to-fuchsia-500' : 'bg-gradient-to-r from-primary/50 to-fuchsia-500/50 animate-pulse'}`}
+                      style={{ width: exportDialog.percent != null ? `${Math.max(2, Math.min(100, exportDialog.percent))}%` : '45%' }}
+                    />
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center">
+                      {showCheck ? (
+                        <CheckCircle size={18} className="text-green-400 animate-scaleIn" />
+                      ) : showError ? (
+                        <AlertCircle size={18} className="text-red-400" />
+                      ) : showCanceled ? (
+                        <AlertCircle size={18} className="text-yellow-400" />
+                      ) : (
+                        <Loader2 size={18} className="animate-spin text-primary" />
+                      )}
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs text-gray-200 truncate">导出素材</div>
+                      <div className="text-[11px] text-gray-400 truncate">
+                        {statusText}
+                        {(percentText || detailText) ? ` ${percentText}${percentText && detailText ? ' · ' : ''}${detailText}` : ''}
+                      </div>
+                      <div className="mt-1.5 h-1.5 bg-white/10 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full ${exportDialog.percent != null ? 'bg-gradient-to-r from-primary to-fuchsia-500' : 'bg-gradient-to-r from-primary/50 to-fuchsia-500/50 animate-pulse'}`}
+                          style={{ width: exportDialog.percent != null ? `${Math.max(2, Math.min(100, exportDialog.percent))}%` : '45%' }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="text-[11px] text-gray-400 tabular-nums">
+                      {exportDialog.phase === 'done' ? '✓' : (percentText || '')}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )
+        })()
       )}
       
       {/* 左侧模块导航 */}
@@ -1457,9 +1938,9 @@ ${result.success
         </div>
       </aside>
 
-      {/* 中间主内容区 */}
-      <main className="flex-1 flex flex-col overflow-hidden">
-        <header className="h-14 px-5 flex items-center justify-between border-b border-white/5 glass-dark">
+      {/* 中间主内容区 - 自适应剩余空间 */}
+      <main ref={mainPanelRef} className="flex-1 flex flex-col min-w-[300px] border-r border-white/5" style={{ overflow: 'hidden' }}>
+        <header className="h-14 px-5 flex items-center justify-between border-b border-white/5 glass-dark flex-shrink-0">
           <div className="flex items-center">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-fuchsia-500 via-purple-500 to-indigo-500 flex items-center justify-center mr-3 shadow-lg shadow-purple-500/30">
               <Layers size={16} className="text-white" strokeWidth={2.5} />
@@ -1486,7 +1967,13 @@ ${result.success
           </div>
         </header>
 
-        <div className="flex-1 overflow-auto p-5">
+        <div 
+          className="flex-1 min-h-0 overflow-y-auto p-5" 
+          style={{ 
+            overscrollBehavior: 'contain',
+            WebkitOverflowScrolling: 'touch'
+          }}
+        >
           {activeModule === 'elements' && (
             <ElementsPanel 
               elements={elements}
@@ -1496,6 +1983,8 @@ ${result.success
               setEditingElement={setEditingElement}
               generatingElement={generatingElement}
               onGenerateImage={handleGenerateElementImage}
+              onFavoriteImage={handleFavoriteElementImage}
+              onPreviewImage={(url, title) => setPreviewImage({ url, title })}
               onAddElement={handleAddElement}
               onDeleteElement={handleDeleteElement}
               onUpdateElement={handleUpdateElement}
@@ -1517,6 +2006,8 @@ ${result.success
               isGeneratingVideos={generationStage === 'videos'}
               onRetryFrame={handleRetryFrame}
               onRetryVideo={handleRetryVideo}
+              onFavoriteShotImage={handleFavoriteShotImage}
+              onPreviewImage={(url, title) => setPreviewImage({ url, title })}
               retryingShot={retryingShot}
             />
           )}
@@ -1527,8 +2018,18 @@ ${result.success
         </div>
       </main>
 
+      {/* 可拖拽分隔条 - 右侧面板 */}
+      <div
+        className="w-1 cursor-col-resize hover:bg-primary/50 active:bg-primary transition-colors flex-shrink-0 bg-white/5"
+        onMouseDown={() => setIsResizingRight(true)}
+        title="拖拽调整面板宽度"
+      />
+
       {/* 右侧 AI 助手面板 - YuanYuan 风格 */}
-      <aside className="w-[420px] glass-dark border-l border-white/5 flex flex-col">
+      <aside 
+        className="glass-dark border-l border-white/5 flex flex-col flex-shrink-0"
+        style={{ width: `${rightPanelWidth}px`, overflow: 'hidden' }}
+      >
         {/* 头部 */}
         <div className="h-14 px-5 flex items-center border-b border-white/5">
           <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-rose-500 via-pink-500 to-fuchsia-500 flex items-center justify-center mr-3 shadow-lg shadow-pink-500/30">
@@ -1538,8 +2039,14 @@ ${result.success
           <span className="ml-2 text-xs text-gray-500">视频制作助手</span>
         </div>
 
-        {/* 可折叠任务卡片区域 */}
-        <div className="flex-1 overflow-auto">
+        {/* 可折叠任务卡片区域 - 独立滚动 */}
+        <div 
+          className="flex-1 min-h-0 overflow-y-auto" 
+          style={{ 
+            overscrollBehavior: 'contain',
+            WebkitOverflowScrolling: 'touch'
+          }}
+        >
           {/* 对话消息 */}
           <div className="p-4 space-y-4">
             {messages.map((msg) => (
@@ -1655,36 +2162,65 @@ ${result.success
                 onToggle={() => toggleCard('visual')}
                 badge={<span className="text-green-400">{visualAssets.length}</span>}
               >
-                <div className="grid grid-cols-4 gap-2">
-                  {visualAssets.slice(0, 12).map((asset) => (
-                    <div 
-                      key={asset.id} 
-                      className="relative group cursor-pointer"
-                      onClick={() => window.open(asset.url, '_blank')}
-                    >
-                      <img 
-                        src={asset.url} 
-                        alt={asset.name} 
-                        className="w-full aspect-square object-cover rounded-lg"
-                      />
-                      {asset.duration && (
-                        <span className="absolute bottom-1 right-1 text-[8px] glass-dark px-1 rounded">
-                          {asset.duration}
-                        </span>
-                      )}
-                      <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-apple rounded-lg flex items-center justify-center">
-                        <Eye size={12} />
+                <div className="space-y-3">
+                  {visualAssetGroups.groups.map((group) => (
+                    <div key={group.key} className="glass rounded-lg p-2">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-[10px] uppercase tracking-wide text-gray-400 px-1.5 py-0.5 glass rounded">
+                            {visualAssetGroups.typeLabel[group.type]}
+                          </span>
+                          <span className="text-xs text-gray-300 truncate">{group.name}</span>
+                        </div>
+                        <span className="text-[10px] text-gray-500">{group.items.length}</span>
+                      </div>
+                      <div className="flex gap-2 overflow-x-auto pb-1">
+                        {[...group.items].reverse().map((asset, index) => (
+                          <button
+                            key={asset.id}
+                            onClick={() => {
+                              if (asset.type === 'video') {
+                                window.open(asset.url, '_blank')
+                              } else {
+                                setPreviewImage({ url: asset.url, title: asset.name })
+                              }
+                            }}
+                            className="relative group/thumb flex-shrink-0 w-16 h-12 rounded-lg overflow-hidden border border-white/10 hover:border-white/30 transition-apple"
+                            title={asset.name}
+                          >
+                            {asset.type === 'video' ? (
+                              <video
+                                src={asset.url}
+                                className="w-full h-full object-cover"
+                                muted
+                                playsInline
+                                preload="metadata"
+                              />
+                            ) : (
+                              <img
+                                src={asset.url}
+                                alt={asset.name}
+                                className="w-full h-full object-cover"
+                              />
+                            )}
+                            {index === 0 && (
+                              <span className="absolute top-0.5 left-0.5 text-[8px] px-1 rounded bg-black/60 text-white">
+                                最新
+                              </span>
+                            )}
+                            {asset.duration && (
+                              <span className="absolute bottom-0.5 right-0.5 text-[8px] glass-dark px-1 rounded">
+                                {asset.duration}
+                              </span>
+                            )}
+                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/thumb:opacity-100 transition-apple flex items-center justify-center">
+                              <Eye size={12} />
+                            </div>
+                          </button>
+                        ))}
                       </div>
                     </div>
                   ))}
-                  {visualAssets.length > 12 && (
-                    <button 
-                      onClick={() => setActiveModule('elements')}
-                      className="aspect-square glass rounded-lg flex items-center justify-center text-xs text-gray-500 hover:text-white transition-apple"
-                    >
-                      +{visualAssets.length - 12}
-                    </button>
-                  )}
                 </div>
               </TaskCard>
             )}
@@ -1792,7 +2328,13 @@ ${result.success
                   <div className="flex gap-1 overflow-x-auto pb-2">
                     {visualAssets.filter(a => a.type === 'video').slice(0, 8).map((asset) => (
                       <div key={asset.id} className="flex-shrink-0 w-16">
-                        <img src={asset.url} alt="" className="w-full h-10 object-cover rounded" />
+                        <video
+                          src={asset.url}
+                          className="w-full h-10 object-cover rounded"
+                          muted
+                          playsInline
+                          preload="metadata"
+                        />
                         <p className="text-[8px] text-gray-500 truncate mt-0.5">{asset.name}</p>
                         {asset.duration && <p className="text-[8px] text-gray-400">{asset.duration}</p>}
                       </div>
@@ -1819,8 +2361,13 @@ ${result.success
             onSend={handleSendMessage}
             onStop={() => setSending(false)}
             isLoading={sending}
-            placeholder="描述你想制作的视频..."
+            placeholder="描述你想制作的视频，可上传参考图片..."
+            rows={2}
             showModelSelector={true}
+            enableFileUpload={true}
+            uploadedFiles={uploadedFiles}
+            onFilesChange={setUploadedFiles}
+            maxFiles={5}
           />
         </div>
       </aside>
@@ -2385,7 +2932,7 @@ function AudioAssetItem({ asset }: { asset: AudioAsset }) {
 // 关键元素面板
 function ElementsPanel({ 
   elements, expandedElements, toggleElement, editingElement, setEditingElement,
-  generatingElement, onGenerateImage, onAddElement, onDeleteElement, onUpdateElement,
+  generatingElement, onGenerateImage, onFavoriteImage, onPreviewImage, onAddElement, onDeleteElement, onUpdateElement,
   onGenerateAll, isGenerating
 }: { 
   elements: Record<string, AgentElement>
@@ -2395,6 +2942,8 @@ function ElementsPanel({
   setEditingElement: (id: string | null) => void
   generatingElement: string | null
   onGenerateImage: (id: string) => void
+  onFavoriteImage: (elementId: string, imageId: string) => void
+  onPreviewImage: (url: string, title: string) => void
   onAddElement: () => void
   onDeleteElement: (id: string) => void
   onUpdateElement: (id: string, updates: Partial<AgentElement>) => void
@@ -2466,11 +3015,125 @@ function ElementsPanel({
                   ) : (
                     <>
                       <p className="text-sm text-gray-400 mb-3">{element.description}</p>
-                      {element.image_url ? (
+                      
+                      {/* 图片历史画廊 */}
+                      {element.image_history && element.image_history.length > 0 ? (
+                        <div className="space-y-3">
+                          {/* 当前选中的图片（大图） */}
+                          <div className="relative group">
+                            <img 
+                              src={element.image_url} 
+                              alt={element.name} 
+                              className="w-full max-w-md rounded-xl cursor-pointer"
+                              onClick={() => onPreviewImage(element.image_url!, element.name)}
+                            />
+                            {/* 操作按钮 */}
+                            <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-apple">
+                              {/* 放大查看按钮 */}
+                              <button 
+                                onClick={() => onPreviewImage(element.image_url!, element.name)}
+                                className="p-2 glass-dark rounded-lg hover:bg-white/20"
+                                title="放大查看"
+                              >
+                                <Maximize2 size={14} />
+                              </button>
+                              {/* 收藏按钮 */}
+                              {(() => {
+                                const currentImg = element.image_history?.find(img => img.url === element.image_url)
+                                if (currentImg) {
+                                  return (
+                                    <button 
+                                      onClick={() => onFavoriteImage(element.id, currentImg.id)}
+                                      className={`p-2 rounded-lg hover:bg-white/20 ${currentImg.is_favorite ? 'bg-yellow-400/80' : 'glass-dark'}`}
+                                      title={currentImg.is_favorite ? '已收藏' : '点击收藏'}
+                                    >
+                                      <Star size={14} className={currentImg.is_favorite ? 'text-white fill-white' : 'text-white'} />
+                                    </button>
+                                  )
+                                }
+                                return null
+                              })()}
+                              {/* 重新生成按钮 */}
+                              <button 
+                                onClick={() => onGenerateImage(element.id)} 
+                                disabled={generatingElement === element.id} 
+                                className="p-2 glass-dark rounded-lg hover:bg-white/20 disabled:opacity-50"
+                                title="重新生成"
+                              >
+                                {generatingElement === element.id ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+                              </button>
+                            </div>
+                            {/* 收藏标记（左上角） */}
+                            {element.image_history.find(img => img.url === element.image_url)?.is_favorite && (
+                              <div className="absolute top-2 left-2">
+                                <Star size={16} className="text-yellow-400 fill-yellow-400" />
+                              </div>
+                            )}
+                          </div>
+                          
+                          {/* 历史图片缩略图 */}
+                          {element.image_history.length > 1 && (
+                            <div className="space-y-2">
+                              <p className="text-xs text-gray-500">历史版本 ({element.image_history.length}) - 点击切换</p>
+                              <div className="flex gap-2 overflow-x-auto pb-2">
+                                {element.image_history.map((img) => (
+                                  <div 
+                                    key={img.id} 
+                                    onClick={() => onFavoriteImage(element.id, img.id)}
+                                    className={`relative flex-shrink-0 w-20 h-20 rounded-lg overflow-hidden cursor-pointer group/thumb border-2 transition-all ${
+                                      img.url === element.image_url 
+                                        ? 'border-primary ring-2 ring-primary/50' 
+                                        : img.is_favorite 
+                                          ? 'border-yellow-400' 
+                                          : 'border-transparent hover:border-white/50'
+                                    }`}
+                                    title="点击使用此图片"
+                                  >
+                                    <img 
+                                      src={img.url} 
+                                      alt={`${element.name} 版本`} 
+                                      className="w-full h-full object-cover"
+                                    />
+                                    {/* 当前使用标记 */}
+                                    {img.url === element.image_url && (
+                                      <div className="absolute bottom-0 left-0 right-0 bg-primary/80 text-[10px] text-white text-center py-0.5">
+                                        使用中
+                                      </div>
+                                    )}
+                                    {/* 收藏标记 */}
+                                    {img.is_favorite && img.url !== element.image_url && (
+                                      <div className="absolute top-1 right-1">
+                                        <Star size={12} className="text-yellow-400 fill-yellow-400" />
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ) : element.image_url ? (
                         <div className="relative group">
-                          <img src={element.image_url} alt={element.name} className="w-full max-w-md rounded-xl" />
+                          <img
+                            src={element.image_url}
+                            alt={element.name}
+                            className="w-full max-w-md rounded-xl cursor-pointer"
+                            onClick={() => onPreviewImage(element.image_url!, element.name)}
+                          />
                           <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-apple">
-                            <button onClick={() => onGenerateImage(element.id)} disabled={generatingElement === element.id} className="p-2 glass-dark rounded-lg hover:bg-white/20 disabled:opacity-50">
+                            <button
+                              onClick={() => onPreviewImage(element.image_url!, element.name)}
+                              className="p-2 glass-dark rounded-lg hover:bg-white/20"
+                              title="放大查看"
+                            >
+                              <Maximize2 size={14} />
+                            </button>
+                            <button
+                              onClick={() => onGenerateImage(element.id)}
+                              disabled={generatingElement === element.id}
+                              className="p-2 glass-dark rounded-lg hover:bg-white/20 disabled:opacity-50"
+                              title="重新生成"
+                            >
                               {generatingElement === element.id ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
                             </button>
                           </div>
@@ -2507,7 +3170,7 @@ function ElementsPanel({
 function StoryboardPanel({
   segments, expandedSegments, toggleSegment, elements, onAddSegment,
   onGenerateFrames, onGenerateVideos, isGeneratingFrames, isGeneratingVideos,
-  onRetryFrame, onRetryVideo, retryingShot
+  onRetryFrame, onRetryVideo, onFavoriteShotImage, onPreviewImage, retryingShot
 }: {
   segments: AgentSegment[]
   expandedSegments: Set<string>
@@ -2520,6 +3183,8 @@ function StoryboardPanel({
   isGeneratingVideos: boolean
   onRetryFrame: (shotId: string) => void
   onRetryVideo: (shotId: string) => void
+  onFavoriteShotImage: (segmentId: string, shotId: string, imageId: string) => void
+  onPreviewImage: (url: string, title: string) => void
   retryingShot: string | null
 }) {
   const allShots = segments.flatMap(seg => seg.shots)
@@ -2596,9 +3261,12 @@ function StoryboardPanel({
                     <ShotCard 
                       key={shot.id} 
                       shot={shot} 
+                      segmentId={segment.id}
                       elements={elements}
                       onRetryFrame={onRetryFrame}
                       onRetryVideo={onRetryVideo}
+                      onFavoriteImage={onFavoriteShotImage}
+                      onPreviewImage={onPreviewImage}
                       isRetrying={retryingShot === shot.id}
                     />
                   ))}
@@ -2621,15 +3289,21 @@ function StoryboardPanel({
 // 镜头卡片
 function ShotCard({ 
   shot, 
+  segmentId,
   elements,
   onRetryFrame,
   onRetryVideo,
+  onFavoriteImage,
+  onPreviewImage,
   isRetrying
 }: { 
   shot: AgentShot
+  segmentId: string
   elements: Record<string, AgentElement>
   onRetryFrame: (shotId: string) => void
   onRetryVideo: (shotId: string) => void
+  onFavoriteImage: (segmentId: string, shotId: string, imageId: string) => void
+  onPreviewImage: (url: string, title: string) => void
   isRetrying: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
@@ -2649,6 +3323,9 @@ function ShotCard({
     if (shot.start_image_url) return <ImageIcon size={14} className="text-blue-400" />
     return <AlertCircle size={14} className="text-yellow-400" />
   }
+  
+  // 检查当前起始帧是否被收藏
+  const currentImageFavorited = shot.start_image_history?.find(img => img.url === shot.start_image_url)?.is_favorite
   
   return (
     <div className="glass p-4 rounded-xl">
@@ -2677,18 +3354,100 @@ function ShotCard({
           )}
           
           <div className="flex gap-2">
+            {/* 起始帧区域 */}
             {shot.start_image_url ? (
-              <div className="relative group flex-1">
-                <img src={shot.start_image_url} alt={shot.name} className="w-full rounded-lg" />
-                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-apple rounded-lg flex items-center justify-center">
-                  <button 
-                    onClick={() => onRetryFrame(shot.id)}
-                    disabled={isRetrying}
-                    className="p-2 glass rounded-lg hover:bg-white/20 disabled:opacity-50"
-                  >
-                    {isRetrying ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
-                  </button>
+              <div className="flex-1 space-y-2">
+                {/* 当前起始帧 */}
+                <div className="relative group">
+                  <img 
+                    src={shot.start_image_url} 
+                    alt={shot.name} 
+                    className="w-full rounded-lg cursor-pointer"
+                    onClick={() => onPreviewImage(shot.start_image_url!, shot.name)}
+                  />
+                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-apple rounded-lg flex items-center justify-center gap-2">
+                    {/* 放大查看按钮 */}
+                    <button 
+                      onClick={() => onPreviewImage(shot.start_image_url!, shot.name)}
+                      className="p-2 glass rounded-lg hover:bg-white/20"
+                      title="放大查看"
+                    >
+                      <Maximize2 size={14} />
+                    </button>
+                    {/* 收藏按钮 */}
+                    {(() => {
+                      const currentImg = shot.start_image_history?.find(img => img.url === shot.start_image_url)
+                      if (currentImg) {
+                        return (
+                          <button 
+                            onClick={() => onFavoriteImage(segmentId, shot.id, currentImg.id)}
+                            className={`p-2 rounded-lg hover:bg-white/20 ${currentImg.is_favorite ? 'bg-yellow-400/80' : 'glass'}`}
+                            title={currentImg.is_favorite ? '已收藏' : '点击收藏'}
+                          >
+                            <Star size={14} className={currentImg.is_favorite ? 'text-white fill-white' : 'text-white'} />
+                          </button>
+                        )
+                      }
+                      return null
+                    })()}
+                    {/* 重新生成按钮 */}
+                    <button 
+                      onClick={() => onRetryFrame(shot.id)}
+                      disabled={isRetrying}
+                      className="p-2 glass rounded-lg hover:bg-white/20 disabled:opacity-50"
+                      title="重新生成"
+                    >
+                      {isRetrying ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+                    </button>
+                  </div>
+                  {/* 收藏标记 */}
+                  {currentImageFavorited && (
+                    <div className="absolute top-2 left-2">
+                      <Star size={14} className="text-yellow-400 fill-yellow-400" />
+                    </div>
+                  )}
                 </div>
+                
+                {/* 起始帧历史缩略图 */}
+                {shot.start_image_history && shot.start_image_history.length > 1 && (
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-gray-500">历史版本 ({shot.start_image_history.length}) - 点击切换</p>
+                    <div className="flex gap-1 overflow-x-auto pb-1">
+                      {shot.start_image_history.map((img) => (
+                        <div 
+                          key={img.id} 
+                          onClick={() => onFavoriteImage(segmentId, shot.id, img.id)}
+                          className={`relative flex-shrink-0 w-14 h-10 rounded overflow-hidden cursor-pointer group/thumb border-2 transition-all ${
+                            img.url === shot.start_image_url 
+                              ? 'border-primary ring-1 ring-primary/50' 
+                              : img.is_favorite 
+                                ? 'border-yellow-400' 
+                                : 'border-transparent hover:border-white/50'
+                          }`}
+                          title="点击使用此图片"
+                        >
+                          <img 
+                            src={img.url} 
+                            alt={`${shot.name} 版本`} 
+                            className="w-full h-full object-cover"
+                          />
+                          {/* 当前使用标记 */}
+                          {img.url === shot.start_image_url && (
+                            <div className="absolute bottom-0 left-0 right-0 bg-primary/80 text-[8px] text-white text-center py-0.5">
+                              使用中
+                            </div>
+                          )}
+                          {/* 收藏标记 */}
+                          {img.is_favorite && img.url !== shot.start_image_url && (
+                            <div className="absolute top-0.5 right-0.5">
+                              <Star size={10} className="text-yellow-400 fill-yellow-400" />
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               <button 
@@ -2757,6 +3516,47 @@ function ShotCard({
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+
+// 图片预览 Modal
+function ImagePreviewModal({ 
+  image, 
+  onClose 
+}: { 
+  image: { url: string; title: string } | null
+  onClose: () => void 
+}) {
+  if (!image) return null
+  
+  return (
+    <div 
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div className="relative max-w-[90vw] max-h-[90vh]">
+        <img 
+          src={image.url} 
+          alt={image.title}
+          className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl"
+          onClick={(e) => e.stopPropagation()}
+        />
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 glass px-4 py-2 rounded-lg">
+          <p className="text-sm text-white">{image.title}</p>
+        </div>
+        <button 
+          onClick={onClose}
+          className="absolute top-4 right-4 p-2 glass rounded-full hover:bg-white/20 transition-apple"
+          title="关闭"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
     </div>
   )
 }

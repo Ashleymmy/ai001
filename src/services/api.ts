@@ -96,6 +96,45 @@ export async function uploadReference(file: File): Promise<string> {
   return response.data.dataUrl
 }
 
+// 通用文件上传
+export interface UploadResult {
+  success: boolean
+  file: {
+    id: string
+    name: string
+    size: number
+    type: string
+    category: string
+    url: string
+    previewUrl?: string
+    content?: string
+  }
+}
+
+export async function uploadFile(file: File): Promise<UploadResult> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const response = await api.post('/api/upload', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 300000 // 5分钟超时，用于大文件
+  })
+  return response.data
+}
+
+// 批量上传文件
+export async function uploadFiles(files: File[]): Promise<UploadResult[]> {
+  const results: UploadResult[] = []
+  for (const file of files) {
+    try {
+      const result = await uploadFile(file)
+      results.push(result)
+    } catch (error) {
+      console.error(`上传文件失败: ${file.name}`, error)
+    }
+  }
+  return results
+}
+
 // 单独生成图像
 export async function generateImage(
   prompt: string,
@@ -608,12 +647,21 @@ export interface AgentProjectPlan {
   }
 }
 
+// 元素图片历史记录
+export interface ElementImageHistory {
+  id: string
+  url: string
+  created_at: string
+  is_favorite: boolean  // 是否被收藏（用户选定）
+}
+
 export interface AgentElement {
   id: string
   name: string
   type: string
   description: string
-  image_url?: string
+  image_url?: string  // 当前使用的图片（收藏的或最新的）
+  image_history?: ElementImageHistory[]  // 图片生成历史
   created_at: string
 }
 
@@ -625,6 +673,14 @@ export interface AgentSegment {
   created_at: string
 }
 
+// 镜头图片历史记录
+export interface ShotImageHistory {
+  id: string
+  url: string
+  created_at: string
+  is_favorite: boolean
+}
+
 export interface AgentShot {
   id: string
   name: string
@@ -634,6 +690,7 @@ export interface AgentShot {
   narration: string
   duration: number
   start_image_url?: string
+  start_image_history?: ShotImageHistory[]  // 起始帧历史
   video_url?: string
   status: string
   created_at: string
@@ -680,6 +737,8 @@ export async function agentPlanProject(
   const response = await api.post('/api/agent/plan', {
     userRequest,
     style
+  }, {
+    timeout: 300000 // 5分钟超时，规划可能需要较长时间
   })
   return response.data
 }
@@ -760,10 +819,27 @@ export async function deleteAgentProject(projectId: string): Promise<void> {
   await api.delete(`/api/agent/projects/${projectId}`)
 }
 
-export async function exportProjectAssets(projectId: string): Promise<Blob> {
-  const response = await api.post(`/api/agent/projects/${projectId}/export/assets`, {}, {
-    responseType: 'blob'
-  })
+export async function exportProjectAssets(
+  projectId: string,
+  options?: {
+    signal?: AbortSignal
+    onProgress?: (progress: { loaded: number; total?: number; percent?: number }) => void
+  }
+): Promise<Blob> {
+  const response = await api.post(
+    `/api/agent/projects/${projectId}/export/assets`,
+    {},
+    {
+      responseType: 'blob',
+      signal: options?.signal,
+      onDownloadProgress: (event) => {
+        const loaded = event.loaded
+        const total = typeof event.total === 'number' ? event.total : undefined
+        const percent = total ? Math.round((loaded / total) * 100) : undefined
+        options?.onProgress?.({ loaded, total, percent })
+      }
+    }
+  )
   return response.data
 }
 
@@ -820,6 +896,30 @@ export async function addAgentShot(
   return response.data
 }
 
+// 收藏元素图片
+export async function favoriteElementImage(
+  projectId: string,
+  elementId: string,
+  imageId: string
+): Promise<{ success: boolean; element: AgentElement }> {
+  const response = await api.post(`/api/agent/projects/${projectId}/elements/${elementId}/favorite`, {
+    imageId
+  })
+  return response.data
+}
+
+// 收藏镜头起始帧
+export async function favoriteShotImage(
+  projectId: string,
+  shotId: string,
+  imageId: string
+): Promise<{ success: boolean }> {
+  const response = await api.post(`/api/agent/projects/${projectId}/shots/${shotId}/favorite`, {
+    imageId
+  })
+  return response.data
+}
+
 // ========== Agent 批量生成 API ==========
 
 export interface GenerationResult {
@@ -862,6 +962,19 @@ export interface ProjectStatus {
   }
 }
 
+// 流式生成事件类型
+export interface GenerateStreamEvent {
+  type: 'start' | 'generating' | 'complete' | 'skip' | 'error' | 'done'
+  element_id?: string
+  element_name?: string
+  image_url?: string
+  current?: number
+  total?: number
+  generated?: number
+  failed?: number
+  error?: string
+}
+
 // 批量生成元素图片
 export async function generateProjectElements(
   projectId: string,
@@ -869,8 +982,47 @@ export async function generateProjectElements(
 ): Promise<GenerationResult> {
   const response = await api.post(`/api/agent/projects/${projectId}/generate-elements`, {
     visualStyle
+  }, {
+    timeout: 600000 // 10分钟超时，用于批量生成
   })
   return response.data
+}
+
+// 流式生成元素图片 (SSE)
+export function generateProjectElementsStream(
+  projectId: string,
+  visualStyle: string = '吉卜力动画风格',
+  onEvent: (event: GenerateStreamEvent) => void,
+  onError?: (error: Error) => void
+): () => void {
+  const url = `${API_BASE}/api/agent/projects/${projectId}/generate-elements-stream?visualStyle=${encodeURIComponent(visualStyle)}`
+  
+  const eventSource = new EventSource(url)
+  
+  eventSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data) as GenerateStreamEvent
+      onEvent(data)
+      
+      // 如果完成，关闭连接
+      if (data.type === 'done') {
+        eventSource.close()
+      }
+    } catch (e) {
+      console.error('解析 SSE 事件失败:', e)
+    }
+  }
+  
+  eventSource.onerror = (error) => {
+    console.error('SSE 连接错误:', error)
+    eventSource.close()
+    onError?.(new Error('连接中断'))
+  }
+  
+  // 返回取消函数
+  return () => {
+    eventSource.close()
+  }
 }
 
 // 批量生成起始帧
@@ -880,6 +1032,33 @@ export async function generateProjectFrames(
 ): Promise<GenerationResult> {
   const response = await api.post(`/api/agent/projects/${projectId}/generate-frames`, {
     visualStyle
+  }, {
+    timeout: 600000 // 10分钟超时
+  })
+  return response.data
+}
+
+// 重新生成单个镜头的起始帧（带角色参考图）
+export interface RegenerateShotFrameResult {
+  success: boolean
+  shot_id: string
+  image_url?: string
+  image_id?: string
+  start_image_url?: string
+  start_image_history?: ShotImageHistory[]
+  reference_images_count?: number
+  error?: string
+}
+
+export async function regenerateShotFrame(
+  projectId: string,
+  shotId: string,
+  visualStyle: string = '吉卜力动画风格'
+): Promise<RegenerateShotFrameResult> {
+  const response = await api.post(`/api/agent/projects/${projectId}/shots/${shotId}/regenerate-frame`, {
+    visualStyle
+  }, {
+    timeout: 300000 // 5分钟超时
   })
   return response.data
 }
@@ -891,6 +1070,8 @@ export async function generateProjectVideos(
 ): Promise<GenerationResult> {
   const response = await api.post(`/api/agent/projects/${projectId}/generate-videos`, {
     resolution
+  }, {
+    timeout: 1800000 // 30分钟超时，视频生成更慢
   })
   return response.data
 }
@@ -904,6 +1085,8 @@ export async function executeProjectPipeline(
   const response = await api.post(`/api/agent/projects/${projectId}/execute-pipeline`, {
     visualStyle,
     resolution
+  }, {
+    timeout: 3600000 // 1小时超时，完整流程
   })
   return response.data
 }
@@ -972,4 +1155,19 @@ export async function updateCustomProvider(
 
 export async function deleteCustomProvider(providerId: string): Promise<void> {
   await api.delete(`/api/custom-providers/${providerId}`)
+}
+
+// ========== Agent Video Task Polling ==========
+
+// Poll pending video tasks for a project (updates backend project YAML)
+export async function pollProjectVideoTasks(projectId: string): Promise<{
+  success: boolean
+  checked: number
+  completed: number
+  failed: number
+  processing: number
+  updated: Array<Record<string, unknown>>
+}> {
+  const response = await api.post(`/api/agent/projects/${projectId}/poll-video-tasks`)
+  return response.data
 }

@@ -1,4 +1,78 @@
 videos:
+- id: 006daa93
+  task_id: cgt-20260109155734-wrdn4
+  source_image: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021767941887401a84d6d461ce08db402646c54f49c53512b2602_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260109%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260109T065907Z&X-Tos-Expires=86400&X-Tos-Signature=821d4adbfaf24c055c42db6c2f68356b35ea00a00af43332d1906c3d92b55d1e&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  prompt: 标准镜头，5秒，香蕉滑入[Element_STOMACH_STATION]，变成柔和的黄色液体，溶解[Element_TROUBLE_EGG]，三只[Element_ELF]拿着小铲子清理轨道，暖色调光影，卡通绘本风格
+  video_url: https://ark-content-generation-cn-beijing.tos-cn-beijing.volces.com/doubao-seedance-1-5-pro/02176794545589900000000000000000000ffffac1558a71d69e8.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260109%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260109T075825Z&X-Tos-Expires=86400&X-Tos-Signature=d03fbe06e75776a2a66588a03a2a0a97b74fc20d6a9e3f103dc4720461b6ecfc&X-Tos-SignedHeaders=host
+  status: completed
+  provider: custom_35d1bdd9
+  model: ep-20260107171231-8l7lx
+  duration: 5.0
+  seed: 0
+  created_at: '2026-01-09T15:57:34.568316'
+  updated_at: '2026-01-09T15:58:26.771749'
+- id: 25e46281
+  task_id: cgt-20260109154148-zrnpf
+  source_image: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021767941887401a84d6d461ce08db402646c54f49c53512b2602_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260109%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260109T065907Z&X-Tos-Expires=86400&X-Tos-Signature=821d4adbfaf24c055c42db6c2f68356b35ea00a00af43332d1906c3d92b55d1e&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  prompt: 标准镜头，5秒，香蕉滑入[Element_STOMACH_STATION]，变成柔和的黄色液体，溶解[Element_TROUBLE_EGG]，三只[Element_ELF]拿着小铲子清理轨道，暖色调光影，卡通绘本风格
+  video_url: https://ark-content-generation-cn-beijing.tos-cn-beijing.volces.com/doubao-seedance-1-5-pro/02176794451042000000000000000000000ffffac1558a77d9c3f.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260109%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260109T074243Z&X-Tos-Expires=86400&X-Tos-Signature=846b14970cdfc2106c6489fee175ef5801e8170411a7d216db6959b56cc214cf&X-Tos-SignedHeaders=host
+  status: completed
+  provider: custom_35d1bdd9
+  model: ep-20260107171231-8l7lx
+  duration: 5.0
+  seed: 0
+  created_at: '2026-01-09T15:41:49.172574'
+  updated_at: '2026-01-09T15:42:47.165871'
+- id: 5b50cac8
+  task_id: cgt-20260108144356-r4l8w
+  source_image: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021767852542801a5f1c148697d36f5cbc8f8cca4aee984ed6bc4_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260108%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260108T060913Z&X-Tos-Expires=86400&X-Tos-Signature=d05760c863a40c54f3523e3d94fe6534f6a367a164d9b9f551a026c8d5a4184a&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  prompt: Closeup [3s] of [Element_ROSE_PRINCESS]'s finger pricked by [Element_SPINNING_WHEEL]
+    golden spindle. Small blood drop, Disney 3D detailed texture. Aligned with narration.
+  video_url: https://ark-content-generation-cn-beijing.tos-cn-beijing.volces.com/doubao-seedance-1-5-pro/02176785465784000000000000000000000ffffac1558a7b4c0fe.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260108%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260108T064505Z&X-Tos-Expires=86400&X-Tos-Signature=3d82ba49d8ad25337c65c93f62209a4b05b5d552efe726f91062a2c2ebe00434&X-Tos-SignedHeaders=host
+  status: completed
+  provider: custom_35d1bdd9
+  model: ep-20260107171231-8l7lx
+  duration: 3.0
+  seed: 0
+  created_at: '2026-01-08T14:43:57.143441'
+  updated_at: '2026-01-08T14:45:05.860934'
+- id: 3f6fcda9
+  task_id: cgt-20260108144211-lm6j2
+  source_image: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021767852509935116859cd62eaf528cacfdb93c80a22d6e7c891_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260108%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260108T060839Z&X-Tos-Expires=86400&X-Tos-Signature=49c80376095582ab636a3c8f743281f6fc987e1e51b92658975839b9aea78cad&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  prompt: Closeup [3s] of [Element_EVIL_FAIRY]'s green gem wand pointing at [Element_ROSE_PRINCESS].
+    Glowing green light, Disney 3D intense focus. Aligned with narration.
+  video_url: https://ark-content-generation-cn-beijing.tos-cn-beijing.volces.com/doubao-seedance-1-5-pro/02176785453319900000000000000000000ffffac1558a714f8e7.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260108%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260108T064305Z&X-Tos-Expires=86400&X-Tos-Signature=df8813a7dc5f2ff14316789ebaa5d73a925bc2ea72c83ae655b7abe048f87498&X-Tos-SignedHeaders=host
+  status: completed
+  provider: custom_35d1bdd9
+  model: ep-20260107171231-8l7lx
+  duration: 3.0
+  seed: 0
+  created_at: '2026-01-08T14:42:11.509421'
+  updated_at: '2026-01-08T14:43:09.828416'
+- id: 7e6f2b1d
+  task_id: cgt-20260107175812-mqhxh
+  source_image: /api/images/video_src_7e6f2b1d.jpg
+  prompt: 让图中人物动起来
+  video_url: https://ark-content-generation-cn-beijing.tos-cn-beijing.volces.com/doubao-seedance-1-5-pro/02176777989411700000000000000000000ffffac1558a79334b9.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260107%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260107T095910Z&X-Tos-Expires=86400&X-Tos-Signature=f4126ddae3f510e73a7084f0446e43359a6592e73bde8f3dc3b592fcec148303&X-Tos-SignedHeaders=host
+  status: completed
+  provider: custom_35d1bdd9
+  model: ep-20260107171231-8l7lx
+  duration: 5.0
+  seed: 0
+  created_at: '2026-01-07T17:58:12.740344'
+  updated_at: '2026-01-07T17:59:12.549500'
+- id: 5ef57f0a
+  task_id: 45229814-8679-4c10-801a-5128a78c0b1e
+  source_image: /api/images/video_src_5ef57f0a.png
+  prompt: 镜头缓慢拉远→两人步伐轻快，风吹动裙摆与野花，背景城堡逐渐清晰，保持画面开阔、幸福氛围浓厚
+  video_url: https://dashscope-result-bj.oss-accelerate.aliyuncs.com/1d/07/20260107/45c0a0ae/45229814-8679-4c10-801a-5128a78c0b1e.mp4?Expires=1767857303&OSSAccessKeyId=LTAI5tKPD3TMqf2Lna1fASuh&Signature=%2Ba8sgkWhlAIz3PWR0KMlLcpsiXI%3D
+  status: completed
+  provider: custom
+  model: wan2.6-i2v
+  duration: 5.0
+  seed: 0
+  created_at: '2026-01-07T15:26:44.569760'
+  updated_at: '2026-01-07T15:28:33.019022'
 - id: 26ba1ccb
   task_id: 63f27d9e-3fc4-43da-b512-fba5c788cdb6
   source_image: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAABAAAAAJACAIAAACc94OCAAAFV2lUWHRYTUw6Y29tLmFkb2JlLnhtcAAAAAAAPD94cGFja2V0IGJlZ2luPSLvu78iIGlkPSJXNU0wTXBDZWhpSHpyZVN6TlRjemtjOWQiPz4KPHg6eG1wbWV0YSB4bWxucz
@@ -11,4 +85,4 @@ videos:
   seed: 0
   created_at: '2026-01-02T18:16:07.655581'
   updated_at: '2026-01-02T18:18:23.918478'
-updated_at: '2026-01-02T18:16:07.655581'
+updated_at: '2026-01-09T15:57:34.568316'

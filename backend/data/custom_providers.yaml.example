@@ -1,17 +1,25 @@
-# 自定义服务提供商配置示例
-# 复制此文件为 custom_providers.yaml 并填入你的配置
+# 自定义 Provider 示例（不会包含真实 API Key）
+# 推荐用法：
+# 1) 复制为 `custom_providers.local.yaml`（该文件已在 `.gitignore` 中忽略）
+# 2) 填入真实 `apiKey`；也可以留空，改用环境变量：
+#    - LLM_API_KEY / IMAGE_API_KEY / STORYBOARD_API_KEY / VIDEO_API_KEY
+# 3) 后端启动时优先读取 `custom_providers.local.yaml`，不存在则读取仓库自带的 `custom_providers.yaml`
 
 providers:
-  - id: "custom_xxxxx"
-    name: "我的图像服务"
-    type: "image"
-    api_key: "YOUR_API_KEY_HERE"
-    base_url: "https://your-api-endpoint.com"
-    model: "your-model-name"
-  
-  - id: "custom_yyyyy"
-    name: "我的视频服务"
-    type: "video"
-    api_key: "YOUR_API_KEY_HERE"
-    base_url: "https://your-api-endpoint.com"
-    model: "your-model-name"
+  - id: custom_xxxxx
+    name: 我的图像服务
+    category: image
+    isCustom: true
+    apiKey: "YOUR_API_KEY_HERE"
+    baseUrl: https://your-api-endpoint.com
+    model: your-model-name
+    models: []
+
+  - id: custom_yyyyy
+    name: 我的视频服务
+    category: video
+    isCustom: true
+    apiKey: "YOUR_API_KEY_HERE"
+    baseUrl: https://your-api-endpoint.com
+    model: your-model-name
+    models: []

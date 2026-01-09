@@ -277,7 +277,10 @@ export default function ScriptPage() {
               + 新建
             </button>
           </div>
-          <div className="flex-1 overflow-auto">
+          <div 
+            className="flex-1 overflow-y-auto"
+            style={{ overscrollBehavior: 'contain' }}
+          >
             {loadingHistory ? (
               <div className="p-8 text-center">
                 <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin mx-auto" />
@@ -332,7 +335,10 @@ export default function ScriptPage() {
             </div>
 
             <div className="glass-card overflow-hidden">
-              <div className="max-h-[320px] overflow-auto p-5 space-y-4">
+              <div 
+                className="max-h-[320px] overflow-y-auto p-5 space-y-4"
+                style={{ overscrollBehavior: 'contain' }}
+              >
                 {messages.map((msg, index) => (
                   <div 
                     key={msg.id} 
@@ -453,7 +459,10 @@ export default function ScriptPage() {
 
         <div className="flex-1 flex overflow-hidden">
           {/* 时间轴 */}
-          <div className="w-64 border-r border-white/5 overflow-auto">
+          <div 
+            className="w-64 border-r border-white/5 overflow-y-auto"
+            style={{ overscrollBehavior: 'contain' }}
+          >
             <div className="p-4">
               <h3 className="text-sm font-medium text-gray-400 mb-4 flex items-center gap-2">
                 <Clock size={14} />
@@ -490,7 +499,10 @@ export default function ScriptPage() {
 
           {/* 剧本展示区 */}
           <div className="flex-1 flex flex-col relative">
-            <div className="flex-1 p-6 overflow-auto">
+            <div 
+              className="flex-1 p-6 overflow-y-auto"
+              style={{ overscrollBehavior: 'contain' }}
+            >
               {isEditMode ? (
                 <textarea
                   value={script}
@@ -550,7 +562,10 @@ export default function ScriptPage() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-auto">
+        <div 
+          className="flex-1 overflow-y-auto"
+          style={{ overscrollBehavior: 'contain' }}
+        >
           <div className="p-4 space-y-4">
             {messages.filter(msg => msg.id !== '1').map((msg, index) => {
               const isLongContent = msg.content.length > 200
