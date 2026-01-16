@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type MouseEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { FileText, Image, Film, Video, Clock, ArrowRight, Plus, Trash2, FolderOpen, Sparkles, Layout, X } from 'lucide-react'
+import { Clock, ArrowRight, Plus, Trash2, FolderOpen, Sparkles, Layout, X, Film } from 'lucide-react'
 import { useProjectStore } from '../store/projectStore'
 import { listAgentProjects, deleteAgentProject, type AgentProject } from '../services/api'
+import { MODULE_CARDS } from '../shared/moduleCards'
 
 // 统一的项目类型
 interface UnifiedProject {
@@ -16,45 +17,6 @@ interface UnifiedProject {
   updatedAt: string
   createdAt: string
 }
-
-const MODULES = [
-  {
-    id: 'script',
-    name: '剧本创作',
-    description: '创作和编辑剧本、故事大纲',
-    icon: FileText,
-    gradient: 'from-violet-500 to-purple-400',
-    shadow: 'shadow-violet-500/30',
-    path: '/script'
-  },
-  {
-    id: 'image',
-    name: '图像生成',
-    description: '生成和编辑 AI 图像',
-    icon: Image,
-    gradient: 'from-pink-500 to-rose-400',
-    shadow: 'shadow-pink-500/30',
-    path: '/image'
-  },
-  {
-    id: 'storyboard',
-    name: '分镜制作',
-    description: '将剧本转化为分镜画面',
-    icon: Film,
-    gradient: 'from-orange-500 to-amber-400',
-    shadow: 'shadow-orange-500/30',
-    path: '/storyboard'
-  },
-  {
-    id: 'video',
-    name: '视频生成',
-    description: '将分镜图片生成视频',
-    icon: Video,
-    gradient: 'from-emerald-500 to-teal-400',
-    shadow: 'shadow-emerald-500/30',
-    path: '/video'
-  }
-]
 
 export default function HomePage() {
   const navigate = useNavigate()
@@ -93,7 +55,7 @@ export default function HomePage() {
       name: p.name,
       description: p.description,
       type: 'normal' as const,
-      thumbnail: p.storyboards?.[0]?.imageUrl,
+      thumbnail: p.storyboards?.[0]?.imageUrl || undefined,
       itemCount: p.storyboards?.length || 0,
       itemLabel: '分镜',
       updatedAt: p.updatedAt,
@@ -105,7 +67,7 @@ export default function HomePage() {
       name: p.name,
       description: (p.creative_brief as Record<string, string>)?.visualStyle,
       type: 'agent' as const,
-      thumbnail: Object.values(p.elements || {})[0]?.image_url,
+      thumbnail: Object.values(p.elements || {})[0]?.image_url || undefined,
       itemCount: (p.segments || []).reduce((acc, s) => acc + (s.shots?.length || 0), 0),
       itemLabel: '镜头',
       updatedAt: p.updated_at,
@@ -122,7 +84,7 @@ export default function HomePage() {
       setNewProjectName('')
       setNewProjectDesc('')
       // 使用 replace 避免返回时退出应用
-      navigate(`/project/${project.id}`, { replace: true })
+      navigate(`/home/project/${project.id}`, { replace: true })
     } catch (error) {
       console.error('创建项目失败:', error)
     } finally {
@@ -130,7 +92,7 @@ export default function HomePage() {
     }
   }
 
-  const handleDeleteProject = async (e: React.MouseEvent, id: string, type: 'normal' | 'agent' | 'canvas') => {
+  const handleDeleteProject = async (e: MouseEvent, id: string, type: 'normal' | 'agent' | 'canvas') => {
     e.stopPropagation()
     if (confirm('确定要删除这个项目吗？')) {
       if (type === 'agent') {
@@ -160,7 +122,7 @@ export default function HomePage() {
         <div className="mb-10">
           <h2 className="text-lg font-semibold mb-5 text-gray-300 animate-fadeInUp delay-100">创作工具</h2>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {MODULES.map((module, index) => (
+            {MODULE_CARDS.map((module, index) => (
               <button
                 key={module.id}
                 onClick={() => navigate(module.path)}
@@ -332,7 +294,7 @@ export default function HomePage() {
                     } else if (project.type === 'canvas') {
                       navigate(`/canvas/${project.id}`)
                     } else {
-                      navigate(`/project/${project.id}`)
+                      navigate(`/home/project/${project.id}`)
                     }
                   }}
                   className="glass-card p-5 cursor-pointer group hover-lift animate-fadeInUp"

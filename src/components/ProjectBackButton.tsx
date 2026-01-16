@@ -1,4 +1,4 @@
-import { useNavigate, useLocation, useParams } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { ArrowLeft, FolderOpen } from 'lucide-react'
 
 interface ProjectBackButtonProps {
@@ -24,7 +24,7 @@ export default function ProjectBackButton({ className = '', projectId: propProje
   if (!projectId) return null
   
   const handleBack = () => {
-    navigate(`/project/${projectId}`)
+    navigate(`/home/project/${projectId}`)
   }
   
   return (

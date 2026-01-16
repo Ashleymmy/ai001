@@ -12,120 +12,28 @@ import json
 import uuid
 import re
 import asyncio
-from datetime import datetime
+import hashlib
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any, Callable
+from urllib.parse import urlparse, parse_qs
+
+import httpx
 from openai import AsyncOpenAI
 from .storage_service import StorageService
+from .agent.constants import SHOT_TYPES
+from .agent.prompts import (
+    DEFAULT_AGENT_SYSTEM_PROMPT,
+    DEFAULT_ASSET_COMPLETION_PROMPT,
+    DEFAULT_MANAGER_SYSTEM_PROMPT,
+    DEFAULT_PROJECT_PLANNING_PROMPT,
+    DEFAULT_SCRIPT_DOCTOR_PROMPT,
+)
+from .agent.models import AgentProject
 
-# 镜头类型定义
-SHOT_TYPES = {
-    "standard": {"name": "标准叙事镜头", "duration": "5-6秒", "description": "用于常规叙事"},
-    "quick": {"name": "快速切换", "duration": "3-4秒", "description": "用于关键转折点"},
-    "closeup": {"name": "特写镜头", "duration": "4-5秒", "description": "强调细节和情绪"},
-    "wide": {"name": "远景镜头", "duration": "6-8秒", "description": "展示环境和场景"},
-    "montage": {"name": "蒙太奇", "duration": "8-12秒", "description": "多画面快速切换"}
-}
 
-# Agent 系统提示词 - YuanYuan 风格
-AGENT_SYSTEM_PROMPT = """你是 YuanYuan，一位专业且友好的 AI 视频制作助手。你的对话风格温暖、专业，善于用分步骤的方式解释复杂的制作流程。
-
-## 你的人设
-- 名字：YuanYuan
-- 性格：专业、耐心、友好、乐于助人
-- 说话风格：清晰、有条理，喜欢用「第一步」「第二步」「第三步」来解释流程
-- 特点：会在关键节点等待用户确认，不会一次性做太多事情
-
-## 你的能力
-1. **需求理解**: 分析用户的故事描述，提取关键信息
-2. **项目规划**: 制定完整的制作方案，包括创意简报、剧本、分镜设计
-3. **角色设计**: 为故事中的角色生成详细的视觉描述
-4. **分镜拆解**: 将剧本转化为具体的镜头序列
-5. **提示词优化**: 生成适合 AI 图像/视频生成的提示词
-
-## 对话风格示例
-- 开始任务时：「收到！让我来分析你的需求... 🤔」
-- 解释流程时：「**第一步** 我会先创建项目概要\n**第二步** 编写剧本并设计分镜\n**第三步** 生成角色设计图」
-- 完成阶段时：「✅ Agent分析完成！」
-- 等待确认时：「接下来，你可以选择：\n1. 先让我看看分镜\n2. 一键生成全部\n3. 先生成角色图片」
-
-## 工作流程
-1. 接收用户需求后，先分析并确认理解
-2. 生成项目规划文档（Creative Brief）
-3. 编写剧本并拆解为分镜
-4. 设计关键角色和元素
-5. 为每个镜头生成详细的提示词
-6. 在关键节点等待用户确认
-
-## 元素引用机制
-使用 [Element_XXX] 格式引用预生成的角色和物品，确保视觉一致性。
-例如：[Element_YOUNG_SERVANT]、[Element_WHITE_SNAKE]
-
-## 提示词结构
-[镜头类型] + [时长] + [主体动作] + [场景元素] + [光线氛围] + [画面质感] + [旁白对齐]
-
-## 输出格式
-使用 JSON 格式输出结构化数据，便于系统解析和处理。
-"""
-
-# 项目规划提示词
-PROJECT_PLANNING_PROMPT = """请根据用户的需求，生成完整的项目规划。
-
-用户需求：{user_request}
-
-请输出以下 JSON 格式的项目规划：
-```json
-{{
-  "creative_brief": {{
-    "title": "项目标题",
-    "video_type": "视频类型（Narrative Story/Commercial/Tutorial等）",
-    "narrative_driver": "叙事驱动（旁白驱动/对话驱动/纯视觉）",
-    "emotional_tone": "情感基调",
-    "visual_style": "视觉风格",
-    "duration": "预计时长",
-    "aspect_ratio": "画面比例",
-    "language": "语言"
-  }},
-  "elements": [
-    {{
-      "id": "Element_XXX",
-      "name": "元素名称",
-      "type": "character/object/scene",
-      "description": "详细的视觉描述，用于图像生成"
-    }}
-  ],
-  "segments": [
-    {{
-      "id": "Segment_XXX",
-      "name": "段落名称",
-      "description": "段落描述",
-      "shots": [
-        {{
-          "id": "Shot_XXX",
-          "name": "镜头名称",
-          "type": "standard/quick/closeup/wide/montage",
-          "duration": "预计时长",
-          "description": "镜头描述",
-          "prompt": "完整的图像/视频生成提示词",
-          "narration": "对应的旁白文本"
-        }}
-      ]
-    }}
-  ],
-  "cost_estimate": {{
-    "elements": "元素生成预估积分",
-    "shots": "镜头生成预估积分",
-    "audio": "音频生成预估积分",
-    "total": "总计预估积分"
-  }}
-}}
-```
-
-注意：
-1. 元素描述要详细，适合 AI 图像生成
-2. 镜头提示词要包含元素引用 [Element_XXX]
-3. 每个镜头都要有对应的旁白
-4. 合理估算成本
-"""
+def _sha256(text: str) -> str:
+    import hashlib
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 # 元素生成提示词模板
 ELEMENT_PROMPT_TEMPLATE = """请为以下角色/元素生成详细的图像生成提示词：
@@ -180,15 +88,622 @@ class AgentService:
         self.storage = storage
         self.client: Optional[AsyncOpenAI] = None
         self.model = "qwen-plus"
+        self._prompt_cache: Dict[str, Any] = {"path": None, "mtime": None, "data": None}
+        self._llm_fingerprint: Optional[tuple] = None
         self._init_client()
+
+    def _load_prompt_config(self) -> Dict[str, Any]:
+        """读取 prompts.yaml（带 mtime 缓存），用于统一管理 system prompt。"""
+        try:
+            path = None
+            from .storage_service import PROMPTS_LOCAL_FILE, PROMPTS_TEMPLATE_FILE  # type: ignore
+            if os.path.exists(PROMPTS_LOCAL_FILE):
+                path = PROMPTS_LOCAL_FILE
+            else:
+                path = PROMPTS_TEMPLATE_FILE
+            mtime = os.path.getmtime(path) if path and os.path.exists(path) else None
+
+            cached = self._prompt_cache
+            if cached.get("path") == path and cached.get("mtime") == mtime and isinstance(cached.get("data"), dict):
+                return cached["data"]
+
+            data = self.storage.get_prompts() or {}
+            if not isinstance(data, dict):
+                data = {}
+            self._prompt_cache = {"path": path, "mtime": mtime, "data": data}
+            return data
+        except Exception:
+            return {}
+
+    def _get_prompt(self, dotted_key: str, default: str) -> str:
+        data = self._load_prompt_config()
+        cur: Any = data
+        for part in (dotted_key or "").split("."):
+            if not isinstance(cur, dict):
+                cur = None
+                break
+            cur = cur.get(part)
+        if isinstance(cur, str) and cur.strip():
+            return cur
+        return default
+
+    def _format_prompt_safe(self, template: str, **kwargs: Any) -> str:
+        """Format prompt templates without crashing on unescaped JSON braces.
+
+        Primary path uses `str.format(**kwargs)`. If the template contains raw JSON
+        braces (common in YAML overrides) and formatting fails, fall back to simple
+        placeholder replacement for known keys and unescape `{{`/`}}`.
+        """
+        if not isinstance(template, str):
+            template = str(template)
+        try:
+            return template.format(**kwargs)
+        except Exception:
+            out = template
+            for k, v in kwargs.items():
+                out = out.replace("{" + str(k) + "}", str(v))
+            return out.replace("{{", "{").replace("}}", "}")
+
+    def get_prompts_debug(self, include_content: bool = False) -> Dict[str, Any]:
+        """给前端/调试用：查看当前 prompt 版本与摘要（默认不返回全文）。"""
+        cfg = self._load_prompt_config()
+        version = cfg.get("version")
+        updated_at = cfg.get("updated_at")
+
+        system_prompt = self._get_prompt("agent.system_prompt", DEFAULT_AGENT_SYSTEM_PROMPT)
+        planning_prompt = self._get_prompt("agent.project_planning_prompt", DEFAULT_PROJECT_PLANNING_PROMPT)
+
+        out: Dict[str, Any] = {
+            "version": version,
+            "updated_at": updated_at,
+            "active": {
+                "agent.system_prompt": {"length": len(system_prompt), "sha256": _sha256(system_prompt)},
+                "agent.project_planning_prompt": {"length": len(planning_prompt), "sha256": _sha256(planning_prompt)},
+            }
+        }
+
+        if include_content:
+            out["content"] = {
+                "agent.system_prompt": system_prompt,
+                "agent.project_planning_prompt": planning_prompt,
+            }
+        return out
+    
+    def _detect_scene(self, message: str) -> str:
+        """基于用户输入关键词做轻量路由：避免为了分类再额外调用一次 LLM。"""
+        text = (message or "").lower()
+
+        tech_keywords = [
+            "报错", "错误", "失败", "异常", "bug", "issue", "debug", "日志", "log", "trace",
+            "接口", "api", "请求", "响应", "sse", "跨域", "cors", "端口", "8000", "5173",
+            "前端", "后端", "fastapi", "uvicorn", "react", "electron", "node", "python",
+            "怎么改", "如何修", "修复", "排查", "定位"
+        ]
+        prompt_keywords = [
+            "提示词", "prompt", "negative", "seed", "模型", "model", "分辨率", "画质", "风格", "一致性"
+        ]
+        planning_keywords = [
+            "规划", "方案", "创意", "brief", "大纲", "脚本", "剧本", "分镜", "镜头", "旁白", "对白", "角色", "元素"
+        ]
+        workflow_keywords = [
+            "生成", "一键", "执行", "开始", "继续", "下一步", "重试", "批量", "导出", "合成"
+        ]
+
+        if any(k in text for k in tech_keywords):
+            return "tech_support"
+        if any(k in text for k in prompt_keywords):
+            return "prompt_engineering"
+        if any(k in text for k in planning_keywords):
+            return "project_planning"
+        if any(k in text for k in workflow_keywords):
+            return "workflow"
+        return "general_chat"
+
+    def _first_shot_id(self, project: Dict[str, Any]) -> Optional[str]:
+        segments = project.get("segments", []) or []
+        if not isinstance(segments, list):
+            return None
+        for seg in segments:
+            if not isinstance(seg, dict):
+                continue
+            for shot in (seg.get("shots", []) or []):
+                if isinstance(shot, dict) and isinstance(shot.get("id"), str) and shot.get("id"):
+                    return shot.get("id")
+        return None
+
+    def _maybe_frame_generation_shortcut(self, message: str, project: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """将“生成/重生成起始帧（可排除某些镜头）”转成可确认的前端动作，避免只回复不执行。"""
+        msg = (message or "").strip()
+        if not msg:
+            return None
+
+        if "起始帧" not in msg:
+            return None
+
+        has_generate_intent = any(k in msg for k in ["生成", "重生成", "重新生成", "出图", "重出图", "再生成", "再出图"])
+        if not has_generate_intent:
+            return None
+
+        # 避免误判“生成起始帧提示词”这种纯文本任务
+        if "提示词" in msg and not any(k in msg for k in ["出图", "图片", "画面", "重生成", "重新生成", "生成起始帧"]):
+            return None
+
+        # 排除镜头：支持“除第一张/跳过第一张”或显式 Shot_ID
+        exclude: List[str] = []
+        explicit_shots = re.findall(r"\bShot_[A-Za-z0-9_]+\b", msg)
+
+        # 仅在“批量/全量/排除某些镜头”的语境下走快捷键，避免拦截单个镜头的生成请求
+        batch_markers = ["所有", "全部", "批量", "一键", "除", "除了", "跳过", "排除"]
+        if explicit_shots and not any(k in msg for k in batch_markers):
+            return None
+        if explicit_shots and any(k in msg for k in ["跳过", "排除", "除了", "除", "不要"]):
+            exclude.extend(explicit_shots)
+        elif any(k in msg for k in ["第一张", "首张", "第1张", "第一个镜头", "第一镜头"]):
+            first_id = self._first_shot_id(project)
+            if first_id:
+                exclude.append(first_id)
+
+        exclude = list(dict.fromkeys([x for x in exclude if isinstance(x, str) and x.strip()]))
+
+        # 模式：缺失生成 vs 批量重生成
+        mode = "missing"
+        if any(k in msg for k in ["重生成", "重新生成", "重出图", "再生成", "再出图"]) or ("所有" in msg and "除" in msg):
+            mode = "regenerate"
+        if any(k in msg for k in ["缺失", "没生成", "未生成", "没有", "缺少"]):
+            mode = "missing"
+
+        label = "开始生成起始帧"
+        if exclude:
+            label += f"（跳过 {exclude[0]}）"
+
+        content = "我可以按你的要求开始生成起始帧。"
+        if mode == "regenerate":
+            content += "\n\n注意：批量重生成会对除排除镜头外的镜头重新出图（需要时间与额度），是否开始？"
+        else:
+            content += "\n\n我将只为“缺失起始帧”的镜头补齐出图，是否开始？"
+
+        return {
+            "type": "text",
+            "content": content,
+            "confirmButton": {
+                "label": label,
+                "action": "generate_frames_batch",
+                "payload": {
+                    "mode": mode,
+                    "excludeShotIds": exclude
+                }
+            }
+        }
+    
+    def _scene_system_prompt(self, scene: str) -> str:
+        """在不改变 YuanYuan 人设的前提下，给不同场景加一层更明确的行为约束。"""
+        common_guardrails = """你必须遵守：
+1) 只基于“项目上下文”和“对话记忆”中的事实回答；如果缺信息，先提出澄清问题。
+2) 不要编造任何项目数据（角色/镜头/状态/URL）、配置、文件路径、接口行为；不确定就说不确定。
+3) 当用户只是日常聊天/提问时：直接自然回复，不要强行进入工作流。
+4) 当用户明确要推进制作流程时：给出清晰步骤/选项，并指出需要的输入或下一步操作。
+"""
+
+        if scene == "tech_support":
+            return common_guardrails + """当前场景：技术排障/使用指导。
+- 先复述问题与现象 → 再给最可能的 2-3 个原因 → 给最短验证步骤（日志/接口/前端控制台）。
+- 如果需要看代码/配置，明确让用户提供哪些文件或关键输出。"""
+
+        if scene == "prompt_engineering":
+            return common_guardrails + """当前场景：提示词/模型参数建议。
+- 给出可执行的提示词改写建议（主体、镜头、风格、负面词、角色一致性）。
+- 如果缺少模型/分辨率/参考图信息，先问清再给定稿。
+- 如果用户明确提出“修改申请/把某处改成…/优化某个镜头或元素”，请只提出**最小范围**的改动，不要推翻整个项目。
+- 当你给出可执行的修改时，请用 ```json``` 输出：
+  {
+    "reply": "给用户看的说明（包含修改范围与原因）",
+    "actions": [
+      { "type": "update_shot", "shot_id": "Shot_XX", "patch": { "prompt": "..." }, "reason": "..." }
+    ]
+  }
+  其中 actions 默认只允许修改 `shot.prompt`；除非用户明确要求，否则不要触发重生成。
+  当用户明确要批量修改时（如“全部起始帧/所有镜头”或列出多个 Shot_ID），actions 可以包含多个 update_shot，但仍然只改 prompt。"""
+
+        if scene == "project_planning":
+            return common_guardrails + """当前场景：项目规划/分镜/脚本问答。
+- 优先引用项目里已有的 Creative Brief/镜头/旁白/元素；需要修改时给出最小改动建议。"""
+
+        if scene == "workflow":
+            return common_guardrails + """当前场景：工作流推进。
+- 明确告诉用户你要执行/建议执行哪一步（规划→元素→起始帧→视频→导出）。
+- 遇到关键分歧先确认，不要一次性做太多假设。"""
+
+        return common_guardrails + "当前场景：日常对话/泛问答。"
+    
+    def _project_snapshot(self, project: Dict[str, Any]) -> Dict[str, Any]:
+        """给模型的“事实来源”快照：尽量精简但保留可回答问题所需信息。"""
+        if not isinstance(project, dict):
+            return {}
+
+        snapshot: Dict[str, Any] = {
+            "id": project.get("id"),
+            "name": project.get("name"),
+            "creative_brief": project.get("creative_brief", {}),
+            "elements": {},
+            "segments": [],
+            "updated_at": project.get("updated_at"),
+        }
+
+        elements = project.get("elements", {}) or {}
+        if isinstance(elements, dict):
+            for k, v in elements.items():
+                if not isinstance(v, dict):
+                    continue
+                snapshot["elements"][k] = {
+                    "id": v.get("id"),
+                    "name": v.get("name"),
+                    "type": v.get("type"),
+                    "description": v.get("description"),
+                    "voice_profile": v.get("voice_profile"),
+                    "image_url": v.get("image_url"),
+                    "reference_images": v.get("reference_images") or v.get("referenceImages") or [],
+                }
+
+        segments = project.get("segments", []) or []
+        if isinstance(segments, list):
+            for seg in segments:
+                if not isinstance(seg, dict):
+                    continue
+                shots_out = []
+                for shot in (seg.get("shots", []) or []):
+                    if not isinstance(shot, dict):
+                        continue
+                    shots_out.append({
+                        "id": shot.get("id"),
+                        "name": shot.get("name"),
+                        "type": shot.get("type"),
+                        "description": shot.get("description"),
+                        "prompt": shot.get("prompt"),
+                        "video_prompt": shot.get("video_prompt") or shot.get("videoPrompt"),
+                        "dialogue_script": shot.get("dialogue_script"),
+                        "narration": shot.get("narration"),
+                        "duration": shot.get("duration"),
+                        "status": shot.get("status"),
+                        "start_image_url": shot.get("start_image_url"),
+                        "video_url": shot.get("video_url"),
+                        "reference_images": shot.get("reference_images") or shot.get("referenceImages") or [],
+                    })
+                snapshot["segments"].append({
+                    "id": seg.get("id"),
+                    "name": seg.get("name"),
+                    "description": seg.get("description"),
+                    "shots": shots_out,
+                })
+
+        return snapshot
+    
+    def _collect_project_ids(self, project: Dict[str, Any]) -> Dict[str, set]:
+        shot_ids: set = set()
+        element_ids: set = set()
+
+        elements = project.get("elements", {}) or {}
+        if isinstance(elements, dict):
+            for k, v in elements.items():
+                element_ids.add(k)
+                if isinstance(v, dict) and v.get("id"):
+                    element_ids.add(v.get("id"))
+
+        segments = project.get("segments", []) or []
+        if isinstance(segments, list):
+            for seg in segments:
+                if not isinstance(seg, dict):
+                    continue
+                for shot in (seg.get("shots", []) or []):
+                    if isinstance(shot, dict) and shot.get("id"):
+                        shot_ids.add(shot.get("id"))
+
+        return {"shot_ids": shot_ids, "element_ids": element_ids}
+    
+    def _try_parse_action_bundle(self, reply: str) -> Optional[Dict[str, Any]]:
+        """解析包含 actions 的 JSON 代码块（如果有的话）。"""
+        json_match = re.search(r'```json\s*([\s\S]*?)\s*```', reply)
+        if not json_match:
+            return None
+        try:
+            data = json.loads(json_match.group(1))
+        except Exception:
+            return None
+        if not isinstance(data, dict):
+            return None
+        if not isinstance(data.get("reply"), str):
+            return None
+        if not isinstance(data.get("actions"), list):
+            return None
+        return data
+
+    def _extract_json_from_reply(self, reply: str) -> Optional[Any]:
+        """Extract JSON from LLM output.
+
+        The LLM may return:
+        - a ```json code block
+        - a generic ``` code block containing JSON
+        - JSON embedded in normal text
+        """
+        if not isinstance(reply, str) or not reply.strip():
+            return None
+
+        def try_load(raw: str) -> Optional[Any]:
+            if not isinstance(raw, str):
+                return None
+            s = raw.strip()
+            if not s:
+                return None
+            try:
+                return json.loads(s)
+            except Exception:
+                return None
+
+        # 1) Preferred: ```json ... ```
+        json_match = re.search(r"```(?:json|JSON)\\s*([\\s\\S]*?)\\s*```", reply)
+        if json_match:
+            data = try_load(json_match.group(1))
+            if data is not None:
+                return data
+
+        # 2) Generic fenced block: ``` ... ``` (some models omit language)
+        generic_match = re.search(r"```\\s*([\\s\\S]*?)\\s*```", reply)
+        if generic_match:
+            data = try_load(generic_match.group(1))
+            if data is not None:
+                return data
+
+        # 3) Raw reply starts with JSON
+        raw = reply.strip()
+        if raw.startswith("{") or raw.startswith("["):
+            data = try_load(raw)
+            if data is not None:
+                return data
+
+        # 4) Embedded JSON: extract the first complete object/array via bracket matching
+        def extract_first_json(text: str) -> Optional[str]:
+            start = -1
+            opener = ""
+            for i, ch in enumerate(text):
+                if ch in "{[":
+                    start = i
+                    opener = ch
+                    break
+            if start < 0:
+                return None
+
+            closer = "}" if opener == "{" else "]"
+            depth = 0
+            in_str = False
+            escape = False
+            for j in range(start, len(text)):
+                c = text[j]
+                if in_str:
+                    if escape:
+                        escape = False
+                    elif c == "\\":
+                        escape = True
+                    elif c == '"':
+                        in_str = False
+                    continue
+
+                if c == '"':
+                    in_str = True
+                    continue
+
+                if c == opener:
+                    depth += 1
+                elif c == closer:
+                    depth -= 1
+                    if depth == 0:
+                        return text[start : j + 1]
+            return None
+
+        candidate = extract_first_json(reply)
+        if candidate:
+            return try_load(candidate)
+
+        return None
+
+    def _coerce_float(self, value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value.strip())
+            except Exception:
+                return None
+        return None
+
+    def _apply_segments_patch(self, segments: List[Dict[str, Any]], patch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not isinstance(segments, list) or not isinstance(patch, list):
+            return segments
+
+        seg_map = {seg.get("id"): seg for seg in segments if isinstance(seg, dict) and seg.get("id")}
+        for seg_patch in patch:
+            if not isinstance(seg_patch, dict):
+                continue
+            seg_id = seg_patch.get("id")
+            if not isinstance(seg_id, str) or seg_id not in seg_map:
+                continue
+            seg = seg_map[seg_id]
+            for key in ("name", "description"):
+                val = seg_patch.get(key)
+                if isinstance(val, str) and val.strip():
+                    seg[key] = val
+            shots_patch = seg_patch.get("shots")
+            if isinstance(shots_patch, list):
+                shot_map = {s.get("id"): s for s in (seg.get("shots") or []) if isinstance(s, dict) and s.get("id")}
+                for sp in shots_patch:
+                    if not isinstance(sp, dict):
+                        continue
+                    sid = sp.get("id")
+                    if not isinstance(sid, str) or sid not in shot_map:
+                        continue
+                    shot = shot_map[sid]
+                    for key in ("name", "description", "prompt", "video_prompt", "narration", "dialogue_script"):
+                        val = sp.get(key)
+                        if isinstance(val, str):
+                            shot[key] = val
+                    dur = self._coerce_float(sp.get("duration"))
+                    if dur is not None and dur > 0:
+                        shot["duration"] = dur
+        return segments
+
+    def _insert_shots(self, segments: List[Dict[str, Any]], add_shots: Any) -> List[Dict[str, Any]]:
+        if not isinstance(segments, list) or not isinstance(add_shots, list):
+            return segments
+
+        for item in add_shots:
+            if not isinstance(item, dict):
+                continue
+            segment_id = item.get("segment_id")
+            after_shot_id = item.get("after_shot_id")
+            shot = item.get("shot")
+            if not isinstance(segment_id, str) or not isinstance(shot, dict):
+                continue
+            target_seg = next((s for s in segments if isinstance(s, dict) and s.get("id") == segment_id), None)
+            if not target_seg:
+                continue
+            shots = target_seg.get("shots") or []
+            if not isinstance(shots, list):
+                continue
+
+            new_shot = dict(shot)
+            new_id = new_shot.get("id")
+            if not isinstance(new_id, str) or not new_id.strip():
+                new_id = f"Shot_{uuid.uuid4().hex[:8].upper()}"
+            existing_ids = {s.get("id") for s in shots if isinstance(s, dict)}
+            while new_id in existing_ids:
+                new_id = f"Shot_{uuid.uuid4().hex[:8].upper()}"
+            new_shot["id"] = new_id
+            new_shot.setdefault("status", "pending")
+            new_shot.setdefault("created_at", datetime.utcnow().isoformat() + "Z")
+
+            insert_idx = None
+            if isinstance(after_shot_id, str) and after_shot_id:
+                for idx, s in enumerate(shots):
+                    if isinstance(s, dict) and s.get("id") == after_shot_id:
+                        insert_idx = idx + 1
+                        break
+            if insert_idx is None:
+                shots.append(new_shot)
+            else:
+                shots.insert(insert_idx, new_shot)
+            target_seg["shots"] = shots
+
+        return segments
+    
+    def _validate_actions(
+        self,
+        actions: List[Dict[str, Any]],
+        project: Dict[str, Any],
+        user_message: str
+    ) -> Optional[List[Dict[str, Any]]]:
+        """校验 actions：只允许最小范围、且引用项目内真实 ID。"""
+        ids = self._collect_project_ids(project)
+        shot_ids = ids["shot_ids"]
+        element_ids = ids["element_ids"]
+
+        msg = user_message or ""
+        allow_multi = any(k in msg for k in ["全部", "全局", "所有", "整体"])
+
+        # 点对点批量：用户显式点名多个 Shot_ID 也允许（仍然会严格限制动作类型）
+        mentioned_shots = set(re.findall(r"\bShot_[A-Za-z0-9_]+\b", msg))
+        if len(mentioned_shots) >= 2:
+            allow_multi = True
+
+        allow_regenerate = any(k in msg for k in ["重生成", "重新生成", "重新出图", "重出图", "重跑"])
+
+        normalized: List[Dict[str, Any]] = []
+        targets: set = set()
+
+        for a in actions:
+            if not isinstance(a, dict):
+                return None
+            t = a.get("type")
+
+            if t == "update_shot":
+                shot_id = a.get("shot_id")
+                patch = a.get("patch")
+                if not isinstance(shot_id, str) or shot_id not in shot_ids:
+                    return None
+                if not isinstance(patch, dict):
+                    return None
+
+                # 只允许改 prompt，避免无意间把分镜/旁白一起改掉
+                prompt = patch.get("prompt")
+                if not isinstance(prompt, str) or not prompt.strip():
+                    return None
+                safe_patch = {"prompt": prompt.strip()}
+                targets.add(f"shot:{shot_id}")
+                normalized.append({
+                    "type": "update_shot",
+                    "shot_id": shot_id,
+                    "patch": safe_patch,
+                    "reason": a.get("reason") if isinstance(a.get("reason"), str) else None
+                })
+
+            elif t == "regenerate_shot_frame":
+                if not allow_regenerate:
+                    return None
+                shot_id = a.get("shot_id")
+                if not isinstance(shot_id, str) or shot_id not in shot_ids:
+                    return None
+                targets.add(f"shot:{shot_id}")
+                normalized.append({
+                    "type": "regenerate_shot_frame",
+                    "shot_id": shot_id,
+                    "visualStyle": a.get("visualStyle") if isinstance(a.get("visualStyle"), str) else None
+                })
+
+            elif t == "update_element":
+                element_id = a.get("element_id")
+                patch = a.get("patch")
+                if not isinstance(element_id, str) or element_id not in element_ids:
+                    return None
+                if not isinstance(patch, dict):
+                    return None
+                desc = patch.get("description")
+                if not isinstance(desc, str) or not desc.strip():
+                    return None
+                targets.add(f"element:{element_id}")
+                normalized.append({
+                    "type": "update_element",
+                    "element_id": element_id,
+                    "patch": {"description": desc.strip()},
+                    "reason": a.get("reason") if isinstance(a.get("reason"), str) else None
+                })
+
+            else:
+                return None
+
+        if len(normalized) > 50:
+            return None
+
+        # 默认只允许一个目标，避免“推翻重来”
+        if len(targets) > 1 and not allow_multi:
+            return None
+
+        # 保持 deterministic：update 在前、regenerate 在后
+        order = {"update_shot": 1, "update_element": 1, "regenerate_shot_frame": 2}
+        normalized.sort(key=lambda x: order.get(x.get("type"), 9))
+        return normalized
     
     def _init_client(self):
         """初始化 LLM 客户端"""
-        settings = self.storage.get_settings()
-        llm_config = settings.get("llm", {})
+        settings = self.storage.get_settings() or {}
+        if not isinstance(settings, dict):
+            settings = {}
+        llm_config = settings.get("llm", {}) if isinstance(settings, dict) else {}
+        if not isinstance(llm_config, dict):
+            llm_config = {}
         
         api_key = llm_config.get("apiKey") or os.getenv("LLM_API_KEY", "")
         if not api_key:
+            self.client = None
+            self._llm_fingerprint = None
             print("[Agent] 未配置 LLM API Key")
             return
         
@@ -206,28 +721,85 @@ class AgentService:
                 self.model = custom_config.get("model", self.model)
         
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._llm_fingerprint = (provider, api_key, base_url, self.model)
         print(f"[Agent] 初始化完成: model={self.model}")
+
+    def _ensure_client(self) -> bool:
+        """Ensure LLM client is initialized and up-to-date with latest settings."""
+        settings = self.storage.get_settings() or {}
+        if not isinstance(settings, dict):
+            settings = {}
+        llm_config = settings.get("llm", {})
+        if not isinstance(llm_config, dict):
+            llm_config = {}
+
+        provider = llm_config.get("provider", "qwen")
+        api_key = llm_config.get("apiKey") or os.getenv("LLM_API_KEY", "")
+        base_url = llm_config.get("baseUrl", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        model = llm_config.get("model", "qwen-plus")
+
+        if provider.startswith("custom_"):
+            custom_providers = self.storage.get_custom_providers()
+            custom_config = custom_providers.get(provider, {})
+            if isinstance(custom_config, dict) and custom_config:
+                api_key = custom_config.get("apiKey", api_key)
+                base_url = custom_config.get("baseUrl", base_url)
+                model = custom_config.get("model", model)
+
+        fingerprint = (provider, api_key, base_url, model)
+        if self.client is None or self._llm_fingerprint != fingerprint:
+            self._init_client()
+        return self.client is not None
     
     async def chat(self, message: str, context: Optional[Dict] = None) -> Dict[str, Any]:
         """对话接口 - 处理用户消息并返回结构化响应"""
-        if not self.client:
+        if not self._ensure_client():
             return {
                 "type": "text",
                 "content": "请先在设置中配置 LLM API Key 以启用 AI 助手功能。"
             }
         
         try:
-            # 构建消息
-            messages = [{"role": "system", "content": AGENT_SYSTEM_PROMPT}]
-            
-            # 添加上下文
-            if context:
-                context_str = json.dumps(context, ensure_ascii=False, indent=2)
+            messages = [{"role": "system", "content": self._get_prompt("agent.system_prompt", DEFAULT_AGENT_SYSTEM_PROMPT)}]
+
+            ctx = context or {}
+            # Optional global “manager/supervisor” mode (floating assistant)
+            if isinstance(ctx, dict):
+                mode = ctx.get("assistant_mode") or ctx.get("assistantMode") or ctx.get("mode") or ctx.get("module")
+                if mode == "manager":
+                    messages.append({
+                        "role": "system",
+                        "content": self._get_prompt("agent.manager_system_prompt", DEFAULT_MANAGER_SYSTEM_PROMPT)
+                    })
+            scene = self._detect_scene(message)
+            messages.append({"role": "system", "content": self._scene_system_prompt(scene)})
+
+            # 项目事实快照（禁止模型脑补）
+            project = ctx.get("project") if isinstance(ctx, dict) else None
+            if isinstance(project, dict):
+                shortcut = self._maybe_frame_generation_shortcut(message, project)
+                if shortcut:
+                    return shortcut
+
+                snapshot = self._project_snapshot(project)
                 messages.append({
                     "role": "system",
-                    "content": f"当前项目上下文：\n{context_str}"
+                    "content": "项目上下文（仅作为事实来源，缺失则先问，不要脑补）：\n"
+                               + json.dumps(snapshot, ensure_ascii=False, indent=2)
                 })
-            
+
+                # 追加对话记忆（仅最近 N 条）
+                memory = project.get("agent_memory", []) or []
+                if isinstance(memory, list) and memory:
+                    memory_tail = memory[-20:]
+                    for m in memory_tail:
+                        if not isinstance(m, dict):
+                            continue
+                        role = m.get("role")
+                        content = m.get("content")
+                        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+                            messages.append({"role": role, "content": content})
+
             messages.append({"role": "user", "content": message})
             
             # 调用 LLM
@@ -239,8 +811,32 @@ class AgentService:
             )
             
             reply = response.choices[0].message.content or ""
-            
-            # 尝试解析 JSON 响应
+
+            # 如果模型给出“最小修改动作”，优先走可确认的 actions（避免一不小心推翻重来）
+            if isinstance(project, dict):
+                bundle = self._try_parse_action_bundle(reply)
+                if bundle:
+                    validated = self._validate_actions(bundle.get("actions", []), project, message)
+                    if validated:
+                        has_regen = any(a.get("type") == "regenerate_shot_frame" for a in validated if isinstance(a, dict))
+                        return {
+                            "type": "text",
+                            "content": bundle.get("reply", ""),
+                            "data": {"actions": validated},
+                            "confirmButton": {
+                                "label": "只修改错误点并重生成" if has_regen else "只修改错误点",
+                                "action": "apply_agent_actions",
+                                "payload": validated
+                            }
+                        }
+                    else:
+                        # 解析到了 actions 但没通过安全校验：退回普通对话（要求用户缩小范围/给出明确目标）
+                        return {
+                            "type": "text",
+                            "content": bundle.get("reply", "") + "\n\n（为避免推翻重来：我需要你明确一个要修改的镜头 ID（如 Shot_03）或元素 ID（如 Element_WOLF），我会只改这一个。）"
+                        }
+
+            # 否则按原有逻辑解析（文本 / structured / action）
             parsed = self._parse_response(reply)
             return parsed
             
@@ -253,16 +849,19 @@ class AgentService:
     
     async def plan_project(self, user_request: str, style: str = "吉卜力2D") -> Dict[str, Any]:
         """规划项目 - 根据用户需求生成完整的项目规划"""
-        if not self.client:
+        if not self._ensure_client():
             return {"error": "未配置 LLM API Key"}
         
         try:
-            prompt = PROJECT_PLANNING_PROMPT.format(user_request=user_request)
+            prompt = self._format_prompt_safe(
+                self._get_prompt("agent.project_planning_prompt", DEFAULT_PROJECT_PLANNING_PROMPT),
+                user_request=user_request,
+            )
             
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": AGENT_SYSTEM_PROMPT},
+                    {"role": "system", "content": self._get_prompt("agent.system_prompt", DEFAULT_AGENT_SYSTEM_PROMPT)},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.8,
@@ -283,6 +882,154 @@ class AgentService:
             print(f"[Agent] 项目规划失败: {e}")
             return {"success": False, "error": str(e)}
     
+    async def script_doctor(self, project: Dict[str, Any], mode: str = "expand") -> Dict[str, Any]:
+        """Enhance storyboard/script quality (hook/climax/logic) without breaking IDs."""
+        if not self._ensure_client():
+            return {"success": False, "error": "未配置 LLM API Key"}
+
+        snapshot = self._project_snapshot(project)
+        prompt = self._format_prompt_safe(
+            self._get_prompt("agent.script_doctor_prompt", DEFAULT_SCRIPT_DOCTOR_PROMPT),
+            project_json=json.dumps(snapshot, ensure_ascii=False, indent=2),
+            mode=mode or "expand",
+        )
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self._get_prompt("agent.system_prompt", DEFAULT_AGENT_SYSTEM_PROMPT)},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.6,
+                max_tokens=6000,
+            )
+            reply = response.choices[0].message.content or ""
+            data = self._extract_json_from_reply(reply)
+            if not isinstance(data, dict):
+                return {"success": False, "error": "无法解析 Script Doctor 输出", "raw": reply}
+
+            segments_patch = data.get("segments_patch") or []
+            creative_brief_patch = data.get("creative_brief_patch") or {}
+            add_shots = data.get("add_shots") or []
+
+            next_segments = self._apply_segments_patch(project.get("segments") or [], segments_patch)
+            if (mode or "") == "expand":
+                next_segments = self._insert_shots(next_segments, add_shots)
+
+            next_brief = dict(project.get("creative_brief") or {})
+            if isinstance(creative_brief_patch, dict):
+                next_brief.setdefault("script_doctor", {})
+                if isinstance(next_brief.get("script_doctor"), dict):
+                    next_brief["script_doctor"].update(creative_brief_patch)
+                for k in ("hook", "climax", "logline", "series_bible_hint"):
+                    v = creative_brief_patch.get(k)
+                    if isinstance(v, str) and v.strip():
+                        next_brief[k] = v.strip()
+
+            return {
+                "success": True,
+                "updates": {"creative_brief": next_brief, "segments": next_segments},
+                "patch": data,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def complete_assets(self, project: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract missing scene/prop elements and optionally patch shot prompts."""
+        if not self._ensure_client():
+            return {"success": False, "error": "未配置 LLM API Key"}
+
+        snapshot = self._project_snapshot(project)
+        prompt = self._format_prompt_safe(
+            self._get_prompt("agent.asset_completion_prompt", DEFAULT_ASSET_COMPLETION_PROMPT),
+            project_json=json.dumps(snapshot, ensure_ascii=False, indent=2),
+        )
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self._get_prompt("agent.system_prompt", DEFAULT_AGENT_SYSTEM_PROMPT)},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.4,
+                max_tokens=5000,
+            )
+            reply = response.choices[0].message.content or ""
+            data = self._extract_json_from_reply(reply)
+            if not isinstance(data, dict):
+                return {"success": False, "error": "无法解析资产补全输出", "raw": reply}
+
+            new_elements = data.get("new_elements") or []
+            shot_patch = data.get("shot_patch") or []
+
+            elements = dict(project.get("elements") or {})
+            existing_ids = set(elements.keys())
+
+            def safe_element_id(raw_id: Any, name: str, typ: str) -> str:
+                base = raw_id if isinstance(raw_id, str) else ""
+                base = base.strip()
+                if not base or not re.match(r"^Element_[A-Za-z0-9_]+$", base):
+                    slug = re.sub(r"[^A-Za-z0-9_]+", "_", (name or "").strip().upper())[:32] or typ.upper()
+                    base = f"Element_{slug}"
+                cand = base
+                i = 2
+                while cand in existing_ids:
+                    cand = f"{base}_{i}"
+                    i += 1
+                existing_ids.add(cand)
+                return cand
+
+            added = []
+            if isinstance(new_elements, list):
+                for e in new_elements:
+                    if not isinstance(e, dict):
+                        continue
+                    typ = e.get("type")
+                    if typ not in ("scene", "object"):
+                        continue
+                    name = e.get("name")
+                    desc = e.get("description")
+                    if not isinstance(name, str) or not name.strip() or not isinstance(desc, str) or not desc.strip():
+                        continue
+                    eid = safe_element_id(e.get("id"), name, typ)
+                    element = {
+                        "id": eid,
+                        "name": name.strip(),
+                        "type": typ,
+                        "description": desc.strip(),
+                        "created_at": datetime.utcnow().isoformat() + "Z",
+                    }
+                    elements[eid] = element
+                    added.append(element)
+
+            segments = project.get("segments") or []
+            if isinstance(segments, list) and isinstance(shot_patch, list):
+                patch_map = {p.get("id"): p for p in shot_patch if isinstance(p, dict) and isinstance(p.get("id"), str)}
+                for seg in segments:
+                    if not isinstance(seg, dict):
+                        continue
+                    for shot in (seg.get("shots") or []):
+                        if not isinstance(shot, dict):
+                            continue
+                        sp = patch_map.get(shot.get("id"))
+                        if not sp:
+                            continue
+                        for key in ("description", "prompt", "video_prompt"):
+                            val = sp.get(key)
+                            if isinstance(val, str) and val.strip():
+                                shot[key] = val
+
+            return {
+                "success": True,
+                "updates": {"elements": elements, "segments": segments},
+                "added_elements": added,
+                "raw": data,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     async def generate_element_prompt(
         self,
         element_name: str,
@@ -291,7 +1038,7 @@ class AgentService:
         visual_style: str = "吉卜力动画风格"
     ) -> Dict[str, Any]:
         """生成元素的图像提示词"""
-        if not self.client:
+        if not self._ensure_client():
             return {"error": "未配置 LLM API Key"}
         
         try:
@@ -314,10 +1061,8 @@ class AgentService:
             
             reply = response.choices[0].message.content or ""
             
-            # 提取 JSON
-            json_match = re.search(r'```json\s*([\s\S]*?)\s*```', reply)
-            if json_match:
-                result = json.loads(json_match.group(1))
+            result = self._extract_json_from_reply(reply)
+            if isinstance(result, dict):
                 return {"success": True, **result}
             
             return {"success": False, "error": "无法解析提示词", "raw": reply}
@@ -335,7 +1080,7 @@ class AgentService:
         narration: str
     ) -> Dict[str, Any]:
         """生成镜头的视频提示词"""
-        if not self.client:
+        if not self._ensure_client():
             return {"error": "未配置 LLM API Key"}
         
         try:
@@ -362,10 +1107,8 @@ class AgentService:
             
             reply = response.choices[0].message.content or ""
             
-            # 提取 JSON
-            json_match = re.search(r'```json\s*([\s\S]*?)\s*```', reply)
-            if json_match:
-                result = json.loads(json_match.group(1))
+            result = self._extract_json_from_reply(reply)
+            if isinstance(result, dict):
                 return {"success": True, **result}
             
             return {"success": False, "error": "无法解析提示词", "raw": reply}
@@ -432,121 +1175,6 @@ class AgentService:
         return re.sub(r'\[Element_(\w+)\]', replace_element, prompt)
 
 
-class AgentProject:
-    """Agent 项目数据结构"""
-    
-    def __init__(self, project_id: Optional[str] = None):
-        self.id = project_id or f"agent_{uuid.uuid4().hex[:8]}"
-        self.name = "未命名项目"
-        self.creative_brief: Dict = {}
-        self.elements: Dict[str, Dict] = {}
-        self.segments: List[Dict] = []
-        self.visual_assets: List[Dict] = []
-        self.audio_assets: List[Dict] = []
-        self.timeline: List[Dict] = []
-        self.created_at = datetime.now().isoformat()
-        self.updated_at = datetime.now().isoformat()
-    
-    def add_element(
-        self,
-        element_id: str,
-        name: str,
-        element_type: str,
-        description: str,
-        image_url: Optional[str] = None
-    ) -> Dict:
-        """添加元素"""
-        element = {
-            "id": element_id,
-            "name": name,
-            "type": element_type,
-            "description": description,
-            "image_url": image_url,
-            "created_at": datetime.now().isoformat()
-        }
-        self.elements[element_id] = element
-        self.updated_at = datetime.now().isoformat()
-        return element
-    
-    def add_segment(
-        self,
-        segment_id: str,
-        name: str,
-        description: str
-    ) -> Dict:
-        """添加段落"""
-        segment = {
-            "id": segment_id,
-            "name": name,
-            "description": description,
-            "shots": [],
-            "created_at": datetime.now().isoformat()
-        }
-        self.segments.append(segment)
-        self.updated_at = datetime.now().isoformat()
-        return segment
-    
-    def add_shot(
-        self,
-        segment_id: str,
-        shot_id: str,
-        name: str,
-        shot_type: str,
-        description: str,
-        prompt: str,
-        narration: str,
-        duration: float = 5.0
-    ) -> Optional[Dict]:
-        """添加镜头到段落"""
-        for segment in self.segments:
-            if segment["id"] == segment_id:
-                shot = {
-                    "id": shot_id,
-                    "name": name,
-                    "type": shot_type,
-                    "description": description,
-                    "prompt": prompt,
-                    "narration": narration,
-                    "duration": duration,
-                    "start_image_url": None,
-                    "video_url": None,
-                    "status": "pending",
-                    "created_at": datetime.now().isoformat()
-                }
-                segment["shots"].append(shot)
-                self.updated_at = datetime.now().isoformat()
-                return shot
-        return None
-    
-    def to_dict(self) -> Dict:
-        """转换为字典"""
-        return {
-            "id": self.id,
-            "name": self.name,
-            "creative_brief": self.creative_brief,
-            "elements": self.elements,
-            "segments": self.segments,
-            "visual_assets": self.visual_assets,
-            "audio_assets": self.audio_assets,
-            "timeline": self.timeline,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at
-        }
-    
-    @classmethod
-    def from_dict(cls, data: Dict) -> "AgentProject":
-        """从字典创建"""
-        project = cls(data.get("id"))
-        project.name = data.get("name", "未命名项目")
-        project.creative_brief = data.get("creative_brief", {})
-        project.elements = data.get("elements", {})
-        project.segments = data.get("segments", [])
-        project.visual_assets = data.get("visual_assets", [])
-        project.audio_assets = data.get("audio_assets", [])
-        project.timeline = data.get("timeline", [])
-        project.created_at = data.get("created_at", datetime.now().isoformat())
-        project.updated_at = data.get("updated_at", datetime.now().isoformat())
-        return project
 
 
 class AgentExecutor:
@@ -574,6 +1202,201 @@ class AgentExecutor:
     def cancel(self):
         """取消执行"""
         self._cancelled = True
+
+    def _is_stable_local_url(self, url: Any) -> bool:
+        return isinstance(url, str) and (url.startswith("/api/uploads/") or url.startswith("data:"))
+
+    def _is_probably_expired_signed_url(self, url: Any) -> bool:
+        """Detect expiring signed URLs (Volc TOS / S3 style) without network calls."""
+        if not isinstance(url, str) or not url.startswith("http"):
+            return False
+        try:
+            parsed = urlparse(url)
+            qs = parse_qs(parsed.query or "")
+
+            # Volcengine TOS
+            if "X-Tos-Date" in qs and "X-Tos-Expires" in qs:
+                dt_raw = (qs.get("X-Tos-Date") or [""])[0]
+                exp_raw = (qs.get("X-Tos-Expires") or ["0"])[0]
+                if dt_raw and exp_raw:
+                    start = datetime.strptime(dt_raw, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+                    expires = int(exp_raw)
+                    return datetime.now(timezone.utc) > start + timedelta(seconds=max(0, expires - 30))
+
+            # AWS-style signed URL
+            if "X-Amz-Date" in qs and "X-Amz-Expires" in qs:
+                dt_raw = (qs.get("X-Amz-Date") or [""])[0]
+                exp_raw = (qs.get("X-Amz-Expires") or ["0"])[0]
+                if dt_raw and exp_raw:
+                    start = datetime.strptime(dt_raw, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+                    expires = int(exp_raw)
+                    return datetime.now(timezone.utc) > start + timedelta(seconds=max(0, expires - 30))
+
+        except Exception:
+            return False
+        return False
+
+    def _should_skip_existing_image(self, url: Any) -> bool:
+        if not isinstance(url, str) or not url:
+            return False
+        if self._is_stable_local_url(url):
+            return True
+        if self._is_probably_expired_signed_url(url):
+            return False
+        # Unknown http URL: assume valid
+        return True
+
+    def _filter_reference_images(self, urls: Any, limit: int = 10) -> List[str]:
+        """Filter out unusable reference images (e.g. expired signed URLs)."""
+        if not isinstance(urls, list):
+            return []
+
+        filtered: List[str] = []
+        for url in urls:
+            if not isinstance(url, str):
+                continue
+            u = url.strip()
+            if not u or u.startswith("data:"):
+                continue
+            if u.startswith("/api/uploads/"):
+                filtered.append(u)
+                continue
+            if u.startswith("http") and not self._is_probably_expired_signed_url(u):
+                filtered.append(u)
+
+        dedup: List[str] = []
+        for u in filtered:
+            if u not in dedup:
+                dedup.append(u)
+        return dedup[: max(0, int(limit))]
+
+    async def _cache_remote_to_uploads(self, url: Any, category: str, default_ext: str) -> Any:
+        """Download remote media to local /api/uploads for durability (best-effort)."""
+        if not isinstance(url, str) or not url.startswith("http"):
+            return url
+
+        try:
+            parsed = urlparse(url)
+            ext = os.path.splitext(parsed.path)[1].lower() or default_ext
+            digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+            filename = f"cache_{digest}{ext}"
+
+            backend_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+            upload_dir = os.path.join(backend_root, "uploads", category)
+            os.makedirs(upload_dir, exist_ok=True)
+            dst_path = os.path.join(upload_dir, filename)
+
+            if os.path.exists(dst_path) and os.path.getsize(dst_path) > 0:
+                return f"/api/uploads/{category}/{filename}"
+
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                content = resp.content
+
+            with open(dst_path, "wb") as f:
+                f.write(content)
+
+            return f"/api/uploads/{category}/{filename}"
+        except Exception as e:
+            print(f"[AgentExecutor] 缓存远程资源失败: {str(e)[:200]}")
+            return url
+
+    def _build_video_prompt_for_shot(self, shot: Dict[str, Any], project: AgentProject) -> str:
+        """构建“视频生成”提示词（与起始帧提示词分离）。
+
+        优先使用用户/系统显式设置的 `shot.video_prompt`；否则从 `shot.prompt/shot.description` + `shot.narration` 组合，
+        并加上运动与音频一致性约束，减少“对白跑偏/音色忽男忽女”。
+        """
+        explicit = shot.get("video_prompt") or shot.get("videoPrompt")
+        if isinstance(explicit, str) and explicit.strip():
+            return explicit.strip()
+
+        base_scene = shot.get("prompt") or shot.get("description") or ""
+        if not isinstance(base_scene, str):
+            base_scene = ""
+
+        style = ""
+        if isinstance(project.creative_brief, dict):
+            style = project.creative_brief.get("visualStyle") or ""
+        if not isinstance(style, str) or not style.strip():
+            style = "吉卜力动画风格"
+
+        narrator_voice = ""
+        if isinstance(project.creative_brief, dict):
+            narrator_voice = project.creative_brief.get("narratorVoiceProfile") or ""
+        if not isinstance(narrator_voice, str):
+            narrator_voice = ""
+
+        shot_type = (shot.get("type") or "").strip()
+        motion_map = {
+            "standard": "自然流畅的角色动作与轻微镜头运动，避免突兀跳切",
+            "quick": "节奏更快的动作与镜头移动，但保持画面稳定不眩晕",
+            "closeup": "以角色表情与细节为主，轻微推拉或微摇镜头",
+            "wide": "展示环境与空间关系，缓慢平移/推进镜头，氛围感强",
+            "montage": "更强的节奏感与剪辑感，多段动作连贯但不杂乱"
+        }
+        motion = motion_map.get(shot_type, "自然流畅的动作与适度镜头运动")
+
+        resolved_scene = self._resolve_element_references(base_scene, project.elements)
+        character_consistency = self._build_character_consistency_prompt(base_scene, project.elements)
+
+        # 角色音色设定：按镜头 prompt 中引用的角色元素汇总（尽量不猜）
+        cast_lines = []
+        try:
+            referenced_ids = []
+            for m in re.finditer(r"\[Element_(\w+)\]", base_scene):
+                key = m.group(1)
+                referenced_ids.append(f"Element_{key}")
+            for eid in dict.fromkeys(referenced_ids):
+                elem = project.elements.get(eid)
+                if not isinstance(elem, dict):
+                    continue
+                if elem.get("type") != "character":
+                    continue
+                vp = elem.get("voice_profile")
+                if isinstance(vp, str) and vp.strip():
+                    cast_lines.append(f"{elem.get('name') or eid}: {vp.strip()}")
+        except Exception:
+            cast_lines = []
+
+        narration = shot.get("narration") or ""
+        if not isinstance(narration, str):
+            narration = ""
+
+        dialogue_script = shot.get("dialogue_script") or ""
+        if not isinstance(dialogue_script, str):
+            dialogue_script = ""
+        dialogue_script = dialogue_script.strip()
+
+        audio_rules = (
+            "音频规则：只保留自然环境音/音效（与画面匹配），禁止任何旁白/对白/朗读/人声/唱歌。"
+            "no speech, no voiceover, no narration, no dialogue."
+        )
+        narration_rule = ""
+        dialogue_rule = ""
+
+        voice_cast_rule = ""
+        if narrator_voice.strip() or cast_lines:
+            lines = []
+            if narrator_voice.strip():
+                lines.append(f"旁白音色: {narrator_voice.strip()}")
+            if cast_lines:
+                lines.append("角色音色设定（同角色全片一致）:\n" + "\n".join(cast_lines))
+            voice_cast_rule = "\n".join(lines)
+
+        no_text = "no subtitles, no captions, no on-screen text, no watermarks"
+
+        parts = [p for p in [
+            resolved_scene.strip(),
+            character_consistency.strip(),
+            style.strip(),
+            motion,
+            voice_cast_rule,
+            audio_rules,
+            no_text
+        ] if p]
+        return "，".join(parts)
     
     async def generate_all_elements(
         self,
@@ -603,7 +1426,8 @@ class AgentExecutor:
                 break
             
             # 跳过已有图片的元素
-            if element.get("image_url"):
+            existing_url = element.get("image_url")
+            if existing_url and self._should_skip_existing_image(existing_url):
                 results.append({
                     "element_id": element["id"],
                     "status": "skipped",
@@ -627,21 +1451,31 @@ class AgentExecutor:
                 else:
                     prompt = prompt_result.get("prompt", element["description"])
                     negative_prompt = prompt_result.get("negative_prompt", "blurry, low quality")
-                
+
+                # 可选：使用用户上传的参考图增强一致性（最多 10 张）
+                reference_images = element.get("reference_images") or element.get("referenceImages") or []
+                if not isinstance(reference_images, list):
+                    reference_images = []
+                reference_images = self._filter_reference_images(reference_images, limit=10)
+
                 # 生成图片
                 image_result = await self.image_service.generate(
                     prompt=prompt,
+                    reference_images=reference_images or None,
                     negative_prompt=negative_prompt,
                     width=1024,
                     height=1024
                 )
                 
-                image_url = image_result.get("url")
+                source_url = image_result.get("url")
+                cached_url = await self._cache_remote_to_uploads(source_url, "image", ".jpg")
+                display_url = cached_url if isinstance(cached_url, str) and cached_url.startswith("/api/uploads/") else source_url
                 
                 # 创建图片历史记录
                 image_record = {
                     "id": f"img_{uuid.uuid4().hex[:8]}",
-                    "url": image_url,
+                    "url": display_url,
+                    "source_url": source_url,
                     "created_at": datetime.utcnow().isoformat() + "Z",
                     "is_favorite": False
                 }
@@ -659,12 +1493,13 @@ class AgentExecutor:
                 
                 # 如果没有收藏的图片，使用最新生成的
                 if not has_favorite:
-                    project.elements[element["id"]]["image_url"] = image_url
-                
+                    project.elements[element["id"]]["image_url"] = source_url
+                    project.elements[element["id"]]["cached_image_url"] = display_url if isinstance(display_url, str) and display_url.startswith("/api/uploads/") else None
+
                 # 添加到视觉资产
                 project.visual_assets.append({
                     "id": f"asset_{element['id']}",
-                    "url": image_url,
+                    "url": display_url,
                     "type": "element",
                     "element_id": element["id"]
                 })
@@ -673,7 +1508,8 @@ class AgentExecutor:
                 result = {
                     "element_id": element["id"],
                     "status": "success",
-                    "image_url": image_url,
+                    "image_url": display_url,
+                    "source_url": source_url,
                     "image_id": image_record["id"]
                 }
                 results.append(result)
@@ -724,7 +1560,17 @@ class AgentExecutor:
         for segment in project.segments:
             for shot in segment.get("shots", []):
                 all_shots.append((segment["id"], shot))
-        
+
+        # 为“上一镜头场景参考”建立索引（同一段落内）
+        prev_shot_by_id: Dict[str, Optional[Dict[str, Any]]] = {}
+        for segment in project.segments:
+            prev: Optional[Dict[str, Any]] = None
+            for s in segment.get("shots", []) or []:
+                sid = s.get("id") if isinstance(s, dict) else None
+                if isinstance(sid, str) and sid:
+                    prev_shot_by_id[sid] = prev
+                prev = s if isinstance(s, dict) else None
+
         total = len(all_shots)
         generated = 0
         failed = 0
@@ -735,7 +1581,8 @@ class AgentExecutor:
                 break
             
             # 跳过已有起始帧的镜头
-            if shot.get("start_image_url"):
+            existing_url = shot.get("start_image_url")
+            if existing_url and self._should_skip_existing_image(existing_url):
                 results.append({
                     "shot_id": shot["id"],
                     "status": "skipped",
@@ -752,7 +1599,23 @@ class AgentExecutor:
                 
                 # 收集镜头中涉及的角色参考图（使用收藏的图片）
                 reference_images = self._collect_element_reference_images(prompt, project.elements)
-                
+
+                # 叠加镜头级参考图（用户上传）
+                shot_refs = shot.get("reference_images") or shot.get("referenceImages") or []
+                if isinstance(shot_refs, list):
+                    for u in shot_refs:
+                        if isinstance(u, str) and u and u not in reference_images and not u.startswith("data:") and (u.startswith("http") or u.startswith("/api/uploads/")):
+                            reference_images.append(u)
+
+                # 叠加上一镜头的起始帧作为“场景参考”（同一段落内）
+                prev_shot = prev_shot_by_id.get(shot.get("id"))
+                if isinstance(prev_shot, dict):
+                    prev_frame = prev_shot.get("start_image_url")
+                    if isinstance(prev_frame, str) and prev_frame and prev_frame not in reference_images and (prev_frame.startswith("http") or prev_frame.startswith("/api/uploads/")):
+                        reference_images.append(prev_frame)
+
+                reference_images = self._filter_reference_images(reference_images, limit=10)
+
                 # 收集镜头中涉及的角色，构建角色一致性提示
                 character_consistency = self._build_character_consistency_prompt(prompt, project.elements)
                 
@@ -768,12 +1631,15 @@ class AgentExecutor:
                     height=720
                 )
                 
-                image_url = image_result.get("url")
+                source_url = image_result.get("url")
+                cached_url = await self._cache_remote_to_uploads(source_url, "image", ".jpg")
+                display_url = cached_url if isinstance(cached_url, str) and cached_url.startswith("/api/uploads/") else source_url
                 
                 # 创建图片历史记录
                 image_record = {
                     "id": f"frame_{uuid.uuid4().hex[:8]}",
-                    "url": image_url,
+                    "url": display_url,
+                    "source_url": source_url,
                     "created_at": datetime.utcnow().isoformat() + "Z",
                     "is_favorite": False
                 }
@@ -792,12 +1658,13 @@ class AgentExecutor:
                 
                 # 如果没有收藏的图片，使用最新生成的
                 if not has_favorite:
-                    shot["start_image_url"] = image_url
+                    shot["start_image_url"] = source_url
+                    shot["cached_start_image_url"] = display_url if isinstance(display_url, str) and display_url.startswith("/api/uploads/") else None
                 
                 # 添加到视觉资产
                 project.visual_assets.append({
                     "id": f"frame_{shot['id']}",
-                    "url": image_url,
+                    "url": display_url,
                     "type": "start_frame",
                     "shot_id": shot["id"]
                 })
@@ -806,7 +1673,8 @@ class AgentExecutor:
                 result = {
                     "shot_id": shot["id"],
                     "status": "success",
-                    "image_url": image_url,
+                    "image_url": display_url,
+                    "source_url": source_url,
                     "image_id": image_record["id"]
                 }
                 results.append(result)
@@ -878,7 +1746,29 @@ class AgentExecutor:
             
             # 收集镜头中涉及的角色参考图（使用收藏的图片）
             reference_images = self._collect_element_reference_images(prompt, project.elements)
-            
+
+            # 叠加镜头级参考图（用户上传）
+            shot_refs = target_shot.get("reference_images") or target_shot.get("referenceImages") or []
+            if isinstance(shot_refs, list):
+                for u in shot_refs:
+                    if isinstance(u, str) and u and u not in reference_images and not u.startswith("data:") and (u.startswith("http") or u.startswith("/api/uploads/")):
+                        reference_images.append(u)
+
+            # 叠加上一镜头的起始帧作为“场景参考”（同一段落内）
+            if isinstance(target_segment, dict):
+                seg_shots = target_segment.get("shots") or []
+                if isinstance(seg_shots, list):
+                    for idx, s in enumerate(seg_shots):
+                        if isinstance(s, dict) and s.get("id") == shot_id and idx > 0:
+                            prev = seg_shots[idx - 1]
+                            if isinstance(prev, dict):
+                                prev_frame = prev.get("start_image_url")
+                                if isinstance(prev_frame, str) and prev_frame and prev_frame not in reference_images and (prev_frame.startswith("http") or prev_frame.startswith("/api/uploads/")):
+                                    reference_images.append(prev_frame)
+                            break
+
+            reference_images = self._filter_reference_images(reference_images, limit=10)
+
             # 收集镜头中涉及的角色，构建角色一致性提示
             character_consistency = self._build_character_consistency_prompt(prompt, project.elements)
             
@@ -894,12 +1784,15 @@ class AgentExecutor:
                 height=720
             )
             
-            image_url = image_result.get("url")
+            source_url = image_result.get("url")
+            cached_url = await self._cache_remote_to_uploads(source_url, "image", ".jpg")
+            display_url = cached_url if isinstance(cached_url, str) and cached_url.startswith("/api/uploads/") else source_url
             
             # 创建图片历史记录
             image_record = {
                 "id": f"frame_{uuid.uuid4().hex[:8]}",
-                "url": image_url,
+                "url": display_url,
+                "source_url": source_url,
                 "created_at": datetime.utcnow().isoformat() + "Z",
                 "is_favorite": False
             }
@@ -911,7 +1804,8 @@ class AgentExecutor:
             if not image_history and target_shot.get("start_image_url"):
                 old_image_record = {
                     "id": f"frame_old_{uuid.uuid4().hex[:8]}",
-                    "url": target_shot["start_image_url"],
+                    "url": target_shot.get("cached_start_image_url") or target_shot["start_image_url"],
+                    "source_url": target_shot["start_image_url"],
                     "created_at": target_shot.get("created_at", datetime.utcnow().isoformat() + "Z"),
                     "is_favorite": False
                 }
@@ -930,7 +1824,8 @@ class AgentExecutor:
             
             # 如果没有收藏的图片，使用最新生成的
             if not has_favorite:
-                target_shot["start_image_url"] = image_url
+                target_shot["start_image_url"] = source_url
+                target_shot["cached_start_image_url"] = display_url if isinstance(display_url, str) and display_url.startswith("/api/uploads/") else None
             
             # 保存项目
             self.storage.save_agent_project(project.to_dict())
@@ -938,9 +1833,11 @@ class AgentExecutor:
             return {
                 "success": True,
                 "shot_id": shot_id,
-                "image_url": image_url,
+                "image_url": display_url,
+                "source_url": source_url,
                 "image_id": image_record["id"],
                 "start_image_url": target_shot["start_image_url"],
+                "cached_start_image_url": target_shot.get("cached_start_image_url"),
                 "start_image_history": image_history,
                 "reference_images_count": len(reference_images)
             }
@@ -1002,7 +1899,7 @@ class AgentExecutor:
             
             try:
                 # 构建视频提示词
-                video_prompt = shot.get("resolved_prompt", shot.get("prompt", ""))
+                video_prompt = self._build_video_prompt_for_shot(shot, project)
                 
                 # 生成视频
                 video_result = await self.video_service.generate(
@@ -1318,7 +2215,19 @@ class AgentExecutor:
         
         提取镜头提示词中引用的所有元素的图片 URL，用于图文混合生成
         """
-        reference_images = []
+        reference_images: List[str] = []
+
+        def is_valid_ref(url: Any) -> bool:
+            if not isinstance(url, str):
+                return False
+            u = url.strip()
+            if not u or u.startswith("data:"):
+                return False
+            if u.startswith("/api/uploads/"):
+                return True
+            if u.startswith("http") and not self._is_probably_expired_signed_url(u):
+                return True
+            return False
         
         # 找出所有引用的元素
         for match in re.finditer(r'\[Element_(\w+)\]', prompt):
@@ -1326,13 +2235,19 @@ class AgentExecutor:
             full_id = f"Element_{element_key}"
             element = elements.get(full_id) or elements.get(element_key)
             
-            if element and element.get("image_url"):
-                image_url = element["image_url"]
-                # 确保是有效的 URL
-                if image_url and image_url.startswith('http') and image_url not in reference_images:
-                    reference_images.append(image_url)
-                    print(f"[AgentExecutor] 添加参考图: {element.get('name', element_key)} -> {image_url[:50]}...")
-        
+            if element and isinstance(element, dict):
+                candidates: List[Any] = []
+                if element.get("image_url"):
+                    candidates.append(element.get("image_url"))
+                ref_list = element.get("reference_images") or element.get("referenceImages") or []
+                if isinstance(ref_list, list):
+                    candidates.extend(ref_list)
+
+                for image_url in candidates:
+                    if is_valid_ref(image_url) and image_url not in reference_images:
+                        reference_images.append(image_url)
+                        print(f"[AgentExecutor] 添加参考图: {element.get('name', element_key)} -> {str(image_url)[:50]}...")
+
         return reference_images
     
     async def execute_full_pipeline(

@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
-  Plus, Type, Image as ImageIcon, Video, FileText, Music,
+  Plus, FileText,
   Upload, Download, Sparkles, ZoomIn, ZoomOut,
   X, Play, Trash2, Copy, ChevronLeft, Save,
   Undo2, Redo2, Grid, RotateCcw, EyeOff, Lock, Unlock,
@@ -9,72 +9,13 @@ import {
 } from 'lucide-react'
 import { generateImage, chatWithAI } from '../services/api'
 import { useSettingsStore } from '../store/settingsStore'
-
-// 节点类型
-type NodeType = 'text' | 'image' | 'video' | 'audio' | 'script'
-
-// 节点接口
-interface CanvasNode {
-  id: string
-  type: NodeType
-  x: number
-  y: number
-  width: number
-  height: number
-  title: string
-  content: string
-  imageUrl?: string
-  videoUrl?: string
-  audioUrl?: string
-  status: 'idle' | 'generating' | 'done' | 'error'
-  error?: string
-  locked: boolean
-  visible: boolean
-  zIndex: number
-  // 生成参数
-  model?: string
-  style?: string
-  seed?: number
-}
-
-// 连接接口
-interface Connection {
-  id: string
-  fromNode: string
-  fromPort: 'output'
-  toNode: string
-  toPort: 'input'
-}
-
-// 历史记录
-interface HistoryState {
-  nodes: CanvasNode[]
-  connections: Connection[]
-}
-
-// 模板
-const TEMPLATES = [
-  { id: 'empty', name: '空白画布', desc: '从零开始', nodes: [] },
-  { id: 'story', name: '故事创作', desc: '剧本→分镜→视频', nodes: ['script', 'image', 'video'] },
-  { id: 'ad', name: '广告制作', desc: '文案→图片→配音', nodes: ['text', 'image', 'audio'] },
-  { id: 'music-video', name: 'MV制作', desc: '歌词→画面→视频', nodes: ['text', 'image', 'video', 'audio'] },
-]
-
-// 节点类型配置
-const NODE_TYPES = [
-  { type: 'text' as NodeType, icon: Type, label: '文本', desc: '故事、文案、提示词', gradient: 'from-blue-500 to-cyan-500' },
-  { type: 'image' as NodeType, icon: ImageIcon, label: '图片', desc: 'AI 图像生成', gradient: 'from-purple-500 to-pink-500' },
-  { type: 'video' as NodeType, icon: Video, label: '视频', desc: '图生视频', gradient: 'from-green-500 to-emerald-500' },
-  { type: 'audio' as NodeType, icon: Music, label: '音频', desc: '配音、音乐', gradient: 'from-orange-500 to-amber-500' },
-  { type: 'script' as NodeType, icon: FileText, label: '剧本', desc: 'AI 剧本创作', gradient: 'from-violet-500 to-purple-500' },
-]
+import { NODE_TYPES, TEMPLATES } from '../features/canvas/constants'
+import type { CanvasNode, Connection, HistoryState, NodeType } from '../features/canvas/types'
 
 export default function CanvasPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const urlProjectId = location.pathname.match(/\/canvas\/([^/]+)/)?.[1] || null
-  
-  const { settings } = useSettingsStore()
   
   // 画布状态
   const [nodes, setNodes] = useState<CanvasNode[]>([])
@@ -243,11 +184,6 @@ export default function CanvasPage() {
   }, [connections, saveHistory])
 
   // 删除连接
-  const deleteConnection = useCallback((id: string) => {
-    setConnections(prev => prev.filter(c => c.id !== id))
-    saveHistory()
-  }, [saveHistory])
-
   // AI 生成
   const generateContent = useCallback(async (nodeId: string) => {
     const node = nodes.find(n => n.id === nodeId)
@@ -415,7 +351,7 @@ export default function CanvasPage() {
     }
   }, [draggingNode, isPanning, connectingFrom, zoom, pan, dragOffset, updateNode])
 
-  const handleMouseUp = useCallback((e: MouseEvent) => {
+  const handleMouseUp = useCallback(() => {
     if (draggingNode) {
       saveHistory()
     }
@@ -677,7 +613,6 @@ export default function CanvasPage() {
                   }
                   setConnectingFrom(null)
                 }}
-                zoom={zoom}
               />
             ))}
           </div>
@@ -687,7 +622,7 @@ export default function CanvasPage() {
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
               <div className="text-center pointer-events-auto">
                 <div className="flex justify-center gap-4 mb-6">
-                  {NODE_TYPES.slice(0, 3).map((item, i) => (
+                  {NODE_TYPES.slice(0, 3).map((item) => (
                     <button
                       key={item.type}
                       onClick={() => createNode(item.type)}
@@ -739,7 +674,7 @@ export default function CanvasPage() {
             style={{ left: Math.min(addMenuPos.x, window.innerWidth - 240), top: Math.min(addMenuPos.y, window.innerHeight - 350) }}
           >
             <div className="text-xs text-gray-500 px-3 py-2">添加节点</div>
-            {NODE_TYPES.map((item, i) => (
+            {NODE_TYPES.map((item) => (
               <button
                 key={item.type}
                 onClick={() => {
@@ -790,11 +725,10 @@ interface NodeComponentProps {
   onGenerate: () => void
   onStartConnect: () => void
   onEndConnect: () => void
-  zoom: number
 }
 
 function NodeComponent({
-  node, isSelected, onMouseDown, onUpdate, onDelete, onDuplicate, onGenerate, onStartConnect, onEndConnect, zoom
+  node, isSelected, onMouseDown, onUpdate, onDelete, onDuplicate, onGenerate, onStartConnect, onEndConnect
 }: NodeComponentProps) {
   const [inputValue, setInputValue] = useState(node.content)
   const [showToolbar, setShowToolbar] = useState(false)

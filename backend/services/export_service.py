@@ -68,9 +68,11 @@ class ExportService:
             elements_dir = os.path.join(project_dir, "1_角色元素")
             frames_dir = os.path.join(project_dir, "2_镜头起始帧")
             videos_dir = os.path.join(project_dir, "3_视频片段")
+            audio_dir = os.path.join(project_dir, "4_音频(旁白对白)")
             os.makedirs(elements_dir, exist_ok=True)
             os.makedirs(frames_dir, exist_ok=True)
             os.makedirs(videos_dir, exist_ok=True)
+            os.makedirs(audio_dir, exist_ok=True)
             
             # 下载角色元素图片
             element_count = 0
@@ -98,6 +100,7 @@ class ExportService:
             # 下载镜头起始帧和视频
             frame_count = 0
             video_count = 0
+            audio_count = 0
             for seg in segments:
                 for shot in seg.get('shots', []):
                     shot_name = shot.get('name', shot.get('id', 'unknown'))
@@ -141,6 +144,25 @@ class ExportService:
                                 "error": str(e),
                             })
                             print(f"[ExportService] 视频下载失败: {filename} ({e})")
+
+                    # 旁白/对白音频（独立 TTS 生成的人声轨）
+                    voice_audio_url = shot.get("voice_audio_url")
+                    if voice_audio_url:
+                        filename = f"{safe_shot_name}{unique_suffix}_voice{infer_ext(voice_audio_url, '.mp3')}"
+                        filepath = os.path.join(audio_dir, filename)
+                        try:
+                            await self._download_file(voice_audio_url, filepath)
+                            audio_count += 1
+                            print(f"[ExportService] 已下载音频: {filename}")
+                        except Exception as e:
+                            failed_count += 1
+                            failed_records.append({
+                                "type": "audio",
+                                "name": str(shot.get("name") or shot.get("id") or "unknown"),
+                                "url": str(voice_audio_url),
+                                "error": str(e),
+                            })
+                            print(f"[ExportService] 音频下载失败: {filename} ({e})")
             
             # 创建项目信息文件
             info_file = os.path.join(project_dir, "项目信息.txt")
@@ -151,6 +173,7 @@ class ExportService:
                 f.write(f"角色元素: {element_count} 个\n")
                 f.write(f"镜头起始帧: {frame_count} 个\n")
                 f.write(f"视频片段: {video_count} 个\n")
+                f.write(f"旁白/对白音频: {audio_count} 个\n")
                 f.write(f"下载失败: {failed_count} 个\n")
                 f.write(f"\n=== 分镜列表 ===\n")
                 for i, seg in enumerate(segments, 1):
@@ -217,14 +240,17 @@ class ExportService:
         temp_dir = tempfile.mkdtemp()
         
         try:
-            # 收集所有视频 URL
+            # 收集所有视频 URL（同时保留镜头时长与人声轨 URL，便于后续混音）
             video_urls = []
             for seg in segments:
                 for shot in seg.get('shots', []):
                     if shot.get('video_url'):
                         video_urls.append({
                             'url': shot['video_url'],
-                            'name': shot.get('name', shot.get('id', 'unknown'))
+                            'name': shot.get('name', shot.get('id', 'unknown')),
+                            'duration': shot.get('duration', 5),
+                            'voice_audio_url': shot.get('voice_audio_url'),
+                            'voice_audio_duration_ms': shot.get('voice_audio_duration_ms')
                         })
             
             if not video_urls:
@@ -240,14 +266,57 @@ class ExportService:
                 await self._download_file(video_info['url'], filepath)
                 video_files.append(filepath)
                 print(f"[ExportService] 已下载: {video_info['name']}")
+
+            def _probe_duration_sec(media_path: str) -> float:
+                try:
+                    p = subprocess.run(
+                        [
+                            "ffprobe",
+                            "-v",
+                            "error",
+                            "-show_entries",
+                            "format=duration",
+                            "-of",
+                            "default=noprint_wrappers=1:nokey=1",
+                            media_path,
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=10,
+                    )
+                    if p.returncode == 0:
+                        out = p.stdout.decode("utf-8", errors="ignore").strip()
+                        if out:
+                            return float(out)
+                except Exception:
+                    pass
+                return 0.0
+
+            def _has_audio_stream(video_path: str) -> bool:
+                try:
+                    p = subprocess.run(
+                        [
+                            "ffprobe",
+                            "-v",
+                            "error",
+                            "-select_streams",
+                            "a",
+                            "-show_entries",
+                            "stream=index",
+                            "-of",
+                            "csv=p=0",
+                            video_path,
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=10,
+                    )
+                    return p.returncode == 0 and bool(p.stdout.decode("utf-8", errors="ignore").strip())
+                except Exception:
+                    return False
             
-            # 创建 FFmpeg concat 文件
+            # 创建 FFmpeg concat 文件（注意：后续可能会对 video_files 做预处理替换，因此会在拼接前再次写入）
             concat_file = os.path.join(temp_dir, "concat.txt")
-            with open(concat_file, 'w', encoding='utf-8') as f:
-                for video_file in video_files:
-                    # FFmpeg concat 需要转义路径
-                    escaped_path = video_file.replace('\\', '/').replace("'", "'\\''")
-                    f.write(f"file '{escaped_path}'\n")
             
             # 输出文件路径
             output_filename = f"{project_name}_{project_id}_merged.mp4"
@@ -259,23 +328,147 @@ class ExportService:
                 scale_filter = "-vf scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"
             elif output_resolution == "720p":
                 scale_filter = "-vf scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2"
-            
-            # 使用 FFmpeg 拼接视频
+
+            # 如果有独立人声轨（旁白/对白），优先保证“念完不截断”：必要时自动延长对应视频段（定格最后一帧）。
+            has_voice_tracks = any(v.get("voice_audio_url") for v in video_urls)
+            if has_voice_tracks:
+                try:
+                    for i, v in enumerate(video_urls):
+                        voice_url = v.get("voice_audio_url")
+                        if not voice_url:
+                            v["voice_sec"] = 0.0
+                            continue
+                        ext = os.path.splitext(urllib.parse.urlparse(voice_url).path or "")[1] or ".mp3"
+                        voice_in = os.path.join(temp_dir, f"voice_in_{i:03d}{ext}")
+                        await self._download_file(voice_url, voice_in)
+                        v["voice_in_path"] = voice_in
+                        v["voice_sec"] = float(_probe_duration_sec(voice_in) or 0.0)
+
+                    processed_files = []
+                    for i, video_file in enumerate(video_files):
+                        v = video_urls[i]
+                        base_sec = float(v.get("duration") or 5)
+                        voice_sec = float(v.get("voice_sec") or 0.0)
+                        target_sec = max(base_sec, voice_sec) if voice_sec > 0 else base_sec
+                        v["export_duration_sec"] = target_sec
+
+                        raw_sec = float(_probe_duration_sec(video_file) or 0.0)
+                        if raw_sec <= 0:
+                            raw_sec = base_sec
+
+                        pad_sec = max(0.0, target_sec - raw_sec)
+                        vf = ""
+                        if scale_filter:
+                            # scale_filter 形如 "-vf xxx"，这里只取滤镜表达式
+                            vf = " ".join(scale_filter.split()[1:])
+                        if pad_sec > 0.05:
+                            vf = f"{vf},{'tpad=stop_mode=clone:stop_duration=' + format(pad_sec, '.3f')}" if vf else f"tpad=stop_mode=clone:stop_duration={pad_sec:.3f}"
+
+                        out_file = os.path.join(temp_dir, f"video_proc_{i:03d}.mp4")
+                        has_audio = _has_audio_stream(video_file)
+
+                        if has_audio:
+                            cmd_fix = [
+                                "ffmpeg",
+                                "-y",
+                                "-i",
+                                video_file,
+                            ]
+                            if vf:
+                                cmd_fix += ["-vf", vf]
+                            cmd_fix += [
+                                "-af",
+                                f"apad,atrim=0:{target_sec:.3f}",
+                                "-t",
+                                f"{target_sec:.3f}",
+                                "-c:v",
+                                "libx264",
+                                "-preset",
+                                "veryfast",
+                                "-crf",
+                                "23",
+                                "-pix_fmt",
+                                "yuv420p",
+                                "-c:a",
+                                "aac",
+                                "-b:a",
+                                "128k",
+                                "-ar",
+                                "48000",
+                                "-ac",
+                                "2",
+                                out_file,
+                            ]
+                        else:
+                            cmd_fix = [
+                                "ffmpeg",
+                                "-y",
+                                "-i",
+                                video_file,
+                                "-f",
+                                "lavfi",
+                                "-i",
+                                "anullsrc=r=48000:cl=stereo",
+                            ]
+                            if vf:
+                                cmd_fix += ["-vf", vf]
+                            cmd_fix += [
+                                "-map",
+                                "0:v",
+                                "-map",
+                                "1:a",
+                                "-t",
+                                f"{target_sec:.3f}",
+                                "-c:v",
+                                "libx264",
+                                "-preset",
+                                "veryfast",
+                                "-crf",
+                                "23",
+                                "-pix_fmt",
+                                "yuv420p",
+                                "-c:a",
+                                "aac",
+                                "-b:a",
+                                "128k",
+                                "-ar",
+                                "48000",
+                                "-ac",
+                                "2",
+                                out_file,
+                            ]
+
+                        p = subprocess.run(cmd_fix, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        if p.returncode != 0:
+                            raise Exception(p.stderr.decode("utf-8", errors="ignore")[:2000])
+                        processed_files.append(out_file)
+
+                    video_files = processed_files
+                    # 已在分段处理里做了 scale，拼接阶段不再重复缩放
+                    scale_filter = ""
+                except Exception as e:
+                    print(f"[ExportService] 预处理视频段（为人声延时）失败：{e}（将回退到原始拼接逻辑）")
+
+            # 使用 FFmpeg 拼接视频（重新写入 concat 文件：video_files 可能已被预处理替换）
+            with open(concat_file, 'w', encoding='utf-8') as f:
+                for video_file in video_files:
+                    escaped_path = video_file.replace('\\', '/').replace("'", "'\\''")
+                    f.write(f"file '{escaped_path}'\n")
+
             cmd = [
                 'ffmpeg',
                 '-f', 'concat',
                 '-safe', '0',
                 '-i', concat_file,
-                '-c:v', 'libx264',
-                '-preset', 'medium',
-                '-crf', '23',
-                '-c:a', 'aac',
-                '-b:a', '128k',
                 '-y'  # 覆盖已存在的文件
             ]
             
             if scale_filter:
+                cmd.extend(['-c:v', 'libx264', '-preset', 'medium', '-crf', '23', '-c:a', 'aac', '-b:a', '128k'])
                 cmd.extend(scale_filter.split())
+            else:
+                # 预处理后视频段参数一致，优先无损拼接
+                cmd.extend(['-c', 'copy'])
             
             cmd.append(output_path)
             
@@ -289,12 +482,228 @@ class ExportService:
             )
             
             stdout, stderr = await process.communicate()
-            
+
             if process.returncode != 0:
                 error_msg = stderr.decode('utf-8', errors='ignore')
-                print(f"[ExportService] FFmpeg 错误: {error_msg}")
-                raise Exception(f"视频拼接失败: {error_msg}")
+                # 如果是 copy 拼接失败，回退到重编码拼接（更兼容）
+                if '-c' in cmd and 'copy' in cmd:
+                    print(f"[ExportService] copy 拼接失败，回退到重编码: {error_msg}")
+                    cmd_fallback = [
+                        'ffmpeg',
+                        '-f', 'concat',
+                        '-safe', '0',
+                        '-i', concat_file,
+                        '-c:v', 'libx264',
+                        '-preset', 'medium',
+                        '-crf', '23',
+                        '-c:a', 'aac',
+                        '-b:a', '128k',
+                        '-y',
+                        output_path
+                    ]
+                    process = await asyncio.create_subprocess_exec(
+                        *cmd_fallback,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    _, stderr2 = await process.communicate()
+                    if process.returncode != 0:
+                        error_msg2 = stderr2.decode('utf-8', errors='ignore')
+                        print(f"[ExportService] FFmpeg 错误: {error_msg2}")
+                        raise Exception(f"视频拼接失败: {error_msg2}")
+                else:
+                    print(f"[ExportService] FFmpeg 错误: {error_msg}")
+                    raise Exception(f"视频拼接失败: {error_msg}")
             
+            # 如果有独立人声轨（旁白/对白），将其叠加到视频原音轨（保留环境音/音效）
+            if any(v.get("voice_audio_url") for v in video_urls):
+                try:
+                    voice_all = os.path.join(temp_dir, "voice_all.wav")
+
+                    voice_seg_files = []
+                    for i, v in enumerate(video_urls):
+                        shot_sec = float(v.get("export_duration_sec") or v.get("duration") or 5)
+                        seg_out = os.path.join(temp_dir, f"voice_seg_{i:03d}.wav")
+
+                        if v.get("voice_audio_url"):
+                            voice_in = v.get("voice_in_path")
+                            if not voice_in or not os.path.exists(voice_in):
+                                ext = os.path.splitext(urllib.parse.urlparse(v["voice_audio_url"]).path or "")[1] or ".mp3"
+                                voice_in = os.path.join(temp_dir, f"voice_in_{i:03d}{ext}")
+                                await self._download_file(v["voice_audio_url"], voice_in)
+
+                            filters = []
+                            filters.append("apad")
+                            filters.append(f"atrim=0:{shot_sec:.3f}")
+
+                            cmd_voice = [
+                                "ffmpeg",
+                                "-y",
+                                "-i",
+                                voice_in,
+                                "-af",
+                                ",".join(filters),
+                                "-t",
+                                f"{shot_sec:.3f}",
+                                "-ar",
+                                "48000",
+                                "-ac",
+                                "2",
+                                seg_out,
+                            ]
+                            p = subprocess.run(cmd_voice, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            if p.returncode != 0:
+                                raise Exception(p.stderr.decode("utf-8", errors="ignore")[:2000])
+                        else:
+                            cmd_silence = [
+                                "ffmpeg",
+                                "-y",
+                                "-f",
+                                "lavfi",
+                                "-i",
+                                "anullsrc=r=48000:cl=stereo",
+                                "-t",
+                                f"{shot_sec:.3f}",
+                                seg_out,
+                            ]
+                            p = subprocess.run(cmd_silence, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            if p.returncode != 0:
+                                raise Exception(p.stderr.decode("utf-8", errors="ignore")[:2000])
+
+                        voice_seg_files.append(seg_out)
+
+                    concat_voice = os.path.join(temp_dir, "voice_concat.txt")
+                    with open(concat_voice, "w", encoding="utf-8") as f:
+                        for vf in voice_seg_files:
+                            escaped = vf.replace("\\", "/").replace("'", "'\\''")
+                            f.write(f"file '{escaped}'\n")
+
+                    cmd_concat_audio = [
+                        "ffmpeg",
+                        "-y",
+                        "-f",
+                        "concat",
+                        "-safe",
+                        "0",
+                        "-i",
+                        concat_voice,
+                        "-c",
+                        "copy",
+                        voice_all,
+                    ]
+                    p = subprocess.run(cmd_concat_audio, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    if p.returncode != 0:
+                        cmd_concat_audio = [
+                            "ffmpeg",
+                            "-y",
+                            "-f",
+                            "concat",
+                            "-safe",
+                            "0",
+                            "-i",
+                            concat_voice,
+                            "-c:a",
+                            "pcm_s16le",
+                            voice_all,
+                        ]
+                        p = subprocess.run(cmd_concat_audio, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        if p.returncode != 0:
+                            raise Exception(p.stderr.decode("utf-8", errors="ignore")[:2000])
+
+                    mixed_path = os.path.join(self.output_dir, f"{project_name}_{project_id}_merged_with_voice.mp4")
+
+                    def _has_audio_stream(video_path: str) -> bool:
+                        try:
+                            p = subprocess.run(
+                                [
+                                    "ffprobe",
+                                    "-v",
+                                    "error",
+                                    "-select_streams",
+                                    "a",
+                                    "-show_entries",
+                                    "stream=index",
+                                    "-of",
+                                    "csv=p=0",
+                                    video_path,
+                                ],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                timeout=5,
+                            )
+                            return p.returncode == 0 and bool(p.stdout.decode("utf-8", errors="ignore").strip())
+                        except Exception:
+                            pass
+                        try:
+                            p = subprocess.run(
+                                ["ffmpeg", "-hide_banner", "-i", video_path],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                timeout=5,
+                            )
+                            txt = p.stderr.decode("utf-8", errors="ignore")
+                            return "Audio:" in txt
+                        except Exception:
+                            return False
+
+                    if _has_audio_stream(output_path):
+                        filter_complex = (
+                            "[0:a][1:a]sidechaincompress=threshold=0.02:ratio=8:attack=20:release=300[bg];"
+                            "[bg][1:a]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+                        )
+                        cmd_mix = [
+                            "ffmpeg",
+                            "-y",
+                            "-i",
+                            output_path,
+                            "-i",
+                            voice_all,
+                            "-filter_complex",
+                            filter_complex,
+                            "-map",
+                            "0:v",
+                            "-map",
+                            "[aout]",
+                            "-c:v",
+                            "copy",
+                            "-c:a",
+                            "aac",
+                            "-b:a",
+                            "192k",
+                            "-shortest",
+                            mixed_path,
+                        ]
+                    else:
+                        # 原视频没有音轨：直接把人声作为输出音轨（voice_all 已按镜头时长补齐）
+                        cmd_mix = [
+                            "ffmpeg",
+                            "-y",
+                            "-i",
+                            output_path,
+                            "-i",
+                            voice_all,
+                            "-map",
+                            "0:v",
+                            "-map",
+                            "1:a",
+                            "-c:v",
+                            "copy",
+                            "-c:a",
+                            "aac",
+                            "-b:a",
+                            "192k",
+                            "-shortest",
+                            mixed_path,
+                        ]
+                    p = subprocess.run(cmd_mix, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    if p.returncode != 0:
+                        raise Exception(p.stderr.decode("utf-8", errors="ignore")[:2000])
+
+                    print(f"[ExportService] 视频拼接+人声混音完成: {mixed_path}")
+                    return mixed_path
+                except Exception as e:
+                    print(f"[ExportService] 人声混音失败（将返回仅拼接视频）: {e}")
+
             print(f"[ExportService] 视频拼接完成: {output_path}")
             return output_path
             

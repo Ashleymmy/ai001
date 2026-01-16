@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Save, Download, FileText, Bot, User, Loader2, Check, Clock, ChevronRight, Trash2, Feather } from 'lucide-react'
+import { Save, Download, FileText, User, Loader2, Check, Clock, ChevronRight, Trash2, Feather } from 'lucide-react'
 import { chatWithAI, stopChatGeneration, listScripts, saveScript, deleteScript, updateScript, Script } from '../services/api'
 import ChatInput from '../components/ChatInput'
 import ProjectBackButton from '../components/ProjectBackButton'
@@ -122,7 +122,7 @@ export default function ScriptPage() {
     setMessages([{
       id: '1',
       role: 'assistant',
-      content: '你好！我是剧本创作助手 ✨\n\n告诉我你想创作什么样的故事？\n\n比如：\n• "写一个关于时间旅行的科幻短片剧本"\n• "帮我构思一个温馨的家庭喜剧"\n• "创作一个悬疑推理的开场"'
+      content: '你好！我是 YuanYuan，你的剧本创作助手 ✨\n\n告诉我你想创作什么样的故事？\n\n比如：\n• "写一个关于时间旅行的科幻短片剧本"\n• "帮我构思一个温馨的家庭喜剧"\n• "创作一个悬疑推理的开场"'
     }])
     setTimeline([])
     setPendingContent('')
@@ -137,7 +137,7 @@ export default function ScriptPage() {
       setMessages([{
         id: '1',
         role: 'assistant',
-        content: '你好！我是剧本创作助手 ✨\n\n告诉我你想创作什么样的故事？\n\n比如：\n• "写一个关于时间旅行的科幻短片剧本"\n• "帮我构思一个温馨的家庭喜剧"\n• "创作一个悬疑推理的开场"'
+        content: '你好！我是 YuanYuan，你的剧本创作助手 ✨\n\n告诉我你想创作什么样的故事？\n\n比如：\n• "写一个关于时间旅行的科幻短片剧本"\n• "帮我构思一个温馨的家庭喜剧"\n• "创作一个悬疑推理的开场"'
       }])
     }
   }, [pageState, messages.length])
@@ -345,11 +345,17 @@ export default function ScriptPage() {
                     className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''} animate-fadeInUp`}
                     style={{ animationDelay: `${index * 0.1}s` }}
                   >
-                    <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${
-                      msg.role === 'user' ? 'bg-primary/20' : 'gradient-cool'
-                    }`}>
-                      {msg.role === 'user' ? <User size={16} className="text-primary" /> : <Bot size={16} className="text-white" />}
-                    </div>
+                    {msg.role === 'user' ? (
+                      <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 bg-primary/20">
+                        <User size={16} className="text-primary" />
+                      </div>
+                    ) : (
+                      <img
+                        src="/yuanyuan/avatar-small.png"
+                        alt="YuanYuan"
+                        className="w-9 h-9 rounded-xl object-cover flex-shrink-0"
+                      />
+                    )}
                     <div className={`max-w-[80%] px-4 py-3 rounded-2xl ${
                       msg.role === 'user' ? 'bg-primary/20 rounded-tr-md' : 'glass rounded-tl-md'
                     }`}>
@@ -359,13 +365,15 @@ export default function ScriptPage() {
                 ))}
                 {isLoading && (
                   <div className="flex gap-3 animate-fadeIn">
-                    <div className="w-9 h-9 rounded-xl gradient-cool flex items-center justify-center">
-                      <Bot size={16} className="text-white" />
-                    </div>
+                    <img
+                      src="/yuanyuan/thinking.png"
+                      alt="思考中"
+                      className="w-9 h-9 rounded-xl object-cover animate-pulse"
+                    />
                     <div className="px-4 py-3 glass rounded-2xl rounded-tl-md">
                       <div className="flex items-center gap-2">
-                        <Loader2 size={16} className="animate-spin text-primary" />
-                        <span className="text-sm text-gray-400">思考中...</span>
+                        <Loader2 size={16} className="animate-spin text-pink-400" />
+                        <span className="text-sm text-gray-400">YuanYuan 思考中...</span>
                       </div>
                     </div>
                   </div>
@@ -553,11 +561,13 @@ export default function ScriptPage() {
       {/* 右侧 - 剧本助手对话 */}
       <aside className="w-[400px] glass-dark m-3 rounded-2xl flex flex-col animate-slideInRight">
         <div className="px-5 py-4 border-b border-white/5 flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl gradient-cool flex items-center justify-center glow-soft">
-            <Bot size={18} className="text-white" />
-          </div>
+          <img
+            src="/yuanyuan/avatar.png"
+            alt="YuanYuan"
+            className="w-10 h-10 rounded-xl shadow-lg shadow-pink-500/30 object-cover"
+          />
           <div>
-            <h3 className="font-semibold">剧本助手</h3>
+            <h3 className="font-semibold">YuanYuan</h3>
             <p className="text-xs text-gray-500">随时为你提供创作建议</p>
           </div>
         </div>
@@ -570,16 +580,22 @@ export default function ScriptPage() {
             {messages.filter(msg => msg.id !== '1').map((msg, index) => {
               const isLongContent = msg.content.length > 200
               return (
-                <div 
-                  key={msg.id} 
+                <div
+                  key={msg.id}
                   className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''} animate-fadeInUp`}
                   style={{ animationDelay: `${index * 0.05}s` }}
                 >
-                  <div className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 ${
-                    msg.role === 'user' ? 'bg-primary/20' : 'gradient-cool'
-                  }`}>
-                    {msg.role === 'user' ? <User size={14} className="text-primary" /> : <Bot size={14} className="text-white" />}
-                  </div>
+                  {msg.role === 'user' ? (
+                    <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 bg-primary/20">
+                      <User size={14} className="text-primary" />
+                    </div>
+                  ) : (
+                    <img
+                      src="/yuanyuan/avatar-small.png"
+                      alt="YuanYuan"
+                      className="w-8 h-8 rounded-xl object-cover flex-shrink-0"
+                    />
+                  )}
                   <div className={`${msg.role === 'user' ? 'max-w-[80%]' : isLongContent ? 'max-w-[95%]' : 'max-w-[85%]'} transition-apple`}>
                     <div className={`px-4 py-3 rounded-2xl text-sm ${
                       msg.role === 'user' ? 'bg-primary/20 rounded-tr-md' : 'glass rounded-tl-md'
@@ -615,13 +631,15 @@ export default function ScriptPage() {
             })}
             {isLoading && (
               <div className="flex gap-3 animate-fadeIn">
-                <div className="w-8 h-8 rounded-xl gradient-cool flex items-center justify-center">
-                  <Bot size={14} className="text-white" />
-                </div>
+                <img
+                  src="/yuanyuan/thinking.png"
+                  alt="思考中"
+                  className="w-8 h-8 rounded-xl object-cover animate-pulse"
+                />
                 <div className="px-4 py-3 glass rounded-2xl rounded-tl-md">
                   <div className="flex items-center gap-2">
-                    <Loader2 size={14} className="animate-spin text-primary" />
-                    <span className="text-sm text-gray-400">正在创作...</span>
+                    <Loader2 size={14} className="animate-spin text-pink-400" />
+                    <span className="text-sm text-gray-400">YuanYuan 创作中...</span>
                   </div>
                 </div>
               </div>

@@ -1,24 +1,39 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional, List
+from pydantic import BaseModel, Field, model_validator
+from typing import Optional, List, Dict, Any
 import os
 import uuid
 import base64
+import re
+import math
+from urllib.parse import urlparse, parse_qs
+from datetime import datetime, timezone, timedelta
 
 from services.llm_service import LLMService
 from services.image_service import ImageService
 from services.video_service import VideoService
 from services.storage_service import storage
 from services.agent_service import AgentService, AgentProject, AgentExecutor
+from services.fish_audio_service import FishAudioConfig, FishAudioService
+from services.tts_service import (
+    DashScopeTTSConfig,
+    DashScopeTTSService,
+    FishTTSConfig,
+    FishTTSService,
+    OpenAITTSConfig,
+    OpenAITTSService,
+    VolcTTSConfig,
+    VolcTTSService,
+)
 
 app = FastAPI(title="AI Storyboarder Backend")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -144,6 +159,197 @@ class SettingsRequest(BaseModel):
     storyboard: Optional[ModelConfig] = None
     video: ModelConfig
     local: LocalConfig
+    tts: Optional[TTSConfig] = None
+
+
+class TestConnectionRequest(BaseModel):
+    category: str  # llm/image/storyboard/video
+    config: ModelConfig
+    local: Optional[LocalConfig] = None
+
+
+class VolcTTSSettings(BaseModel):
+    appid: str = ""
+    accessToken: str = ""
+    endpoint: str = "https://openspeech.bytedance.com/api/v1/tts"
+    cluster: str = "volcano_tts"
+    model: str = "seed-tts-1.1"
+    encoding: str = "mp3"
+    rate: int = 24000
+    speedRatio: float = 1.0
+    # 默认音色（可被 Agent 中的具体角色覆盖）
+    narratorVoiceType: str = ""
+    # 兼容旧字段：dialogueVoiceType（未区分男女对白）
+    dialogueVoiceType: str = ""
+    dialogueMaleVoiceType: str = ""
+    dialogueFemaleVoiceType: str = ""
+
+
+class FishTTSSettings(BaseModel):
+    apiKey: str = ""
+    baseUrl: str = "https://api.fish.audio"
+    model: str = "speech-1.5"
+    encoding: str = "mp3"
+    rate: int = 24000
+    speedRatio: float = 1.0
+    narratorVoiceType: str = ""
+    dialogueVoiceType: str = ""
+    dialogueMaleVoiceType: str = ""
+    dialogueFemaleVoiceType: str = ""
+
+
+class BailianTTSSettings(BaseModel):
+    # 阿里百炼（DashScope 通用语音）
+    apiKey: str = ""
+    baseUrl: str = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+    workspace: str = ""
+    model: str = "cosyvoice-v1"
+    encoding: str = "mp3"
+    rate: int = 24000
+    speedRatio: float = 1.0
+    narratorVoiceType: str = ""
+    dialogueVoiceType: str = ""
+    dialogueMaleVoiceType: str = ""
+    dialogueFemaleVoiceType: str = ""
+
+
+class CustomTTSDefaults(BaseModel):
+    # 用户自定义（OpenAI 兼容语音接口）使用的默认参数（不包含鉴权/地址/模型）
+    encoding: str = "mp3"
+    rate: int = 24000
+    speedRatio: float = 1.0
+    narratorVoiceType: str = ""
+    dialogueVoiceType: str = ""
+    dialogueMaleVoiceType: str = ""
+    dialogueFemaleVoiceType: str = ""
+
+
+class TTSConfig(BaseModel):
+    provider: str = "volc_tts_v1_http"
+    volc: VolcTTSSettings = Field(default_factory=VolcTTSSettings)
+    fish: FishTTSSettings = Field(default_factory=FishTTSSettings)
+    bailian: BailianTTSSettings = Field(default_factory=BailianTTSSettings)
+    custom: CustomTTSDefaults = Field(default_factory=CustomTTSDefaults)
+
+    # legacy flat fields (for backwards compatibility)
+    appid: Optional[str] = None
+    accessToken: Optional[str] = None
+    baseUrl: Optional[str] = None
+    cluster: Optional[str] = None
+    model: Optional[str] = None
+    encoding: Optional[str] = None
+    rate: Optional[int] = None
+    speedRatio: Optional[float] = None
+    narratorVoiceType: Optional[str] = None
+    dialogueVoiceType: Optional[str] = None
+    dialogueMaleVoiceType: Optional[str] = None
+    dialogueFemaleVoiceType: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_payload(cls, data: Any):
+        if not isinstance(data, dict):
+            return data
+
+        if any(k in data for k in ("volc", "fish", "bailian", "custom")):
+            fish = data.get("fish")
+            if isinstance(fish, dict) and "accessToken" in fish and "apiKey" not in fish:
+                fish = {**fish, "apiKey": fish.get("accessToken") or ""}
+                data = {**data, "fish": fish}
+            bailian = data.get("bailian")
+            if isinstance(bailian, dict):
+                raw = str(bailian.get("baseUrl") or bailian.get("base_url") or "").strip()
+                if raw and raw.startswith(("http://", "https://")) and "dashscope.aliyuncs.com" in raw:
+                    bailian = {**bailian, "baseUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/inference"}
+                    data = {**data, "bailian": bailian}
+            return data
+
+        provider = str(data.get("provider") or "volc_tts_v1_http").strip() or "volc_tts_v1_http"
+        raw_base_url = str(data.get("baseUrl") or data.get("base_url") or "").strip()
+
+        def looks_like_fish_voice_id(value: str) -> bool:
+            import re
+
+            v = (value or "").strip().lower()
+            if not v:
+                return False
+            if re.fullmatch(r"[0-9a-f]{32}", v):
+                return True
+            if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", v):
+                return True
+            return False
+
+        def looks_like_volc_voice_type(value: str) -> bool:
+            v = (value or "").strip().lower()
+            return bool(v) and (v.startswith("zh_") or v.startswith("en_"))
+
+        legacy_voice = {
+            "narratorVoiceType": str(data.get("narratorVoiceType") or "").strip(),
+            "dialogueVoiceType": str(data.get("dialogueVoiceType") or "").strip(),
+            "dialogueMaleVoiceType": str(data.get("dialogueMaleVoiceType") or "").strip(),
+            "dialogueFemaleVoiceType": str(data.get("dialogueFemaleVoiceType") or "").strip(),
+        }
+
+        volc_voice: Dict[str, str] = {}
+        fish_voice: Dict[str, str] = {}
+        for k, v in legacy_voice.items():
+            if looks_like_fish_voice_id(v):
+                fish_voice[k] = v
+            elif looks_like_volc_voice_type(v):
+                volc_voice[k] = v
+            else:
+                (fish_voice if provider.startswith("fish") else volc_voice)[k] = v
+
+        # Tokens: old field accessToken could be either provider; split by active provider
+        legacy_access_token = str(data.get("accessToken") or data.get("access_token") or "").strip()
+        volc_token = legacy_access_token if not provider.startswith("fish") else ""
+        fish_key = legacy_access_token if provider.startswith("fish") else ""
+
+        # baseUrl: historically used for fish; keep volc endpoint override only if it looks like an openspeech URL.
+        volc_endpoint = ""
+        fish_base_url = ""
+        if raw_base_url:
+            if "fish.audio" in raw_base_url:
+                fish_base_url = raw_base_url
+            elif "openspeech.bytedance.com" in raw_base_url or raw_base_url.endswith("/tts"):
+                volc_endpoint = raw_base_url
+            else:
+                # Unknown URL; prefer fish to avoid breaking volc endpoint.
+                fish_base_url = raw_base_url
+
+        volc = {
+            "appid": str(data.get("appid") or "").strip(),
+            "accessToken": volc_token,
+            "endpoint": volc_endpoint or "https://openspeech.bytedance.com/api/v1/tts",
+            "cluster": str(data.get("cluster") or "volcano_tts").strip() or "volcano_tts",
+            "model": str(data.get("model") or "seed-tts-1.1").strip() or "seed-tts-1.1",
+            "encoding": str(data.get("encoding") or "mp3").strip() or "mp3",
+            "rate": int(data.get("rate") or 24000),
+            "speedRatio": float(data.get("speedRatio") or 1.0),
+            **volc_voice,
+        }
+
+        fish_model = str(data.get("model") or "").strip()
+        if not fish_model or fish_model.startswith("seed-"):
+            fish_model = "speech-1.5"
+
+        fish = {
+            "apiKey": fish_key,
+            "baseUrl": fish_base_url or "https://api.fish.audio",
+            "model": fish_model,
+            "encoding": str(data.get("encoding") or "mp3").strip() or "mp3",
+            "rate": int(data.get("rate") or 24000),
+            "speedRatio": float(data.get("speedRatio") or 1.0),
+            **fish_voice,
+        }
+
+        return {
+            "provider": provider,
+            "volc": volc,
+            "fish": fish,
+            "bailian": BailianTTSSettings().model_dump(),
+            "custom": CustomTTSDefaults().model_dump(),
+        }
 
 
 class GenerateRequest(BaseModel):
@@ -188,6 +394,30 @@ class VideoTaskStatusRequest(BaseModel):
     taskId: str
 
 
+class GenerateAgentAudioRequest(BaseModel):
+    overwrite: bool = False
+    includeNarration: bool = True
+    includeDialogue: bool = True
+    shotIds: Optional[List[str]] = None
+    # 可选：覆盖默认音色
+    narratorVoiceType: Optional[str] = None
+    dialogueVoiceType: Optional[str] = None
+    dialogueMaleVoiceType: Optional[str] = None
+    dialogueFemaleVoiceType: Optional[str] = None
+    speedRatio: Optional[float] = None
+    rate: Optional[int] = None
+    encoding: Optional[str] = None
+
+
+class ClearAgentAudioRequest(BaseModel):
+    shotIds: Optional[List[str]] = None
+    deleteFiles: bool = True
+
+
+class TestTTSRequest(BaseModel):
+    tts: TTSConfig
+    voiceType: Optional[str] = None
+    text: Optional[str] = None
 STYLE_PROMPTS = {
     "cinematic": "cinematic lighting, film grain, dramatic shadows, movie scene, professional cinematography",
     "anime": "anime style, vibrant colors, cel shading, japanese animation, detailed illustration",
@@ -241,6 +471,9 @@ async def update_settings(request: SettingsRequest):
     global llm_service, image_service, storyboard_service, video_service, current_settings
     
     current_settings = request.model_dump()
+    if request.tts:
+        # Avoid persisting legacy flat fields (None) into YAML.
+        current_settings["tts"] = request.tts.model_dump(exclude_none=True)
     
     # 更新 LLM 服务
     llm_config = request.llm
@@ -306,6 +539,16 @@ async def update_settings(request: SettingsRequest):
     else:
         video_service = None
         print("[Settings] 视频服务未配置")
+
+    # TTS 配置仅持久化（按需在调用时使用）
+    if request.tts:
+        tts_provider = str(request.tts.provider or "").strip() or "volc_tts_v1_http"
+        print(
+            "[Settings] TTS 配置已更新: "
+            f"provider={tts_provider}, "
+            f"volc.model={request.tts.volc.model}, "
+            f"fish.model={request.tts.fish.model}"
+        )
     
     # 持久化设置到文件
     storage.save_settings(current_settings)
@@ -313,13 +556,521 @@ async def update_settings(request: SettingsRequest):
     return {"status": "ok", "message": "设置已更新"}
 
 
+@app.post("/api/test-connection")
+async def test_connection(request: TestConnectionRequest):
+    """测试配置连通性（不会保存配置）
+
+    说明：不同服务商/协议差异较大，此接口优先做「鉴权探测」(如 /models)，
+    若不支持则退化为「基础网络连通性」探测。
+    """
+    import httpx
+
+    async def probe(url: str, headers: Optional[Dict[str, str]] = None) -> httpx.Response:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            return await client.get(url, headers=headers or {})
+
+    category = (request.category or "").strip().lower()
+    cfg = request.config
+
+    if category not in {"llm", "image", "storyboard", "video"}:
+        raise HTTPException(status_code=400, detail="category must be one of: llm, image, storyboard, video")
+
+    # ========== LLM ==========
+    if category == "llm":
+        if not cfg.apiKey:
+            return {"success": False, "level": "auth", "message": "未填写 API Key"}
+
+        svc = LLMService(
+            provider=cfg.provider,
+            api_key=cfg.apiKey,
+            base_url=cfg.baseUrl if cfg.baseUrl else None,
+            model=cfg.model if cfg.model else None,
+        )
+
+        if not svc.client:
+            return {"success": False, "level": "auth", "message": "LLM 客户端未初始化（API Key 可能为空）"}
+
+        # 优先用 /models 探测（一般不消耗额度）
+        try:
+            models = await svc.client.models.list()
+            count = len(getattr(models, "data", []) or [])
+            return {"success": True, "level": "auth", "message": f"连接成功（models 可用：{count}）"}
+        except Exception as e_models:
+            # 降级：最小 chat 调用（可能消耗少量额度）
+            try:
+                await svc.client.chat.completions.create(
+                    model=svc.model,
+                    messages=[{"role": "user", "content": "ping"}],
+                    max_tokens=1,
+                    temperature=0,
+                )
+                return {"success": True, "level": "call", "message": "连接成功（chat 调用可用）"}
+            except Exception as e_chat:
+                return {
+                    "success": False,
+                    "level": "error",
+                    "message": f"连接失败：{e_chat}",
+                    "details": {"models_error": str(e_models)},
+                }
+
+    # ========== Image / Storyboard ==========
+    if category in {"image", "storyboard"}:
+        provider = cfg.provider
+
+        if provider == "placeholder":
+            return {"success": True, "level": "none", "message": "占位图无需测试"}
+
+        # 本地服务探测（优先使用 local.enabled 的地址）
+        local = request.local
+        if provider in {"comfyui", "sd-webui"}:
+            if local and local.enabled:
+                base = (local.comfyuiUrl if provider == "comfyui" else local.sdWebuiUrl) or ""
+            else:
+                base = cfg.baseUrl or ("http://127.0.0.1:8188" if provider == "comfyui" else "http://127.0.0.1:7860")
+
+            base = base.rstrip("/")
+
+            if provider == "comfyui":
+                try:
+                    resp = await probe(f"{base}/system_stats")
+                    if resp.status_code == 200:
+                        return {"success": True, "level": "network", "message": f"连接成功（ComfyUI：{base}）"}
+                except Exception:
+                    pass
+
+            if provider == "sd-webui":
+                try:
+                    resp = await probe(f"{base}/sdapi/v1/sd-models")
+                    if resp.status_code == 200:
+                        return {"success": True, "level": "network", "message": f"连接成功（SD WebUI：{base}）"}
+                except Exception:
+                    pass
+
+            try:
+                resp = await probe(f"{base}/")
+                if 200 <= resp.status_code < 500:
+                    return {"success": True, "level": "network", "message": f"地址可访问（{base}，HTTP {resp.status_code}）"}
+                return {"success": False, "level": "network", "message": f"连接失败（{base}，HTTP {resp.status_code}）"}
+            except Exception as e:
+                return {"success": False, "level": "network", "message": f"连接失败：{e}"}
+
+        # 远程服务：尽量用 /models 探测鉴权；若不支持则退化到基础连通性
+        if not cfg.apiKey:
+            return {"success": False, "level": "auth", "message": "未填写 API Key"}
+
+        base_url = (cfg.baseUrl or "").rstrip("/")
+        if not base_url:
+            return {"success": False, "level": "network", "message": "未填写 Base URL"}
+
+        headers = {"Authorization": f"Bearer {cfg.apiKey}"}
+        models_url = f"{base_url}/models"
+
+        try:
+            resp = await probe(models_url, headers=headers)
+            if resp.status_code == 200:
+                return {"success": True, "level": "auth", "message": "连接成功（/models 可用）"}
+            if resp.status_code in (401, 403):
+                return {"success": False, "level": "auth", "message": f"鉴权失败（HTTP {resp.status_code}）"}
+            if resp.status_code == 404:
+                ping = await probe(f"{base_url}/", headers=headers)
+                if ping.status_code in (401, 403):
+                    return {"success": False, "level": "auth", "message": f"鉴权失败（HTTP {ping.status_code}）"}
+                if 200 <= ping.status_code < 500:
+                    return {"success": True, "level": "network", "message": f"地址可访问（不支持 /models 探测，HTTP {ping.status_code}）"}
+                return {"success": False, "level": "network", "message": f"连接失败（HTTP {ping.status_code}）"}
+
+            return {"success": True, "level": "network", "message": f"地址可访问（HTTP {resp.status_code}）"}
+        except Exception as e:
+            return {"success": False, "level": "network", "message": f"连接失败：{e}"}
+
+    # ========== Video ==========
+    if category == "video":
+        provider = cfg.provider
+
+        if provider == "none":
+            return {"success": True, "level": "none", "message": "未配置视频服务，无需测试"}
+
+        if not cfg.apiKey:
+            return {"success": False, "level": "auth", "message": "未填写 API Key"}
+
+        base_url = (cfg.baseUrl or "").rstrip("/")
+        if not base_url:
+            return {"success": False, "level": "network", "message": "未填写 Base URL"}
+
+        headers = {"Authorization": f"Bearer {cfg.apiKey}"}
+        try:
+            # 优先用 /models 探测（对 OpenAI/Ark 兼容接口更准确）
+            try:
+                resp = await probe(f"{base_url}/models", headers=headers)
+                if resp.status_code == 200:
+                    try:
+                        payload = resp.json()
+                        model_ids = [
+                            (m or {}).get("id")
+                            for m in (payload.get("data") if isinstance(payload, dict) else []) or []
+                            if isinstance(m, dict)
+                        ]
+                        model_ids = [mid for mid in model_ids if isinstance(mid, str) and mid.strip()]
+                        selected = (cfg.model or "").strip()
+                        if selected and selected not in set(model_ids):
+                            # Ark(OpenAI兼容)常见需要填写 /models 返回的 id（不少场景是 ep-xxx）
+                            return {
+                                "success": True,
+                                "level": "auth",
+                                "message": f"连接成功（/models 可用），但未找到模型：{selected}（请填写 /models 返回的 id，常见为 ep-xxx）",
+                                "details": {"modelFound": False, "modelsSample": model_ids[:20]},
+                            }
+                        return {
+                            "success": True,
+                            "level": "auth",
+                            "message": "连接成功（/models 可用）" + ("，模型已匹配" if selected else ""),
+                            "details": {"modelFound": bool(selected), "modelsSample": model_ids[:20]},
+                        }
+                    except Exception:
+                        return {"success": True, "level": "auth", "message": "连接成功（/models 可用）"}
+                if resp.status_code in (401, 403):
+                    return {"success": False, "level": "auth", "message": f"鉴权失败（HTTP {resp.status_code}）"}
+                # 其他状态继续尝试根路径探测
+            except Exception:
+                pass
+
+            resp = await probe(f"{base_url}/", headers=headers)
+            if resp.status_code in (401, 403):
+                return {"success": False, "level": "auth", "message": f"鉴权失败（HTTP {resp.status_code}）"}
+            if resp.status_code == 404:
+                return {
+                    "success": True,
+                    "level": "network",
+                    "message": f"主机可达，但该路径返回 404（请确认 Base URL 是否为 API 根，如 .../v1 或 .../api/v3）"
+                }
+            if 200 <= resp.status_code < 500:
+                return {"success": True, "level": "network", "message": f"地址可访问（HTTP {resp.status_code}）"}
+            return {"success": False, "level": "network", "message": f"连接失败（HTTP {resp.status_code}）"}
+        except Exception as e:
+            return {"success": False, "level": "network", "message": f"连接失败：{e}"}
+
+    raise HTTPException(status_code=500, detail="unreachable")
+
+
 @app.get("/api/settings")
 async def get_settings():
     """获取已保存的设置"""
     saved = storage.get_settings()
     if saved:
+        try:
+            saved["tts"] = TTSConfig.model_validate(saved.get("tts") or {}).model_dump(exclude_none=True)
+        except Exception:
+            # keep legacy shape if parsing fails
+            pass
         return saved
     return {"status": "not_configured"}
+
+
+@app.post("/api/tts/test")
+async def test_tts(request: TestTTSRequest):
+    """测试 TTS 连通性（最小合成）"""
+    cfg = request.tts
+    provider = str(getattr(cfg, "provider", "") or "volc_tts_v1_http").strip() or "volc_tts_v1_http"
+    text = (request.text or "测试语音合成").strip()
+
+    if provider.startswith("fish"):
+        fish_cfg = cfg.fish
+        voice_type = (
+            request.voiceType
+            or fish_cfg.narratorVoiceType
+            or fish_cfg.dialogueMaleVoiceType
+            or fish_cfg.dialogueFemaleVoiceType
+            or fish_cfg.dialogueVoiceType
+            or ""
+        ).strip()
+
+        api_key = str(fish_cfg.apiKey or "").strip()
+        if not api_key:
+            raise HTTPException(status_code=400, detail="缺少 Fish API Key：请在设置中填写 Fish.apiKey")
+        if not voice_type:
+            raise HTTPException(status_code=400, detail="缺少 Fish reference_id：请填写默认旁白/对白 voice_type（用 Fish 的 voice model id）")
+
+        base_url = str(fish_cfg.baseUrl or "").strip() or "https://api.fish.audio"
+        model_hdr = str(fish_cfg.model or "").strip()
+        # 避免沿用火山的默认 model（seed-tts-1.1）导致 Fish header 异常
+        if not model_hdr or model_hdr.startswith("seed-"):
+            model_hdr = "speech-1.5"
+
+        tts = FishTTSService(FishTTSConfig(api_key=api_key, base_url=base_url, model=model_hdr))
+        try:
+            out_fmt = str(fish_cfg.encoding or "mp3").strip().lower() or "mp3"
+            audio_bytes, _ = await tts.synthesize(
+                text=text,
+                reference_id=voice_type,
+                encoding=out_fmt,
+                speed_ratio=float(fish_cfg.speedRatio or 1.0),
+                rate=int(fish_cfg.rate or 24000),
+            )
+            duration_ms = 0
+            if out_fmt == "pcm":
+                # 16-bit mono @ sample_rate
+                duration_ms = int((len(audio_bytes) // 2) * 1000 / int(fish_cfg.rate or 24000))
+            return {"success": True, "message": "连接成功", "duration_ms": int(duration_ms or 0)}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            msg = str(e)
+            if msg.startswith("TTS HTTP 403:"):
+                raise HTTPException(status_code=403, detail=f"TTS 鉴权/权限失败：{msg}")
+            if msg.startswith("TTS HTTP 401:"):
+                raise HTTPException(status_code=401, detail=f"TTS 鉴权失败：{msg}")
+            raise HTTPException(status_code=500, detail=f"TTS 测试失败: {msg}")
+
+    if provider in {"aliyun_bailian_tts_v2", "dashscope_tts_v2"}:
+        bailian_cfg = cfg.bailian
+        voice_type = (
+            request.voiceType
+            or bailian_cfg.narratorVoiceType
+            or bailian_cfg.dialogueMaleVoiceType
+            or bailian_cfg.dialogueFemaleVoiceType
+            or bailian_cfg.dialogueVoiceType
+            or ""
+        ).strip()
+
+        api_key = str(bailian_cfg.apiKey or "").strip()
+        if not api_key:
+            raise HTTPException(status_code=400, detail="缺少阿里百炼 API Key：请在设置中填写 Bailian.apiKey")
+        if not voice_type:
+            raise HTTPException(status_code=400, detail="缺少音色/voice：请填写默认旁白/对白 voice（阿里百炼 voice 名称）")
+
+        tts = DashScopeTTSService(
+            DashScopeTTSConfig(
+                api_key=api_key,
+                base_url=str(bailian_cfg.baseUrl or "").strip() or "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+                model=str(bailian_cfg.model or "").strip() or "cosyvoice-v1",
+                workspace=str(bailian_cfg.workspace or "").strip(),
+            )
+        )
+        try:
+            out_fmt = str(bailian_cfg.encoding or "mp3").strip().lower() or "mp3"
+            audio_bytes, _ = await tts.synthesize(
+                text=text,
+                voice=voice_type,
+                encoding=out_fmt,
+                speed_ratio=float(bailian_cfg.speedRatio or 1.0),
+                rate=int(bailian_cfg.rate or 24000),
+            )
+            duration_ms = 0
+            if out_fmt == "pcm":
+                duration_ms = int((len(audio_bytes) // 2) * 1000 / int(bailian_cfg.rate or 24000))
+            return {"success": True, "message": "连接成功", "duration_ms": int(duration_ms or 0)}
+        except Exception as e:
+            msg = str(e)
+            if msg.startswith("TTS HTTP 403:"):
+                raise HTTPException(status_code=403, detail=f"TTS 鉴权/权限失败：{msg}")
+            if msg.startswith("TTS HTTP 401:"):
+                raise HTTPException(status_code=401, detail=f"TTS 鉴权失败：{msg}")
+            raise HTTPException(status_code=500, detail=f"TTS 测试失败: {msg}")
+
+    if provider.startswith("custom_"):
+        custom_provider = storage.get_custom_provider(provider) or {}
+        if not custom_provider or str(custom_provider.get("category") or "") != "tts":
+            raise HTTPException(status_code=400, detail="自定义 TTS 配置不存在或类别不匹配（请先在设置里新增 tts 自定义配置）")
+
+        custom_cfg = cfg.custom
+        voice_type = (
+            request.voiceType
+            or custom_cfg.narratorVoiceType
+            or custom_cfg.dialogueMaleVoiceType
+            or custom_cfg.dialogueFemaleVoiceType
+            or custom_cfg.dialogueVoiceType
+            or ""
+        ).strip()
+        if not voice_type:
+            raise HTTPException(status_code=400, detail="缺少 voice：请填写默认旁白/对白 voice（自定义 TTS 使用）")
+
+        api_key = str(custom_provider.get("apiKey") or "").strip()
+        base_url = str(custom_provider.get("baseUrl") or "").strip()
+        model = str(custom_provider.get("model") or "").strip()
+        if not api_key:
+            raise HTTPException(status_code=400, detail="自定义 TTS 缺少 apiKey")
+        if not base_url:
+            raise HTTPException(status_code=400, detail="自定义 TTS 缺少 baseUrl")
+
+        tts = OpenAITTSService(OpenAITTSConfig(api_key=api_key, base_url=base_url, model=model))
+        try:
+            out_fmt = str(custom_cfg.encoding or "mp3").strip().lower() or "mp3"
+            audio_bytes, _ = await tts.synthesize(
+                text=text,
+                voice=voice_type,
+                encoding=out_fmt,
+                speed_ratio=float(custom_cfg.speedRatio or 1.0),
+            )
+            return {"success": True, "message": "连接成功", "duration_ms": 0}
+        except Exception as e:
+            msg = str(e)
+            if msg.startswith("TTS HTTP 403:"):
+                raise HTTPException(status_code=403, detail=f"TTS 鉴权/权限失败：{msg}")
+            if msg.startswith("TTS HTTP 401:"):
+                raise HTTPException(status_code=401, detail=f"TTS 鉴权失败：{msg}")
+            raise HTTPException(status_code=500, detail=f"TTS 测试失败: {msg}")
+
+    # 默认：火山 OpenSpeech
+    volc_cfg = cfg.volc
+    voice_type = (
+        request.voiceType
+        or volc_cfg.narratorVoiceType
+        or volc_cfg.dialogueMaleVoiceType
+        or volc_cfg.dialogueFemaleVoiceType
+        or volc_cfg.dialogueVoiceType
+        or ""
+    ).strip()
+
+    appid = str(volc_cfg.appid or "").strip()
+    access_token = str(volc_cfg.accessToken or "").strip()
+    if not appid or not access_token:
+        raise HTTPException(status_code=400, detail="缺少 appid/accessToken")
+
+    if not voice_type:
+        voice_type = VolcTTSService.auto_pick_voice_type(role="narration", name="narrator")
+
+    tts = VolcTTSService(
+        VolcTTSConfig(
+            appid=appid,
+            access_token=access_token,
+            cluster=str(volc_cfg.cluster or "volcano_tts").strip() or "volcano_tts",
+            model=str(volc_cfg.model or "seed-tts-1.1").strip() or "seed-tts-1.1",
+            endpoint=str(volc_cfg.endpoint or "").strip() or "https://openspeech.bytedance.com/api/v1/tts",
+        )
+    )
+
+    try:
+        _, duration_ms = await tts.synthesize(
+            text=text,
+            voice_type=voice_type,
+            encoding=str(volc_cfg.encoding or "mp3").strip() or "mp3",
+            speed_ratio=float(volc_cfg.speedRatio or 1.0),
+            rate=int(volc_cfg.rate or 24000),
+        )
+        return {"success": True, "message": "连接成功", "duration_ms": int(duration_ms or 0)}
+    except Exception as e:
+        msg = str(e)
+        if msg.startswith("TTS HTTP 403:"):
+            raise HTTPException(status_code=403, detail=f"TTS 鉴权/权限失败：{msg}")
+        if msg.startswith("TTS HTTP 401:"):
+            raise HTTPException(status_code=401, detail=f"TTS 鉴权失败：{msg}")
+        raise HTTPException(status_code=500, detail=f"TTS 测试失败: {msg}")
+
+
+def _get_fish_service_from_settings() -> FishAudioService:
+    settings = storage.get_settings() or {}
+    cfg = TTSConfig.model_validate(settings.get("tts") or {})
+    fish_cfg = cfg.fish
+    api_key = str(fish_cfg.apiKey or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="缺少 Fish API Key：请在设置中填写 Fish.apiKey")
+
+    base_url = str(fish_cfg.baseUrl or "").strip() or "https://api.fish.audio"
+    return FishAudioService(FishAudioConfig(api_key=api_key, base_url=base_url))
+
+
+@app.get("/api/fish/models")
+async def fish_list_models(
+    page_size: int = 10,
+    page_number: int = 1,
+    title: Optional[str] = None,
+    tag: Optional[str] = None,
+    self_only: bool = True,
+    sort_by: str = "task_count",
+    model_type: str = "tts",
+):
+    """列出 Fish Audio 的 voice models（默认仅返回 tts 类型）。"""
+    fish = _get_fish_service_from_settings()
+    try:
+        return await fish.list_models(
+            page_size=page_size,
+            page_number=page_number,
+            title=title,
+            tag=tag,
+            self_only=self_only,
+            sort_by=sort_by,
+            model_type=model_type,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Fish list models failed: {e}")
+
+
+@app.get("/api/fish/models/{model_id}")
+async def fish_get_model(model_id: str):
+    fish = _get_fish_service_from_settings()
+    try:
+        return await fish.get_model(model_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Fish get model failed: {e}")
+
+
+@app.delete("/api/fish/models/{model_id}")
+async def fish_delete_model(model_id: str):
+    fish = _get_fish_service_from_settings()
+    try:
+        await fish.delete_model(model_id)
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Fish delete model failed: {e}")
+
+
+@app.post("/api/fish/models")
+async def fish_create_model(
+    title: str = Form(...),
+    description: Optional[str] = Form(None),
+    visibility: str = Form("private"),
+    train_mode: str = Form("fast"),
+    enhance_audio_quality: bool = Form(True),
+    tags: Optional[str] = Form(None),
+    voices: List[UploadFile] = File(...),
+    cover_image: Optional[UploadFile] = File(None),
+):
+    """创建 Fish Audio voice clone model（type=tts）。"""
+    fish = _get_fish_service_from_settings()
+
+    tag_list: Optional[List[str]] = None
+    if isinstance(tags, str) and tags.strip():
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+
+    voice_files: List[tuple[str, bytes, str]] = []
+    for vf in voices:
+        content = await vf.read()
+        filename = vf.filename or "voice.wav"
+        content_type = vf.content_type or "application/octet-stream"
+        voice_files.append((filename, content, content_type))
+
+    cover_tuple: Optional[tuple[str, bytes, str]] = None
+    if cover_image is not None:
+        cover_bytes = await cover_image.read()
+        cover_tuple = (
+            cover_image.filename or "cover.png",
+            cover_bytes,
+            cover_image.content_type or "application/octet-stream",
+        )
+
+    try:
+        return await fish.create_tts_model(
+            title=title,
+            voices=voice_files,
+            description=description,
+            visibility=visibility,
+            train_mode=train_mode,
+            tags=tag_list,
+            enhance_audio_quality=bool(enhance_audio_quality),
+            cover_image=cover_tuple,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Fish create model failed: {e}")
 
 
 @app.post("/api/parse-story")
@@ -458,7 +1209,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(request: Request, file: UploadFile = File(...)):
     """通用文件上传接口"""
     import time
     
@@ -510,6 +1261,7 @@ async def upload_file(file: UploadFile = File(...)):
     
     # 生成访问 URL
     file_url = f"/api/uploads/{category}/{safe_filename}"
+    absolute_url = f"{str(request.base_url).rstrip('/')}{file_url}"
     
     # 对于图片，也返回 base64 预览
     preview_url = None
@@ -564,6 +1316,7 @@ async def upload_file(file: UploadFile = File(...)):
             "type": content_type,
             "category": category,
             "url": file_url,
+            "absoluteUrl": absolute_url,
             "previewUrl": preview_url,
             "content": text_content
         }
@@ -720,7 +1473,8 @@ async def generate_video(request: VideoRequest):
             "status": result.get("status"),
             "videoUrl": result.get("video_url"),
             "duration": result.get("duration"),
-            "seed": result.get("seed")
+            "seed": result.get("seed"),
+            "audioDisabled": bool(result.get("audio_disabled")),
         }
     except Exception as e:
         error_msg = str(e)
@@ -1191,8 +1945,8 @@ async def add_custom_provider(request: CustomProviderRequest):
     
     用户可以添加多个自定义配置，每个配置有唯一的 id（以 custom_ 开头）和 isCustom=true 标识
     """
-    if request.category not in ['llm', 'image', 'storyboard', 'video']:
-        raise HTTPException(status_code=400, detail="无效的类别，必须是 llm/image/storyboard/video")
+    if request.category not in ['llm', 'image', 'storyboard', 'video', 'tts']:
+        raise HTTPException(status_code=400, detail="无效的类别，必须是 llm/image/storyboard/video/tts")
     
     config = {
         "apiKey": request.apiKey,
@@ -1308,12 +2062,153 @@ class AgentShotRequest(BaseModel):
     duration: float = 5.0
 
 
+class AgentScriptDoctorRequest(BaseModel):
+    mode: str = "expand"  # light / expand
+    apply: bool = True
+
+
+class AgentAssetCompletionRequest(BaseModel):
+    apply: bool = True
+
+
+class AgentAudioCheckRequest(BaseModel):
+    includeNarration: bool = True
+    includeDialogue: bool = True
+    speed: float = 1.0
+    apply: bool = False
+
+
 def get_agent_service() -> AgentService:
     """获取 Agent 服务"""
     global agent_service
     if agent_service is None:
         agent_service = AgentService(storage)
     return agent_service
+
+
+def _extract_dialogue_text(dialogue_script: str) -> str:
+    """Extract pure utterances from '角色: 台词' lines."""
+    if not isinstance(dialogue_script, str) or not dialogue_script.strip():
+        return ""
+    lines = [ln.strip() for ln in dialogue_script.splitlines() if ln.strip()]
+    utterances: List[str] = []
+    for ln in lines:
+        if "：" in ln:
+            _, tail = ln.split("：", 1)
+            utterances.append(tail.strip())
+        elif ":" in ln:
+            _, tail = ln.split(":", 1)
+            utterances.append(tail.strip())
+        else:
+            utterances.append(ln)
+    return " ".join([u for u in utterances if u])
+
+
+def _estimate_speech_seconds(text: str, speed: float = 1.0) -> float:
+    """Heuristic duration estimate for TTS/voiceover (seconds)."""
+    if not isinstance(text, str):
+        return 0.0
+    s = re.sub(r"\\s+", " ", text).strip()
+    if not s:
+        return 0.0
+
+    cjk = len(re.findall(r"[\\u4e00-\\u9fff]", s))
+    words = len(re.findall(r"[A-Za-z0-9']+", s))
+
+    cps = 4.0  # Chinese chars/sec
+    wps = 2.7  # English words/sec
+
+    base = (cjk / cps) if cjk >= max(8, words * 2) else (words / wps if words else (len(s) / 10.0))
+    punct = len(re.findall(r"[，,。\\.！!？?；;：:、]", s))
+    pauses = punct * 0.18 + s.count("…") * 0.25 + s.count("—") * 0.12
+    lead = 0.25
+
+    spd = speed if isinstance(speed, (int, float)) and speed > 0 else 1.0
+    return max(0.0, (base + pauses + lead) / spd)
+
+
+def _is_probably_expired_signed_url(url: Any) -> bool:
+    if not isinstance(url, str) or not url.startswith("http"):
+        return False
+    try:
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query or "")
+
+        if "X-Tos-Date" in qs and "X-Tos-Expires" in qs:
+            dt_raw = (qs.get("X-Tos-Date") or [""])[0]
+            exp_raw = (qs.get("X-Tos-Expires") or ["0"])[0]
+            if dt_raw and exp_raw:
+                start = datetime.strptime(dt_raw, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+                expires = int(exp_raw)
+                return datetime.now(timezone.utc) > start + timedelta(seconds=max(0, expires - 30))
+
+        if "X-Amz-Date" in qs and "X-Amz-Expires" in qs:
+            dt_raw = (qs.get("X-Amz-Date") or [""])[0]
+            exp_raw = (qs.get("X-Amz-Expires") or ["0"])[0]
+            if dt_raw and exp_raw:
+                start = datetime.strptime(dt_raw, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+                expires = int(exp_raw)
+                return datetime.now(timezone.utc) > start + timedelta(seconds=max(0, expires - 30))
+    except Exception:
+        return False
+    return False
+
+
+def _sanitize_expired_agent_media_urls(project: Dict[str, Any]) -> Dict[str, Any]:
+    """Annotate obviously expired signed URLs for frontend.
+
+    Keep history records for user visibility, but mark expired ones so UI can avoid
+    trying to load them directly.
+    """
+    if not isinstance(project, dict):
+        return project
+
+    elements = project.get("elements") or {}
+    if isinstance(elements, dict):
+        for _, e in elements.items():
+            if not isinstance(e, dict):
+                continue
+            img_url = e.get("image_url")
+            e["image_url_expired"] = _is_probably_expired_signed_url(img_url)
+            hist = e.get("image_history") or []
+            if isinstance(hist, list):
+                for img in hist:
+                    if not isinstance(img, dict):
+                        continue
+                    img["expired"] = _is_probably_expired_signed_url(img.get("url"))
+                    if "source_url" in img:
+                        img["source_expired"] = _is_probably_expired_signed_url(img.get("source_url"))
+
+    segments = project.get("segments") or []
+    if isinstance(segments, list):
+        for seg in segments:
+            if not isinstance(seg, dict):
+                continue
+            for shot in (seg.get("shots") or []):
+                if not isinstance(shot, dict):
+                    continue
+                start_url = shot.get("start_image_url")
+                shot["start_image_url_expired"] = _is_probably_expired_signed_url(start_url)
+                hist = shot.get("start_image_history") or []
+                if isinstance(hist, list):
+                    for img in hist:
+                        if not isinstance(img, dict):
+                            continue
+                        img["expired"] = _is_probably_expired_signed_url(img.get("url"))
+                        if "source_url" in img:
+                            img["source_expired"] = _is_probably_expired_signed_url(img.get("source_url"))
+
+    return project
+
+
+@app.get("/api/agent/prompts")
+async def get_agent_prompts(includeContent: bool = False):
+    """查看后端当前启用的 system prompts 摘要（调试用）。
+
+    默认只返回摘要与哈希；需要全文时传 includeContent=true。
+    """
+    service = get_agent_service()
+    return service.get_prompts_debug(include_content=includeContent)
 
 
 @app.post("/api/agent/chat")
@@ -1323,6 +2218,7 @@ async def agent_chat(request: AgentChatRequest):
     
     # 构建上下文
     context = request.context or {}
+    project_data = None
     if request.projectId:
         # 加载项目数据作为上下文
         project_data = storage.get_agent_project(request.projectId)
@@ -1330,6 +2226,46 @@ async def agent_chat(request: AgentChatRequest):
             context["project"] = project_data
     
     result = await service.chat(request.message, context)
+
+    # 将对话写入项目的 agent_memory，供后续“基于上下文回答”使用（减少幻觉）
+    if request.projectId and project_data:
+        try:
+            project_obj = AgentProject.from_dict(project_data)
+
+            ts = int(time.time() * 1000)
+            now = datetime.utcnow().isoformat() + "Z"
+
+            user_turn = {
+                "id": f"mem_u_{ts}",
+                "role": "user",
+                "content": request.message,
+                "created_at": now
+            }
+            assistant_turn = {
+                "id": f"mem_a_{ts + 1}",
+                "role": "assistant",
+                "content": result.get("content", ""),
+                "created_at": now,
+                "meta": {
+                    "type": result.get("type"),
+                    "action": result.get("action")
+                }
+            }
+
+            project_obj.agent_memory = project_obj.agent_memory or []
+
+            last = project_obj.agent_memory[-1] if project_obj.agent_memory else None
+            if not (isinstance(last, dict) and last.get("role") == user_turn["role"] and last.get("content") == user_turn["content"]):
+                project_obj.agent_memory.append(user_turn)
+
+            last2 = project_obj.agent_memory[-1] if project_obj.agent_memory else None
+            if not (isinstance(last2, dict) and last2.get("role") == assistant_turn["role"] and last2.get("content") == assistant_turn["content"]):
+                project_obj.agent_memory.append(assistant_turn)
+
+            storage.save_agent_project(project_obj.to_dict())
+        except Exception as e:
+            print(f"[Agent] 保存 agent_memory 失败: {e}")
+
     return result
 
 
@@ -1404,7 +2340,7 @@ async def get_agent_project(project_id: str):
     project = storage.get_agent_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
-    return project
+    return _sanitize_expired_agent_media_urls(project)
 
 
 @app.put("/api/agent/projects/{project_id}")
@@ -1420,6 +2356,135 @@ async def update_agent_project(project_id: str, updates: dict):
     
     print(f"[API] 项目已更新: {project.get('name')}")
     return project
+
+
+@app.post("/api/agent/projects/{project_id}/script-doctor")
+async def script_doctor_project(project_id: str, request: AgentScriptDoctorRequest):
+    """剧本增强：补齐 hook/高潮，提升逻辑与细节（不破坏现有 ID）。"""
+    service = get_agent_service()
+    project = storage.get_agent_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    result = await service.script_doctor(project, mode=request.mode)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Script Doctor 失败"))
+
+    updates = result.get("updates") or {}
+    updated_project = storage.update_agent_project(project_id, updates) if request.apply else project
+
+    return {
+        "success": True,
+        "patch": result.get("patch"),
+        "updates": updates,
+        "project": updated_project,
+    }
+
+
+@app.post("/api/agent/projects/{project_id}/complete-assets")
+async def complete_assets_project(project_id: str, request: AgentAssetCompletionRequest):
+    """资产补全：从分镜提取缺失的场景/道具元素，并可选补丁镜头 prompt。"""
+    service = get_agent_service()
+    project = storage.get_agent_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    result = await service.complete_assets(project)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "资产补全失败"))
+
+    updates = result.get("updates") or {}
+    updated_project = storage.update_agent_project(project_id, updates) if request.apply else project
+
+    return {
+        "success": True,
+        "added_elements": result.get("added_elements") or [],
+        "raw": result.get("raw"),
+        "updates": updates,
+        "project": updated_project,
+    }
+
+
+@app.post("/api/agent/projects/{project_id}/audio-check")
+async def audio_check_project(project_id: str, request: AgentAudioCheckRequest):
+    """音频对齐检查：用启发式估算旁白/对话时长，并给出镜头时长建议（可选自动应用）。"""
+    project = storage.get_agent_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    include_n = bool(request.includeNarration)
+    include_d = bool(request.includeDialogue)
+    speed = request.speed if isinstance(request.speed, (int, float)) and request.speed > 0 else 1.0
+
+    issues: List[Dict[str, Any]] = []
+    suggestions: Dict[str, float] = {}
+
+    segments = project.get("segments") or []
+    if isinstance(segments, list):
+        for seg in segments:
+            if not isinstance(seg, dict):
+                continue
+            for shot in (seg.get("shots") or []):
+                if not isinstance(shot, dict):
+                    continue
+                shot_id = shot.get("id")
+                if not isinstance(shot_id, str):
+                    continue
+
+                narration = shot.get("narration") or ""
+                dialogue_script = shot.get("dialogue_script") or ""
+                parts: List[str] = []
+                if include_n and isinstance(narration, str) and narration.strip():
+                    parts.append(narration.strip())
+                if include_d and isinstance(dialogue_script, str) and dialogue_script.strip():
+                    parts.append(_extract_dialogue_text(dialogue_script))
+                text = " ".join([p for p in parts if p])
+                est = _estimate_speech_seconds(text, speed=speed)
+
+                dur = shot.get("duration", 5.0)
+                try:
+                    dur_f = float(dur)
+                except Exception:
+                    dur_f = 5.0
+
+                if est <= 0.01:
+                    continue
+
+                ratio = est / max(0.1, dur_f)
+                if ratio > 1.15:
+                    suggested = float(math.ceil((est + 0.4) * 2) / 2)  # round up to 0.5s
+                    suggestions[shot_id] = max(dur_f, suggested)
+                    issues.append({
+                        "shot_id": shot_id,
+                        "type": "too_short",
+                        "duration": dur_f,
+                        "estimated_audio": est,
+                        "suggested_duration": suggestions[shot_id],
+                    })
+                elif ratio < 0.45 and dur_f >= 6:
+                    issues.append({
+                        "shot_id": shot_id,
+                        "type": "too_long",
+                        "duration": dur_f,
+                        "estimated_audio": est,
+                        "suggested_duration": max(2.0, float(math.floor((est + 0.3) * 2) / 2)),
+                    })
+
+    if request.apply and suggestions:
+        # Apply only suggested increases (avoid shortening automatically)
+        if isinstance(segments, list):
+            for seg in segments:
+                if not isinstance(seg, dict):
+                    continue
+                for shot in (seg.get("shots") or []):
+                    if not isinstance(shot, dict):
+                        continue
+                    sid = shot.get("id")
+                    if isinstance(sid, str) and sid in suggestions:
+                        shot["duration"] = suggestions[sid]
+        project = storage.update_agent_project(project_id, {"segments": segments}) or project
+
+    return {"success": True, "issues": issues, "suggestions": suggestions, "project": project}
 
 
 @app.delete("/api/agent/projects/{project_id}")
@@ -1594,7 +2659,10 @@ async def favorite_element_image(project_id: str, element_id: str, request: Favo
         raise HTTPException(status_code=404, detail="图片不存在")
     
     # 更新当前使用的图片
-    element["image_url"] = target_image["url"]
+    target_url = target_image.get("url")
+    source_url = target_image.get("source_url") or target_url
+    element["image_url"] = source_url
+    element["cached_image_url"] = target_url if isinstance(target_url, str) and target_url.startswith("/api/uploads/") else None
     element["image_history"] = image_history
     
     # 保存项目
@@ -1641,13 +2709,16 @@ async def favorite_shot_image(project_id: str, shot_id: str, request: FavoriteIm
         raise HTTPException(status_code=404, detail="图片不存在")
     
     # 更新当前使用的起始帧
-    target_shot["start_image_url"] = target_image["url"]
+    target_url = target_image.get("url")
+    source_url = target_image.get("source_url") or target_url
+    target_shot["start_image_url"] = source_url
+    target_shot["cached_start_image_url"] = target_url if isinstance(target_url, str) and target_url.startswith("/api/uploads/") else None
     target_shot["start_image_history"] = image_history
     
     # 保存项目
     storage.save_agent_project(project.to_dict())
     
-    return {"success": True}
+    return {"success": True, "shot": target_shot}
 
 
 # ========== Agent 批量生成 API ==========
@@ -1682,6 +2753,8 @@ def get_agent_executor() -> AgentExecutor:
 from fastapi.responses import FileResponse, StreamingResponse
 import json
 import asyncio
+import time
+from datetime import datetime
 
 
 @app.post("/api/agent/projects/{project_id}/generate-elements")
@@ -1731,7 +2804,8 @@ async def generate_project_elements_stream(project_id: str, visualStyle: str = "
         
         for i, element in enumerate(elements):
             # 跳过已有图片的元素
-            if element.get("image_url"):
+            existing_url = element.get("image_url")
+            if existing_url and executor._should_skip_existing_image(existing_url):
                 yield f"data: {json.dumps({'type': 'skip', 'element_id': element['id'], 'current': i + 1, 'total': total})}\n\n"
                 continue
             
@@ -1762,16 +2836,35 @@ async def generate_project_elements_stream(project_id: str, visualStyle: str = "
                     height=1024
                 )
                 
-                image_url = image_result.get("url")
-                
+                source_url = image_result.get("url")
+                cached_url = await executor._cache_remote_to_uploads(source_url, "image", ".jpg")
+                display_url = cached_url if isinstance(cached_url, str) and cached_url.startswith("/api/uploads/") else source_url
+
+                image_record = {
+                    "id": f"img_{uuid.uuid4().hex[:8]}",
+                    "url": display_url,
+                    "source_url": source_url,
+                    "created_at": datetime.utcnow().isoformat() + "Z",
+                    "is_favorite": False,
+                }
+
+                image_history = element.get("image_history", [])
+                if not isinstance(image_history, list):
+                    image_history = []
+                image_history.insert(0, image_record)
+                has_favorite = any(isinstance(img, dict) and img.get("is_favorite") for img in image_history)
+
                 # 更新元素
-                project.elements[element["id"]]["image_url"] = image_url
+                project.elements[element["id"]]["image_history"] = image_history
                 project.elements[element["id"]]["prompt"] = prompt
-                
+                if not has_favorite:
+                    project.elements[element["id"]]["image_url"] = source_url
+                    project.elements[element["id"]]["cached_image_url"] = display_url if isinstance(display_url, str) and display_url.startswith("/api/uploads/") else None
+
                 # 添加到视觉资产
                 project.visual_assets.append({
                     "id": f"asset_{element['id']}",
-                    "url": image_url,
+                    "url": display_url,
                     "type": "element",
                     "element_id": element["id"]
                 })
@@ -1782,7 +2875,7 @@ async def generate_project_elements_stream(project_id: str, visualStyle: str = "
                 generated += 1
                 
                 # 发送完成事件
-                yield f"data: {json.dumps({'type': 'complete', 'element_id': element['id'], 'image_url': image_url, 'current': i + 1, 'total': total, 'generated': generated})}\n\n"
+                yield f"data: {json.dumps({'type': 'complete', 'element_id': element['id'], 'image_url': display_url, 'source_url': source_url, 'image_id': image_record['id'], 'current': i + 1, 'total': total, 'generated': generated})}\n\n"
                 
             except Exception as e:
                 failed += 1
@@ -1846,16 +2939,16 @@ async def regenerate_shot_frame(project_id: str, shot_id: str, request: Regenera
 @app.post("/api/agent/projects/{project_id}/generate-frames")
 async def generate_project_frames(project_id: str, request: GenerateFramesRequest):
     """批量生成项目的所有镜头起始帧
-    
+
     需要先生成元素图片，起始帧会引用元素
     """
     project_data = storage.get_agent_project(project_id)
     if not project_data:
         raise HTTPException(status_code=404, detail="项目不存在")
-    
+
     project = AgentProject.from_dict(project_data)
     executor = get_agent_executor()
-    
+
     try:
         result = await executor.generate_all_start_frames(
             project,
@@ -1866,19 +2959,196 @@ async def generate_project_frames(project_id: str, request: GenerateFramesReques
         raise HTTPException(status_code=500, detail=f"生成失败: {str(e)}")
 
 
+@app.get("/api/agent/projects/{project_id}/generate-frames-stream")
+async def generate_project_frames_stream(
+    project_id: str,
+    visualStyle: str = "吉卜力动画风格",
+    excludeShotIds: Optional[str] = None,
+    mode: str = "missing"
+):
+    """流式生成项目的所有镜头起始帧 (SSE)
+
+    每生成一张图片就推送一次进度，包含单个任务和总体进度百分比
+    """
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    project = AgentProject.from_dict(project_data)
+    executor = get_agent_executor()
+
+    async def event_generator():
+        regenerate = (mode or "").strip().lower() in ("regenerate", "regen", "force", "all")
+
+        excluded_shot_ids = set()
+        if excludeShotIds:
+            for part in excludeShotIds.split(","):
+                sid = (part or "").strip()
+                if sid:
+                    excluded_shot_ids.add(sid)
+
+        # 收集所有镜头
+        all_shots = []
+        for segment in project.segments:
+            for shot in segment.get("shots", []):
+                all_shots.append((segment["id"], shot))
+
+        total = len(all_shots)
+        generated = 0
+        failed = 0
+        skipped = 0
+
+        # 发送开始事件
+        yield f"data: {json.dumps({'type': 'start', 'total': total, 'percent': 0})}\n\n"
+
+        for i, (segment_id, shot) in enumerate(all_shots):
+            current = i + 1
+            overall_percent = int((current / total) * 100) if total > 0 else 100
+
+            # 显式排除的镜头：无论是否已有起始帧都跳过（用于“除第一张外生成”等场景）
+            if shot.get("id") in excluded_shot_ids:
+                skipped += 1
+                yield f"data: {json.dumps({'type': 'skip', 'shot_id': shot['id'], 'shot_name': shot.get('name', ''), 'current': current, 'total': total, 'percent': overall_percent, 'reason': 'excluded'})}\n\n"
+                continue
+
+            # 跳过已有起始帧的镜头
+            existing_url = shot.get("start_image_url")
+            if (not regenerate) and existing_url and executor._should_skip_existing_image(existing_url):
+                skipped += 1
+                yield f"data: {json.dumps({'type': 'skip', 'shot_id': shot['id'], 'shot_name': shot.get('name', ''), 'current': current, 'total': total, 'percent': overall_percent, 'reason': 'already_has_frame'})}\n\n"
+                continue
+
+            try:
+                # 批量重生成时，先把当前使用的图片尽量保留到历史版本
+                if regenerate:
+                    try:
+                        source_prev = shot.get("start_image_url")
+                        display_prev = shot.get("cached_start_image_url") or source_prev
+                        if isinstance(display_prev, str) and display_prev.strip():
+                            history = shot.get("start_image_history", [])
+                            if not isinstance(history, list):
+                                history = []
+                            if not any(isinstance(h, dict) and h.get("url") == display_prev for h in history):
+                                history.insert(0, {
+                                    "id": f"img_prev_{int(time.time() * 1000)}",
+                                    "url": display_prev,
+                                    "source_url": source_prev,
+                                    "created_at": datetime.now().isoformat(),
+                                    "is_favorite": False
+                                })
+                            shot["start_image_history"] = history
+                    except Exception:
+                        pass
+
+                # 发送生成中事件
+                yield f"data: {json.dumps({'type': 'generating', 'shot_id': shot['id'], 'shot_name': shot.get('name', ''), 'current': current, 'total': total, 'percent': overall_percent, 'stage': 'prompt'})}\n\n"
+
+                # 解析元素引用，构建完整提示词
+                prompt = shot.get("prompt", shot.get("description", ""))
+                resolved_prompt = executor._resolve_element_references(prompt, project.elements)
+
+                # 收集镜头中涉及的角色参考图
+                reference_images = executor._collect_element_reference_images(prompt, project.elements)
+
+                # 构建角色一致性提示
+                character_consistency = executor._build_character_consistency_prompt(prompt, project.elements)
+
+                # 添加风格和质量关键词
+                full_prompt = f"{resolved_prompt}, {character_consistency}, {visualStyle}, cinematic composition, consistent character design, same art style throughout, high quality, detailed"
+
+                # 发送图片生成阶段事件
+                yield f"data: {json.dumps({'type': 'generating', 'shot_id': shot['id'], 'shot_name': shot.get('name', ''), 'current': current, 'total': total, 'percent': overall_percent, 'stage': 'image', 'reference_count': len(reference_images)})}\n\n"
+
+                # 生成图片
+                image_result = await executor.image_service.generate(
+                    prompt=full_prompt,
+                    reference_images=reference_images,
+                    negative_prompt="blurry, low quality, distorted, deformed, inconsistent character, different art style, multiple styles",
+                    width=1280,
+                    height=720
+                )
+
+                source_url = image_result.get("url")
+                cached_url = await executor._cache_remote_to_uploads(source_url, "image", ".jpg")
+                display_url = cached_url if isinstance(cached_url, str) and cached_url.startswith("/api/uploads/") else source_url
+
+                # 创建图片历史记录
+                image_id = f"img_{int(time.time() * 1000)}"
+                image_record = {
+                    "id": image_id,
+                    "url": display_url,
+                    "source_url": source_url,
+                    "created_at": datetime.now().isoformat(),
+                    "is_favorite": False
+                }
+
+                # 更新镜头数据
+                history = shot.get("start_image_history", [])
+                if not isinstance(history, list):
+                    history = []
+                history.insert(0, image_record)
+                has_favorite = any(isinstance(img, dict) and img.get("is_favorite") for img in history)
+
+                shot["resolved_prompt"] = full_prompt
+                shot["status"] = "frame_ready"
+                shot["start_image_history"] = history
+                if not has_favorite:
+                    shot["start_image_url"] = source_url
+                    shot["cached_start_image_url"] = display_url if isinstance(display_url, str) and display_url.startswith("/api/uploads/") else None
+
+                # 添加到视觉资产
+                project.visual_assets.append({
+                    "id": f"frame_{shot['id']}_{image_id}",
+                    "url": display_url,
+                    "type": "start_frame",
+                    "shot_id": shot["id"]
+                })
+
+                # 保存项目
+                storage.save_agent_project(project.to_dict())
+
+                generated += 1
+
+                # 发送完成事件
+                yield f"data: {json.dumps({'type': 'complete', 'shot_id': shot['id'], 'shot_name': shot.get('name', ''), 'image_url': display_url, 'source_url': source_url, 'image_id': image_id, 'current': current, 'total': total, 'generated': generated, 'percent': overall_percent})}\n\n"
+
+            except Exception as e:
+                failed += 1
+                shot["status"] = "frame_failed"
+                # 尽量持久化失败状态，避免前端一直显示 pending
+                try:
+                    storage.save_agent_project(project.to_dict())
+                except Exception:
+                    pass
+                yield f"data: {json.dumps({'type': 'error', 'shot_id': shot['id'], 'shot_name': shot.get('name', ''), 'error': str(e), 'current': current, 'total': total, 'percent': overall_percent})}\n\n"
+
+        # 发送结束事件
+        yield f"data: {json.dumps({'type': 'done', 'generated': generated, 'failed': failed, 'skipped': skipped, 'total': total, 'percent': 100})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
 @app.post("/api/agent/projects/{project_id}/generate-videos")
 async def generate_project_videos(project_id: str, request: GenerateVideosRequest):
     """批量生成项目的所有视频
-    
+
     需要先生成起始帧，视频基于起始帧生成
     """
     project_data = storage.get_agent_project(project_id)
     if not project_data:
         raise HTTPException(status_code=404, detail="项目不存在")
-    
+
     project = AgentProject.from_dict(project_data)
     executor = get_agent_executor()
-    
+
     try:
         result = await executor.generate_all_videos(
             project,
@@ -1887,6 +3157,877 @@ async def generate_project_videos(project_id: str, request: GenerateVideosReques
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"生成失败: {str(e)}")
+
+
+@app.post("/api/agent/projects/{project_id}/generate-audio")
+async def generate_project_audio(project_id: str, request: GenerateAgentAudioRequest):
+    """为 Agent 项目生成旁白/对白音频（独立 TTS），并写入 project.audio_assets + shot.voice_audio_url。
+
+    说明：视频本身仍可保留环境音/音效；此接口只生成“人声轨”，用于导出/混音时叠加。
+    """
+    import io
+    import re
+    import subprocess
+    import tempfile
+    import wave
+    from pathlib import Path
+
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    project = AgentProject.from_dict(project_data)
+
+    settings = storage.get_settings() or {}
+    tts_settings = TTSConfig.model_validate(settings.get("tts") or {})
+
+    provider = str(tts_settings.provider or "volc_tts_v1_http").strip() or "volc_tts_v1_http"
+    is_fish_tts = provider.startswith("fish")
+    is_bailian_tts = provider in {"aliyun_bailian_tts_v2", "dashscope_tts_v2"} or provider.startswith("aliyun_bailian")
+    is_custom_tts = provider.startswith("custom_")
+
+    # Keep these names for downstream code.
+    appid = ""
+    access_token = ""
+    base_url = ""
+    endpoint = "https://openspeech.bytedance.com/api/v1/tts"
+    cluster = "volcano_tts"
+    model = "seed-tts-1.1"
+    encoding = "mp3"
+    rate = 24000
+    speed_ratio = 1.0
+    bailian_workspace = ""
+    custom_openai_base_url = ""
+    custom_openai_api_key = ""
+    custom_openai_model = ""
+
+    if is_fish_tts:
+        fish_cfg = tts_settings.fish
+        access_token = str(fish_cfg.apiKey or "").strip()
+        if not access_token:
+            raise HTTPException(status_code=400, detail="未配置 Fish TTS：请在设置中填写 Fish.apiKey")
+        base_url = str(fish_cfg.baseUrl or "").strip() or "https://api.fish.audio"
+        model = str(fish_cfg.model or "").strip() or "speech-1.5"
+        if model.startswith("seed-"):
+            model = "speech-1.5"
+        encoding = str(request.encoding or fish_cfg.encoding or "mp3").strip() or "mp3"
+        rate = int(request.rate or fish_cfg.rate or 24000)
+        speed_ratio = float(request.speedRatio or fish_cfg.speedRatio or 1.0)
+    elif is_bailian_tts:
+        bailian_cfg = tts_settings.bailian
+        access_token = str(bailian_cfg.apiKey or "").strip()
+        if not access_token:
+            raise HTTPException(status_code=400, detail="未配置阿里百炼 TTS：请在设置中填写 Bailian.apiKey")
+        base_url = str(bailian_cfg.baseUrl or "").strip() or "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+        bailian_workspace = str(bailian_cfg.workspace or "").strip()
+        model = str(bailian_cfg.model or "").strip() or "cosyvoice-v1"
+        encoding = str(request.encoding or bailian_cfg.encoding or "mp3").strip() or "mp3"
+        rate = int(request.rate or bailian_cfg.rate or 24000)
+        speed_ratio = float(request.speedRatio or bailian_cfg.speedRatio or 1.0)
+    elif is_custom_tts:
+        custom_provider = storage.get_custom_provider(provider) or {}
+        if not custom_provider or str(custom_provider.get("category") or "") != "tts":
+            raise HTTPException(status_code=400, detail="自定义 TTS 配置不存在或类别不匹配（请先在设置里新增 tts 自定义配置）")
+        custom_openai_api_key = str(custom_provider.get("apiKey") or "").strip()
+        custom_openai_base_url = str(custom_provider.get("baseUrl") or "").strip()
+        custom_openai_model = str(custom_provider.get("model") or "").strip()
+        if not custom_openai_api_key or not custom_openai_base_url:
+            raise HTTPException(status_code=400, detail="自定义 TTS 缺少 apiKey/baseUrl")
+
+        custom_cfg = tts_settings.custom
+        encoding = str(request.encoding or custom_cfg.encoding or "mp3").strip() or "mp3"
+        rate = int(request.rate or custom_cfg.rate or 24000)
+        speed_ratio = float(request.speedRatio or custom_cfg.speedRatio or 1.0)
+    else:
+        volc_cfg = tts_settings.volc
+        appid = str(volc_cfg.appid or "").strip()
+        access_token = str(volc_cfg.accessToken or "").strip()
+        if not appid or not access_token:
+            raise HTTPException(status_code=400, detail="未配置 TTS：请在设置中填写 Volc 的 appid 与 accessToken")
+        endpoint = str(volc_cfg.endpoint or "").strip() or "https://openspeech.bytedance.com/api/v1/tts"
+        cluster = str(volc_cfg.cluster or "volcano_tts").strip() or "volcano_tts"
+        model = str(volc_cfg.model or "seed-tts-1.1").strip() or "seed-tts-1.1"
+        encoding = str(request.encoding or volc_cfg.encoding or "mp3").strip() or "mp3"
+        rate = int(request.rate or volc_cfg.rate or 24000)
+        speed_ratio = float(request.speedRatio or volc_cfg.speedRatio or 1.0)
+
+    def check_ffmpeg() -> bool:
+        try:
+            p = subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+            return p.returncode == 0
+        except Exception:
+            return False
+
+    ffmpeg_ok = check_ffmpeg()
+
+    def estimate_pcm_duration_ms(pcm_bytes: bytes, sample_rate: int) -> int:
+        try:
+            if not pcm_bytes or int(sample_rate) <= 0:
+                return 0
+            # OpenSpeech pcm: 16-bit mono @ sample_rate
+            frames = len(pcm_bytes) // 2
+            return int(frames * 1000 / int(sample_rate))
+        except Exception:
+            return 0
+
+    def pcm_silence_bytes(ms: int, sample_rate: int) -> bytes:
+        if int(ms) <= 0 or int(sample_rate) <= 0:
+            return b""
+        frames = int(int(sample_rate) * (float(ms) / 1000.0))
+        return b"\x00\x00" * max(frames, 0)
+
+    def pcm_to_wav_bytes(pcm_bytes: bytes, sample_rate: int) -> bytes:
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(int(sample_rate))
+            wf.writeframes(pcm_bytes or b"")
+        return buf.getvalue()
+
+    def looks_like_voice_type(value: str) -> bool:
+        v = (value or "").strip()
+        if not v:
+            return False
+        if is_fish_tts or is_bailian_tts or is_custom_tts:
+            # Fish/Bailian/Custom voices are provider-specific free-form strings.
+            return True
+        # 常见 voice_type 形态：zh_female_xxx / zh_male_xxx / en_... 等
+        return bool(re.match(r"^[a-z]{2}_[a-z0-9_\\-]+$", v, flags=re.IGNORECASE))
+
+    # 默认音色：优先请求覆盖，其次 settings.tts(按 provider) 默认，其次 creative_brief；若均为空则自动匹配（仅使用内置音色库）
+    brief = project.creative_brief if isinstance(project.creative_brief, dict) else {}
+    if is_fish_tts:
+        provider_defaults = tts_settings.fish
+    elif is_bailian_tts:
+        provider_defaults = tts_settings.bailian
+    elif is_custom_tts:
+        provider_defaults = tts_settings.custom
+    else:
+        provider_defaults = tts_settings.volc
+
+    def normalize_voice_type(value: str) -> str:
+        v = (value or "").strip()
+        return v if (v and looks_like_voice_type(v)) else ""
+
+    narrator_voice = normalize_voice_type(
+        request.narratorVoiceType
+        or getattr(provider_defaults, "narratorVoiceType", "")
+        or brief.get("narratorVoiceType")
+        or brief.get("narratorVoiceProfile")
+        or ""
+    )
+
+    dialogue_voice_legacy = normalize_voice_type(
+        request.dialogueVoiceType or getattr(provider_defaults, "dialogueVoiceType", "") or ""
+    )
+    dialogue_voice_male = normalize_voice_type(
+        request.dialogueMaleVoiceType or getattr(provider_defaults, "dialogueMaleVoiceType", "") or ""
+    )
+    dialogue_voice_female = normalize_voice_type(
+        request.dialogueFemaleVoiceType or getattr(provider_defaults, "dialogueFemaleVoiceType", "") or ""
+    )
+
+    # 兼容旧设置：dialogueVoiceType 作为男女对白的兜底
+    if dialogue_voice_legacy:
+        if not dialogue_voice_male:
+            dialogue_voice_male = dialogue_voice_legacy
+        if not dialogue_voice_female:
+            dialogue_voice_female = dialogue_voice_legacy
+
+    auto_narrator_voice = ""
+    if not (is_fish_tts or is_bailian_tts or is_custom_tts):
+        auto_narrator_voice = VolcTTSService.auto_pick_voice_type(
+            role="narration",
+            name="narrator",
+            description=str(brief.get("narratorVoiceProfile") or ""),
+            profile=str(brief.get("narratorVoiceType") or ""),
+        )
+    else:
+        auto_narrator_voice = narrator_voice or dialogue_voice_male or dialogue_voice_female or dialogue_voice_legacy
+        if not auto_narrator_voice:
+            if is_fish_tts:
+                msg = "Fish TTS 未配置 voice model id：请在设置的“默认旁白/对白 voice_type”中填写 Fish 的 reference_id"
+            elif is_bailian_tts:
+                msg = "阿里百炼 TTS 未配置 voice：请在设置的“默认旁白/对白 voice”中填写可用音色名称"
+            else:
+                msg = "自定义 TTS 未配置 voice：请在设置的“默认旁白/对白 voice”中填写可用音色名称"
+            raise HTTPException(status_code=400, detail=msg)
+
+    # 建立 speaker -> element 映射：兼容 “角色名” 与 “Element_XXX” 等写法
+    element_lookup: Dict[str, Dict[str, Any]] = {}
+    try:
+        elems = project.elements or {}
+        if isinstance(elems, dict):
+            for k, e in elems.items():
+                if not isinstance(e, dict):
+                    continue
+                if isinstance(k, str) and k.strip():
+                    element_lookup[k.strip().lower()] = e
+                if isinstance(e.get("id"), str) and str(e.get("id")).strip():
+                    element_lookup[str(e.get("id")).strip().lower()] = e
+                if isinstance(e.get("name"), str) and str(e.get("name")).strip():
+                    element_lookup[str(e.get("name")).strip().lower()] = e
+    except Exception:
+        element_lookup = {}
+
+    def resolve_element_for_speaker(speaker: str) -> Optional[Dict[str, Any]]:
+        sl = (speaker or "").strip().lower()
+        if not sl:
+            return None
+        if sl in element_lookup:
+            return element_lookup.get(sl)
+        m = re.search(r"(element_[a-z0-9_]+)", sl, flags=re.IGNORECASE)
+        if m:
+            key = m.group(1).strip().lower()
+            if key in element_lookup:
+                return element_lookup.get(key)
+        # 兼容 speaker="KATE" 这类（去掉 Element_ 前缀）
+        if sl.startswith("element_"):
+            short = sl[len("element_") :].strip()
+            if short and short in element_lookup:
+                return element_lookup.get(short)
+        return None
+
+    fish_tts: Optional[FishTTSService] = None
+    volc_tts: Optional[VolcTTSService] = None
+    bailian_tts: Optional[DashScopeTTSService] = None
+    custom_tts: Optional[OpenAITTSService] = None
+
+    if is_fish_tts:
+        model_hdr = model.strip()
+        if not model_hdr or model_hdr.startswith("seed-"):
+            model_hdr = "speech-1.5"
+        fish_tts = FishTTSService(
+            FishTTSConfig(
+                api_key=access_token,
+                base_url=base_url or "https://api.fish.audio",
+                model=model_hdr,
+            )
+        )
+    elif is_bailian_tts:
+        bailian_tts = DashScopeTTSService(
+            DashScopeTTSConfig(
+                api_key=access_token,
+                base_url=base_url or "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+                model=model or "cosyvoice-v1",
+                workspace=bailian_workspace,
+            )
+        )
+    elif is_custom_tts:
+        custom_tts = OpenAITTSService(
+            OpenAITTSConfig(
+                api_key=custom_openai_api_key,
+                base_url=custom_openai_base_url,
+                model=custom_openai_model,
+            )
+        )
+    else:
+        volc_tts = VolcTTSService(
+            VolcTTSConfig(
+                appid=appid,
+                access_token=access_token,
+                endpoint=endpoint,
+                cluster=cluster,
+                model=model,
+            )
+        )
+
+    async def tts_synthesize(*, text: str, voice: str, out_encoding: str) -> tuple[bytes, int]:
+        if is_fish_tts:
+            if not fish_tts:
+                raise RuntimeError("Fish TTS not initialized")
+            return await fish_tts.synthesize(
+                text=text,
+                reference_id=voice,
+                encoding=out_encoding,
+                speed_ratio=speed_ratio,
+                rate=rate,
+            )
+        if is_bailian_tts:
+            if not bailian_tts:
+                raise RuntimeError("Bailian TTS not initialized")
+            return await bailian_tts.synthesize(
+                text=text,
+                voice=voice,
+                encoding=out_encoding,
+                speed_ratio=speed_ratio,
+                rate=rate,
+            )
+        if is_custom_tts:
+            if not custom_tts:
+                raise RuntimeError("Custom TTS not initialized")
+            return await custom_tts.synthesize(
+                text=text,
+                voice=voice,
+                encoding=out_encoding,
+                speed_ratio=speed_ratio,
+            )
+        if not volc_tts:
+            raise RuntimeError("Volc TTS not initialized")
+        return await volc_tts.synthesize(
+            text=text,
+            voice_type=voice,
+            encoding=out_encoding,
+            speed_ratio=speed_ratio,
+            rate=rate,
+        )
+
+    generated = 0
+    skipped = 0
+    failed = 0
+    results: List[Dict[str, Any]] = []
+
+    audio_assets: List[Dict[str, Any]] = list(project.audio_assets or [])
+
+    # 清理旧的 voice 资产（按 shot_id）
+    def remove_voice_assets_for_shot(shot_id: str):
+        nonlocal audio_assets
+        audio_assets = [a for a in audio_assets if str(a.get("shot_id") or "") != shot_id or a.get("type") != "narration"]
+
+    # 输出目录（复用 uploads/audio）
+    audio_dir = Path(UPLOAD_DIR) / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+
+    selected_shot_ids: Optional[set[str]] = None
+    if isinstance(request.shotIds, list) and request.shotIds:
+        selected_shot_ids = {str(s).strip() for s in request.shotIds if isinstance(s, str) and str(s).strip()}
+        if not selected_shot_ids:
+            selected_shot_ids = None
+
+    # 逐镜头生成
+    for seg in project.segments or []:
+        for shot in seg.get("shots", []) if isinstance(seg, dict) else []:
+            shot_id = str(shot.get("id") or "").strip()
+            if not shot_id:
+                continue
+            if selected_shot_ids is not None and shot_id not in selected_shot_ids:
+                continue
+
+            if not request.overwrite and shot.get("voice_audio_url"):
+                skipped += 1
+                results.append({"shot_id": shot_id, "status": "skipped", "message": "已有旁白/对白音频"})
+                continue
+
+            narration = shot.get("narration")
+            narration = narration if isinstance(narration, str) else ""
+            narration = narration.strip()
+
+            dialogue_script = shot.get("dialogue_script") or shot.get("dialogueScript") or shot.get("dialogue")
+            dialogue_script = dialogue_script if isinstance(dialogue_script, str) else ""
+            dialogue_script = dialogue_script.strip()
+
+            segments_to_say: List[Dict[str, str]] = []
+
+            if request.includeNarration and narration:
+                segments_to_say.append({"voice_type": narrator_voice or auto_narrator_voice, "text": narration})
+
+            if request.includeDialogue and dialogue_script:
+                for raw_line in dialogue_script.splitlines():
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    # 容错：去掉常见项目符号/编号前缀
+                    line = re.sub(r"^[-*•\u2022]\s*", "", line)
+                    line = re.sub(r"^\d+\s*[.)、]\s*", "", line)
+                    m = re.match(r"^([^:：]{1,40})[:：]\\s*(.+)$", line)
+                    if not m:
+                        # 不符合格式，按默认对白音色朗读整行
+                        fallback_voice = dialogue_voice_legacy or dialogue_voice_male or dialogue_voice_female or narrator_voice or auto_narrator_voice
+                        segments_to_say.append({"voice_type": fallback_voice, "text": line})
+                        continue
+
+                    speaker = m.group(1).strip()
+                    speaker = speaker.strip(" \t【】[]（）()")
+                    content = m.group(2).strip()
+                    if not content:
+                        continue
+
+                    voice_type = ""
+                    elem = resolve_element_for_speaker(speaker)
+                    if isinstance(elem, dict):
+                        vt = (elem.get("voice_type") or "").strip()
+                        if looks_like_voice_type(vt):
+                            voice_type = vt
+                        else:
+                            vp = (elem.get("voice_profile") or "").strip()
+                            if looks_like_voice_type(vp):
+                                voice_type = vp
+
+                    if not voice_type:
+                        prefer_gender = None
+                        if isinstance(elem, dict):
+                            g = elem.get("gender") or elem.get("sex")
+                            if isinstance(g, str):
+                                gl = g.strip().lower()
+                                if gl in ("male", "m", "man", "boy", "男", "男性"):
+                                    prefer_gender = "male"
+                                elif gl in ("female", "f", "woman", "girl", "女", "女性"):
+                                    prefer_gender = "female"
+
+                        if prefer_gender is None:
+                            blob = speaker
+                            if isinstance(elem, dict):
+                                blob = "\n".join(
+                                    [
+                                        speaker,
+                                        str(elem.get("description") or ""),
+                                        str(elem.get("voice_profile") or ""),
+                                    ]
+                                )
+                            prefer_gender = VolcTTSService.detect_gender(blob) or VolcTTSService.detect_gender(content)
+
+                        if prefer_gender == "male" and dialogue_voice_male:
+                            voice_type = dialogue_voice_male
+                        elif prefer_gender == "female" and dialogue_voice_female:
+                            voice_type = dialogue_voice_female
+                        elif dialogue_voice_legacy:
+                            voice_type = dialogue_voice_legacy
+                        elif narrator_voice:
+                            voice_type = narrator_voice
+                        else:
+                            voice_type = VolcTTSService.auto_pick_voice_type(
+                                role="dialogue",
+                                name=speaker,
+                                description=str(elem.get("description") or "") if isinstance(elem, dict) else "",
+                                profile=str(elem.get("voice_profile") or "") if isinstance(elem, dict) else "",
+                                prefer_gender=prefer_gender,
+                            )
+
+                    # 兜底：auto_pick 可能返回空，避免对白整行被跳过
+                    if not voice_type:
+                        voice_type = (
+                            dialogue_voice_male
+                            or dialogue_voice_female
+                            or dialogue_voice_legacy
+                            or narrator_voice
+                            or auto_narrator_voice
+                        )
+
+                    if voice_type:
+                        segments_to_say.append({"voice_type": voice_type, "text": content})
+
+            if not segments_to_say:
+                skipped += 1
+                results.append({"shot_id": shot_id, "status": "skipped", "message": "无旁白/对白文本"})
+                continue
+
+            use_pcm_concat = (not ffmpeg_ok) and (len(segments_to_say) > 1)
+
+            try:
+                out_bytes: bytes
+                effective_encoding = encoding
+                total_ms = 0
+
+                if use_pcm_concat:
+                    # 无 FFmpeg 时，用 pcm 生成并在服务端直接拼接成 wav，避免阻塞对白+旁白的多段合成。
+                    silence_ms = 200
+                    pcm_chunks: List[bytes] = []
+
+                    for i, part in enumerate(segments_to_say):
+                        text = part["text"].strip()
+                        if text and text[-1] not in "。！？.!?":
+                            text = text + "。"
+
+                        try:
+                            audio_bytes, duration_ms = await tts_synthesize(
+                                text=text,
+                                voice=part["voice_type"],
+                                out_encoding="pcm",
+                            )
+                        except Exception:
+                            # 容错：对话音色可能未授权/不存在，回退到旁白默认音色再试一次
+                            fallback_voice = narrator_voice or auto_narrator_voice
+                            if fallback_voice and fallback_voice != part["voice_type"]:
+                                audio_bytes, duration_ms = await tts_synthesize(
+                                    text=text,
+                                    voice=fallback_voice,
+                                    out_encoding="pcm",
+                                )
+                            else:
+                                raise
+
+                        pcm_chunks.append(audio_bytes)
+                        seg_ms = int(duration_ms or 0) or estimate_pcm_duration_ms(audio_bytes, rate)
+                        total_ms += max(int(seg_ms or 0), 0)
+
+                        if i < len(segments_to_say) - 1 and silence_ms > 0:
+                            pcm_chunks.append(pcm_silence_bytes(silence_ms, rate))
+                            total_ms += silence_ms
+
+                    out_bytes = pcm_to_wav_bytes(b"".join(pcm_chunks), rate)
+                    effective_encoding = "wav"
+                else:
+                    with tempfile.TemporaryDirectory() as td:
+                        temp_dir = Path(td)
+                        part_files: List[Path] = []
+
+                        for i, part in enumerate(segments_to_say):
+                            text = part["text"].strip()
+                            if text and text[-1] not in "。！？.!?":
+                                text = text + "。"
+
+                            try:
+                                audio_bytes, duration_ms = await tts_synthesize(
+                                    text=text,
+                                    voice=part["voice_type"],
+                                    out_encoding=encoding,
+                                )
+                            except Exception:
+                                # 容错：对话音色可能未授权/不存在，回退到旁白默认音色再试一次
+                                fallback_voice = narrator_voice or auto_narrator_voice
+                                if fallback_voice and fallback_voice != part["voice_type"]:
+                                    audio_bytes, duration_ms = await tts_synthesize(
+                                        text=text,
+                                        voice=fallback_voice,
+                                        out_encoding=encoding,
+                                    )
+                                else:
+                                    raise
+                            total_ms += int(duration_ms or 0)
+                            part_path = temp_dir / f"part_{i}.{encoding}"
+                            part_path.write_bytes(audio_bytes)
+                            part_files.append(part_path)
+
+                        if len(part_files) == 1:
+                            out_bytes = part_files[0].read_bytes()
+                        else:
+                            # concat filter（更稳，允许不同 mp3 header），输出统一 mp3
+                            inputs = []
+                            filter_inputs = []
+                            for idx, p in enumerate(part_files):
+                                inputs.extend(["-i", str(p)])
+                                filter_inputs.append(f"[{idx}:a]")
+                            filter_complex = "".join(filter_inputs) + f"concat=n={len(part_files)}:v=0:a=1[a]"
+                            # 优先按用户选择编码输出；若环境缺少对应编码器（常见：缺少 libmp3lame），自动降级为 m4a(aac)
+                            def _run_concat(out_ext: str, codec: str) -> bytes:
+                                out_path = temp_dir / f"voice.{out_ext}"
+                                cmd = [
+                                    "ffmpeg",
+                                    "-y",
+                                    *inputs,
+                                    "-filter_complex",
+                                    filter_complex,
+                                    "-map",
+                                    "[a]",
+                                    "-c:a",
+                                    codec,
+                                    str(out_path),
+                                ]
+                                proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                if proc.returncode != 0 or not out_path.exists():
+                                    raise Exception(proc.stderr.decode("utf-8", errors="ignore")[:2000])
+                                return out_path.read_bytes()
+
+                            try:
+                                if encoding.lower() == "mp3":
+                                    out_bytes = _run_concat("mp3", "libmp3lame")
+                                    effective_encoding = "mp3"
+                                else:
+                                    # 默认使用 aac（容器扩展名用 m4a 更通用）
+                                    out_ext = "m4a" if encoding.lower() in ("aac", "m4a") else encoding.lower()
+                                    out_bytes = _run_concat(out_ext, "aac")
+                                    effective_encoding = out_ext
+                            except Exception:
+                                # fallback：m4a(aac)
+                                out_bytes = _run_concat("m4a", "aac")
+                                effective_encoding = "m4a"
+
+                filename = f"{project_id}_{shot_id}_voice_{uuid.uuid4().hex[:8]}.{effective_encoding}"
+                file_path = audio_dir / filename
+                file_path.write_bytes(out_bytes)
+                url = f"/api/uploads/audio/{filename}"
+
+                # 更新镜头 & 资产列表
+                if request.overwrite:
+                    remove_voice_assets_for_shot(shot_id)
+
+                shot["voice_audio_url"] = url
+                shot["voice_audio_duration_ms"] = int(total_ms or 0)
+
+                audio_assets.append({
+                    "id": f"voice_{shot_id}",
+                    "url": url,
+                    "type": "narration",  # UI 里会归到“旁白/对白”
+                    "shot_id": shot_id,
+                    "duration_ms": int(total_ms or 0),
+                })
+
+                generated += 1
+                results.append({"shot_id": shot_id, "status": "ok", "url": url, "duration_ms": int(total_ms or 0)})
+            except Exception as e:
+                failed += 1
+                results.append({"shot_id": shot_id, "status": "failed", "message": str(e)})
+
+    project.audio_assets = audio_assets
+    storage.save_agent_project(project.to_dict())
+
+    return {"success": failed == 0, "generated": generated, "skipped": skipped, "failed": failed, "results": results}
+
+
+@app.post("/api/agent/projects/{project_id}/clear-audio")
+async def clear_project_audio(project_id: str, request: ClearAgentAudioRequest):
+    """清除 Agent 项目已生成的人声轨（旁白/对白）音频引用，并可选删除本地上传文件。"""
+    from pathlib import Path
+
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    project = AgentProject.from_dict(project_data)
+
+    selected_shot_ids: Optional[set[str]] = None
+    if isinstance(request.shotIds, list) and request.shotIds:
+        selected_shot_ids = {str(s).strip() for s in request.shotIds if isinstance(s, str) and str(s).strip()}
+        if not selected_shot_ids:
+            selected_shot_ids = None
+
+    audio_dir = (Path(UPLOAD_DIR) / "audio").resolve()
+    removed_urls: List[str] = []
+    cleared_shots = 0
+
+    for seg in project.segments or []:
+        for shot in seg.get("shots", []) if isinstance(seg, dict) else []:
+            shot_id = str(shot.get("id") or "").strip()
+            if not shot_id:
+                continue
+            if selected_shot_ids is not None and shot_id not in selected_shot_ids:
+                continue
+            url = str(shot.get("voice_audio_url") or "").strip()
+            if url:
+                removed_urls.append(url)
+            if "voice_audio_url" in shot or "voice_audio_duration_ms" in shot:
+                shot.pop("voice_audio_url", None)
+                shot.pop("voice_audio_duration_ms", None)
+                cleared_shots += 1
+
+    removed_assets = 0
+    if isinstance(project.audio_assets, list):
+        before = len(project.audio_assets)
+        project.audio_assets = [
+            a
+            for a in project.audio_assets
+            if not (
+                isinstance(a, dict)
+                and (a.get("type") in ("narration", "dialogue"))
+                and (
+                    selected_shot_ids is None
+                    or str(a.get("shot_id") or "").strip() in selected_shot_ids
+                )
+            )
+        ]
+        removed_assets = before - len(project.audio_assets)
+
+    deleted_files = 0
+    if request.deleteFiles:
+        for url in removed_urls:
+            if not isinstance(url, str):
+                continue
+            if not url.startswith("/api/uploads/audio/"):
+                continue
+            filename = url[len("/api/uploads/audio/") :].strip().replace("/", "")
+            if not filename:
+                continue
+            candidate = (audio_dir / filename).resolve()
+            try:
+                if audio_dir in candidate.parents and candidate.exists() and candidate.is_file():
+                    candidate.unlink()
+                    deleted_files += 1
+            except Exception:
+                pass
+
+    storage.save_agent_project(project.to_dict())
+    return {
+        "success": True,
+        "cleared_shots": cleared_shots,
+        "removed_assets": removed_assets,
+        "deleted_files": deleted_files,
+    }
+
+
+@app.get("/api/agent/projects/{project_id}/generate-videos-stream")
+async def generate_project_videos_stream(project_id: str, resolution: str = "720p"):
+    """流式生成项目的所有视频 (SSE)
+
+    每提交一个视频任务就推送进度，然后持续轮询直到完成
+    """
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    project = AgentProject.from_dict(project_data)
+    executor = get_agent_executor()
+
+    async def event_generator():
+        # 收集所有有起始帧的镜头
+        all_shots = []
+        for segment in project.segments:
+            for shot in segment.get("shots", []):
+                if shot.get("start_image_url"):
+                    all_shots.append((segment["id"], shot))
+
+        total = len(all_shots)
+        submitted = 0
+        completed = 0
+        failed = 0
+        skipped = 0
+        pending_tasks = []  # 待轮询的任务
+
+        # 发送开始事件
+        yield f"data: {json.dumps({'type': 'start', 'total': total, 'percent': 0, 'phase': 'submit'})}\n\n"
+
+        # 阶段1: 提交所有视频任务
+        for i, (segment_id, shot) in enumerate(all_shots):
+            current = i + 1
+            submit_percent = int((current / total) * 50) if total > 0 else 50  # 提交阶段占 50%
+
+            # 跳过已有视频的镜头
+            if shot.get("video_url"):
+                skipped += 1
+                yield f"data: {json.dumps({'type': 'skip', 'shot_id': shot['id'], 'shot_name': shot.get('name', ''), 'current': current, 'total': total, 'percent': submit_percent, 'phase': 'submit'})}\n\n"
+                continue
+
+            try:
+                # 发送提交中事件
+                yield f"data: {json.dumps({'type': 'submitting', 'shot_id': shot['id'], 'shot_name': shot.get('name', ''), 'current': current, 'total': total, 'percent': submit_percent, 'phase': 'submit'})}\n\n"
+
+                # 构建视频提示词（与起始帧提示词分离）
+                video_prompt = executor._build_video_prompt_for_shot(shot, project)
+
+                # 生成视频
+                video_result = await executor.video_service.generate(
+                    image_url=shot["start_image_url"],
+                    prompt=video_prompt,
+                    duration=shot.get("duration", 5),
+                    resolution=resolution
+                )
+
+                task_id = video_result.get("task_id")
+                status = video_result.get("status")
+
+                shot["video_task_id"] = task_id
+                shot["status"] = "video_processing"
+
+                submitted += 1
+
+                # 如果是异步任务，加入待轮询列表
+                if status in ["processing", "pending", "submitted"]:
+                    pending_tasks.append({
+                        "shot_id": shot["id"],
+                        "shot_name": shot.get("name", ""),
+                        "task_id": task_id,
+                        "shot": shot
+                    })
+                    yield f"data: {json.dumps({'type': 'submitted', 'shot_id': shot['id'], 'shot_name': shot.get('name', ''), 'task_id': task_id, 'current': current, 'total': total, 'submitted': submitted, 'percent': submit_percent, 'phase': 'submit'})}\n\n"
+                elif status == "completed" or status == "succeeded":
+                    # 直接完成
+                    shot["video_url"] = video_result.get("video_url")
+                    shot["status"] = "video_ready"
+                    completed += 1
+
+                    project.visual_assets.append({
+                        "id": f"video_{shot['id']}",
+                        "url": shot["video_url"],
+                        "type": "video",
+                        "shot_id": shot["id"],
+                        "duration": shot.get("duration")
+                    })
+
+                    yield f"data: {json.dumps({'type': 'complete', 'shot_id': shot['id'], 'shot_name': shot.get('name', ''), 'video_url': shot['video_url'], 'current': current, 'total': total, 'completed': completed, 'percent': submit_percent, 'phase': 'submit'})}\n\n"
+
+            except Exception as e:
+                failed += 1
+                shot["status"] = "video_failed"
+                yield f"data: {json.dumps({'type': 'error', 'shot_id': shot['id'], 'shot_name': shot.get('name', ''), 'error': str(e), 'current': current, 'total': total, 'percent': submit_percent, 'phase': 'submit'})}\n\n"
+
+        # 保存提交后的状态
+        storage.save_agent_project(project.to_dict())
+
+        # 阶段2: 轮询等待所有任务完成
+        if pending_tasks:
+            yield f"data: {json.dumps({'type': 'polling_start', 'pending': len(pending_tasks), 'percent': 50, 'phase': 'poll'})}\n\n"
+
+            max_wait = 600  # 最长等待10分钟
+            poll_interval = 5
+            elapsed = 0
+
+            while pending_tasks and elapsed < max_wait:
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+
+                still_pending = []
+                for task in pending_tasks:
+                    try:
+                        status_result = await executor.video_service.check_task_status(task["task_id"])
+                        task_status = status_result.get("status")
+
+                        if task_status in ["completed", "succeeded"]:
+                            video_url = status_result.get("video_url")
+                            task["shot"]["video_url"] = video_url
+                            task["shot"]["status"] = "video_ready"
+                            completed += 1
+
+                            project.visual_assets.append({
+                                "id": f"video_{task['shot_id']}",
+                                "url": video_url,
+                                "type": "video",
+                                "shot_id": task["shot_id"],
+                                "duration": task["shot"].get("duration")
+                            })
+
+                            # 计算进度：50% (提交) + 剩余 50% 按完成比例
+                            total_to_process = len(all_shots) - skipped
+                            if total_to_process > 0:
+                                poll_percent = 50 + int((completed / total_to_process) * 50)
+                            else:
+                                poll_percent = 100
+                            yield f"data: {json.dumps({'type': 'complete', 'shot_id': task['shot_id'], 'shot_name': task['shot_name'], 'video_url': video_url, 'completed': completed, 'pending': len(still_pending), 'percent': poll_percent, 'phase': 'poll'})}\n\n"
+
+                        elif task_status in ["failed", "error"]:
+                            task["shot"]["status"] = "video_failed"
+                            failed += 1
+                            yield f"data: {json.dumps({'type': 'error', 'shot_id': task['shot_id'], 'shot_name': task['shot_name'], 'error': status_result.get('error', '视频生成失败'), 'phase': 'poll'})}\n\n"
+                        else:
+                            # 仍在处理中
+                            still_pending.append(task)
+
+                    except Exception as e:
+                        # 查询失败，保留在待轮询列表
+                        still_pending.append(task)
+
+                pending_tasks = still_pending
+
+                # 发送轮询进度
+                if pending_tasks:
+                    total_to_process = len(all_shots) - skipped
+                    if total_to_process > 0:
+                        poll_percent = 50 + int(((total_to_process - len(pending_tasks)) / total_to_process) * 50)
+                    else:
+                        poll_percent = 100
+                    yield f"data: {json.dumps({'type': 'polling', 'pending': len(pending_tasks), 'completed': completed, 'elapsed': elapsed, 'percent': poll_percent, 'phase': 'poll'})}\n\n"
+
+            # 超时处理
+            if pending_tasks:
+                for task in pending_tasks:
+                    task["shot"]["status"] = "video_timeout"
+                    failed += 1
+                yield f"data: {json.dumps({'type': 'timeout', 'pending': len(pending_tasks), 'message': '部分视频生成超时'})}\n\n"
+
+        # 保存最终状态
+        storage.save_agent_project(project.to_dict())
+
+        # 发送结束事件
+        yield f"data: {json.dumps({'type': 'done', 'completed': completed, 'failed': failed, 'skipped': skipped, 'total': total, 'percent': 100})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 
 @app.post("/api/agent/projects/{project_id}/poll-video-tasks")

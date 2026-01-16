@@ -2,6 +2,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { Home, FileText, Image, Film, Video, Settings, ChevronLeft } from 'lucide-react'
 import AIChatPanel from './AIChatPanel'
 import { ReactNode } from 'react'
+import { clearVisited } from '../App'
 
 interface LayoutProps {
   children?: ReactNode
@@ -12,15 +13,21 @@ export default function Layout({ children }: LayoutProps) {
   const navigate = useNavigate()
   
   const navItems = [
-    { to: '/', icon: Home, label: '首页', gradient: 'from-blue-500 to-cyan-400' },
-    { to: '/script', icon: FileText, label: '剧本', gradient: 'from-violet-500 to-purple-400' },
-    { to: '/image', icon: Image, label: '图像', gradient: 'from-pink-500 to-rose-400' },
-    { to: '/storyboard', icon: Film, label: '分镜', gradient: 'from-orange-500 to-amber-400' },
-    { to: '/video', icon: Video, label: '视频', gradient: 'from-green-500 to-emerald-400' },
-    { to: '/settings', icon: Settings, label: '设置', gradient: 'from-slate-500 to-gray-400' }
+    { to: '/home', icon: Home, label: '首页', gradient: 'from-blue-500 to-cyan-400' },
+    { to: '/home/script', icon: FileText, label: '剧本', gradient: 'from-violet-500 to-purple-400' },
+    { to: '/home/image', icon: Image, label: '图像', gradient: 'from-pink-500 to-rose-400' },
+    { to: '/home/storyboard', icon: Film, label: '分镜', gradient: 'from-orange-500 to-amber-400' },
+    { to: '/home/video', icon: Video, label: '视频', gradient: 'from-green-500 to-emerald-400' },
+    { to: '/home/settings', icon: Settings, label: '设置', gradient: 'from-slate-500 to-gray-400' }
   ]
 
-  const isSubPage = location.pathname !== '/'
+  const isSubPage = location.pathname !== '/home'
+
+  // 双击 Logo 返回欢迎页
+  const handleLogoDoubleClick = () => {
+    clearVisited()
+    navigate('/')
+  }
 
   return (
     <div className="flex h-screen bg-gradient-to-br from-[#0a0a12] via-[#0f0f1a] to-[#0a0a15]">
@@ -30,20 +37,24 @@ export default function Layout({ children }: LayoutProps) {
         <div className="absolute top-1/3 right-1/4 w-80 h-80 bg-purple-500/10 rounded-full blur-[100px]" />
         <div className="absolute bottom-0 left-1/2 w-72 h-72 bg-cyan-500/8 rounded-full blur-[100px]" />
       </div>
-      
+
       {/* 侧边栏 */}
       <aside className="w-[72px] glass-dark m-3 rounded-2xl flex flex-col items-center py-5 animate-slideInLeft relative z-10">
         {/* Logo / 返回按钮 */}
         {isSubPage ? (
           <button
-            onClick={() => navigate('/')}
+            onClick={() => navigate('/home')}
             className="w-11 h-11 rounded-xl glass-button flex items-center justify-center mb-6 hover:bg-white/10 transition-apple group"
             title="返回首页"
           >
             <ChevronLeft size={20} className="text-gray-400 group-hover:text-white transition-colors" />
           </button>
         ) : (
-          <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 flex items-center justify-center mb-6 shadow-lg shadow-purple-500/30 animate-float">
+          <div
+            onDoubleClick={handleLogoDoubleClick}
+            className="w-11 h-11 rounded-xl bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 flex items-center justify-center mb-6 shadow-lg shadow-purple-500/30 animate-float cursor-pointer"
+            title="双击返回欢迎页"
+          >
             <span className="text-xl font-bold text-white drop-shadow-lg">S</span>
           </div>
         )}
@@ -54,7 +65,7 @@ export default function Layout({ children }: LayoutProps) {
             <NavLink
               key={to}
               to={to}
-              end={to === '/'}
+              end={to === '/home'}
               className={({ isActive }) =>
                 `relative p-2.5 rounded-xl transition-apple group ${
                   isActive ? '' : 'hover:bg-white/5'

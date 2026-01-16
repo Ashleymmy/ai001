@@ -7,10 +7,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "start": "powershell -ExecutionPolicy Bypass -File start.ps1",
+    "start:all": "concurrently \"npm run python:dev\" \"npm run dev\"",
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "electron:build": "vite build && electron-builder",
     "electron:build:win": "vite build && electron-builder --win",
-    "python:dev": "cd backend && python -m uvicorn main:app --reload --port 8000",
+    "python:dev": "cd backend && python -m pip install -r requirements.txt && python -m uvicorn main:app --reload --port 8000",
     "python:build": "cd backend && pyinstaller --onefile --name backend-server main.py",
     "pack:win": "npm run build && electron-builder --win --dir",
     "dist:win": "npm run build && electron-builder --win"

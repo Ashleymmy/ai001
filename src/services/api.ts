@@ -28,12 +28,72 @@ export interface FullSettings {
   image: ModelConfig
   storyboard: ModelConfig
   video: ModelConfig
+  tts?: {
+    provider: string
+    volc: {
+      appid: string
+      accessToken: string
+      endpoint: string
+      cluster: string
+      model: string
+      encoding: string
+      rate: number
+      speedRatio: number
+      narratorVoiceType: string
+      dialogueMaleVoiceType: string
+      dialogueFemaleVoiceType: string
+      dialogueVoiceType: string
+    }
+    fish: {
+      apiKey: string
+      baseUrl: string
+      model: string
+      encoding: string
+      rate: number
+      speedRatio: number
+      narratorVoiceType: string
+      dialogueMaleVoiceType: string
+      dialogueFemaleVoiceType: string
+      dialogueVoiceType: string
+    }
+    bailian: {
+      apiKey: string
+      baseUrl: string
+      workspace: string
+      model: string
+      encoding: string
+      rate: number
+      speedRatio: number
+      narratorVoiceType: string
+      dialogueMaleVoiceType: string
+      dialogueFemaleVoiceType: string
+      dialogueVoiceType: string
+    }
+    custom: {
+      encoding: string
+      rate: number
+      speedRatio: number
+      narratorVoiceType: string
+      dialogueMaleVoiceType: string
+      dialogueFemaleVoiceType: string
+      dialogueVoiceType: string
+    }
+  }
   local: {
     enabled: boolean
     comfyuiUrl: string
     sdWebuiUrl: string
     vramStrategy: string
   }
+}
+
+export type TestConnectionCategory = 'llm' | 'image' | 'storyboard' | 'video'
+
+export interface TestConnectionResult {
+  success: boolean
+  level: 'none' | 'network' | 'auth' | 'call' | 'error'
+  message: string
+  details?: Record<string, unknown>
 }
 
 // 更新设置
@@ -52,6 +112,74 @@ export async function getSavedSettings(): Promise<FullSettings | null> {
   } catch {
     return null
   }
+}
+
+// 测试配置连通性（不会保存配置）
+export async function testConnection(
+  category: TestConnectionCategory,
+  config: ModelConfig,
+  local?: FullSettings['local']
+): Promise<TestConnectionResult> {
+  const response = await api.post('/api/test-connection', { category, config, local })
+  return response.data as TestConnectionResult
+}
+
+export async function testTTSConnection(tts: NonNullable<FullSettings['tts']>, voiceType?: string, text?: string): Promise<{
+  success: boolean
+  message: string
+  duration_ms?: number
+}> {
+  const response = await api.post('/api/tts/test', { tts, voiceType, text })
+  return response.data
+}
+
+export type FishModel = {
+  id: string
+  title?: string
+  description?: string
+  visibility?: string
+  type?: string
+  tags?: string[]
+  created_at?: string
+  task_count?: number
+  [key: string]: unknown
+}
+
+export type FishModelListResponse = {
+  items: FishModel[]
+  page_number?: number
+  page_size?: number
+  total?: number
+  [key: string]: unknown
+}
+
+export async function fishListModels(params?: {
+  page_size?: number
+  page_number?: number
+  title?: string
+  tag?: string
+  self_only?: boolean
+  sort_by?: string
+  model_type?: string
+}): Promise<FishModelListResponse> {
+  const response = await api.get('/api/fish/models', { params })
+  return response.data as FishModelListResponse
+}
+
+export async function fishGetModel(modelId: string): Promise<FishModel> {
+  const response = await api.get(`/api/fish/models/${encodeURIComponent(modelId)}`)
+  return response.data as FishModel
+}
+
+export async function fishDeleteModel(modelId: string): Promise<void> {
+  await api.delete(`/api/fish/models/${encodeURIComponent(modelId)}`)
+}
+
+export async function fishCreateModel(formData: FormData): Promise<FishModel> {
+  const response = await api.post('/api/fish/models', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return response.data as FishModel
 }
 
 // 生成分镜
@@ -106,6 +234,7 @@ export interface UploadResult {
     type: string
     category: string
     url: string
+    absoluteUrl?: string
     previewUrl?: string
     content?: string
   }
@@ -606,6 +735,9 @@ export interface AgentChatResponse {
   content: string
   data?: unknown
   action?: string
+  options?: Array<{ id: string; label: string; value: string }>
+  confirmButton?: { label: string; action: string; payload?: unknown }
+  progress?: Array<{ label: string; completed: boolean }>
 }
 
 export interface AgentProjectPlan {
@@ -618,12 +750,15 @@ export interface AgentProjectPlan {
     duration: string
     aspect_ratio: string
     language: string
+    narratorVoiceProfile?: string
+    narrator_voice_profile?: string
   }
   elements: Array<{
     id: string
     name: string
     type: string
     description: string
+    voice_profile?: string
   }>
   segments: Array<{
     id: string
@@ -636,7 +771,9 @@ export interface AgentProjectPlan {
       duration: string
       description: string
       prompt: string
+      video_prompt?: string
       narration: string
+      dialogue_script?: string
     }>
   }>
   cost_estimate: {
@@ -651,6 +788,7 @@ export interface AgentProjectPlan {
 export interface ElementImageHistory {
   id: string
   url: string
+  source_url?: string
   created_at: string
   is_favorite: boolean  // 是否被收藏（用户选定）
 }
@@ -660,8 +798,11 @@ export interface AgentElement {
   name: string
   type: string
   description: string
+  voice_profile?: string
+  cached_image_url?: string
   image_url?: string  // 当前使用的图片（收藏的或最新的）
   image_history?: ElementImageHistory[]  // 图片生成历史
+  reference_images?: string[]  // 用户上传的多张参考图（角色/场景/道具一致性）
   created_at: string
 }
 
@@ -677,6 +818,7 @@ export interface AgentSegment {
 export interface ShotImageHistory {
   id: string
   url: string
+  source_url?: string
   created_at: string
   is_favorite: boolean
 }
@@ -687,13 +829,31 @@ export interface AgentShot {
   type: string
   description: string
   prompt: string
+  video_prompt?: string
+  dialogue_script?: string
   narration: string
   duration: number
   start_image_url?: string
+  cached_start_image_url?: string
   start_image_history?: ShotImageHistory[]  // 起始帧历史
   video_url?: string
+  reference_images?: string[]  // 用户上传的多张参考图（优先用于场景/道具对齐）
+  voice_audio_url?: string
+  voice_audio_duration_ms?: number
   status: string
   created_at: string
+}
+
+// Agent 聊天消息类型
+export interface AgentChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  data?: unknown
+  options?: Array<{ id: string; label: string; value: string }>
+  confirmButton?: { label: string; action: string; payload?: unknown }
+  progress?: Array<{ label: string; completed: boolean }>
+  created_at?: string
 }
 
 export interface AgentProject {
@@ -705,6 +865,7 @@ export interface AgentProject {
   visual_assets: Array<{ id: string; url: string; duration?: string }>
   audio_assets: Array<{ id: string; url: string; type: string }>
   timeline: Array<{ id: string; type: string; start: number; duration: number }>
+  messages: AgentChatMessage[]
   created_at: string
   updated_at: string
 }
@@ -819,6 +980,48 @@ export async function deleteAgentProject(projectId: string): Promise<void> {
   await api.delete(`/api/agent/projects/${projectId}`)
 }
 
+// Agent 工作流增强
+export async function scriptDoctorAgentProject(
+  projectId: string,
+  options?: { mode?: 'light' | 'expand'; apply?: boolean }
+): Promise<{ success: boolean; project: AgentProject; patch?: unknown; updates?: unknown }> {
+  const response = await api.post(
+    `/api/agent/projects/${projectId}/script-doctor`,
+    { mode: options?.mode || 'expand', apply: options?.apply ?? true },
+    { timeout: 300000 }
+  )
+  return response.data
+}
+
+export async function completeAssetsAgentProject(
+  projectId: string,
+  options?: { apply?: boolean }
+): Promise<{ success: boolean; project: AgentProject; added_elements?: AgentElement[]; raw?: unknown; updates?: unknown }> {
+  const response = await api.post(
+    `/api/agent/projects/${projectId}/complete-assets`,
+    { apply: options?.apply ?? true },
+    { timeout: 300000 }
+  )
+  return response.data
+}
+
+export async function audioCheckAgentProject(
+  projectId: string,
+  options?: { includeNarration?: boolean; includeDialogue?: boolean; speed?: number; apply?: boolean }
+): Promise<{ success: boolean; issues: Array<Record<string, unknown>>; suggestions: Record<string, number>; project: AgentProject }> {
+  const response = await api.post(
+    `/api/agent/projects/${projectId}/audio-check`,
+    {
+      includeNarration: options?.includeNarration ?? true,
+      includeDialogue: options?.includeDialogue ?? true,
+      speed: options?.speed ?? 1.0,
+      apply: options?.apply ?? false
+    },
+    { timeout: 120000 }
+  )
+  return response.data
+}
+
 export async function exportProjectAssets(
   projectId: string,
   options?: {
@@ -913,7 +1116,7 @@ export async function favoriteShotImage(
   projectId: string,
   shotId: string,
   imageId: string
-): Promise<{ success: boolean }> {
+): Promise<{ success: boolean; shot?: AgentShot }> {
   const response = await api.post(`/api/agent/projects/${projectId}/shots/${shotId}/favorite`, {
     imageId
   })
@@ -932,6 +1135,7 @@ export interface GenerationResult {
     shot_id?: string
     status: string
     image_url?: string
+    source_url?: string
     video_url?: string
     task_id?: string
     error?: string
@@ -968,6 +1172,8 @@ export interface GenerateStreamEvent {
   element_id?: string
   element_name?: string
   image_url?: string
+  source_url?: string
+  image_id?: string
   current?: number
   total?: number
   generated?: number
@@ -1038,13 +1244,82 @@ export async function generateProjectFrames(
   return response.data
 }
 
+// 起始帧流式生成事件类型
+export interface FrameStreamEvent {
+  type: 'start' | 'skip' | 'generating' | 'complete' | 'error' | 'done'
+  shot_id?: string
+  shot_name?: string
+  image_url?: string
+  source_url?: string
+  image_id?: string
+  current?: number
+  total?: number
+  generated?: number
+  failed?: number
+  skipped?: number
+  percent?: number
+  stage?: 'prompt' | 'image'
+  reference_count?: number
+  error?: string
+  reason?: string
+}
+
+// 流式生成起始帧 (SSE)
+export function generateProjectFramesStream(
+  projectId: string,
+  visualStyle: string = '吉卜力动画风格',
+  onEvent: (event: FrameStreamEvent) => void,
+  onError?: (error: Error) => void,
+  options?: { excludeShotIds?: string[]; mode?: 'missing' | 'regenerate' }
+): () => void {
+  const params = new URLSearchParams()
+  params.set('visualStyle', visualStyle)
+  const excludeShotIds = options?.excludeShotIds?.filter(Boolean) || []
+  if (excludeShotIds.length > 0) {
+    params.set('excludeShotIds', excludeShotIds.join(','))
+  }
+  if (options?.mode) {
+    params.set('mode', options.mode)
+  }
+  const url = `${API_BASE}/api/agent/projects/${projectId}/generate-frames-stream?${params.toString()}`
+
+  const eventSource = new EventSource(url)
+
+  eventSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data) as FrameStreamEvent
+      onEvent(data)
+
+      // 如果完成，关闭连接
+      if (data.type === 'done') {
+        eventSource.close()
+      }
+    } catch (e) {
+      console.error('解析 SSE 事件失败:', e)
+    }
+  }
+
+  eventSource.onerror = (error) => {
+    console.error('SSE 连接错误:', error)
+    eventSource.close()
+    onError?.(new Error('连接中断'))
+  }
+
+  // 返回取消函数
+  return () => {
+    eventSource.close()
+  }
+}
+
 // 重新生成单个镜头的起始帧（带角色参考图）
 export interface RegenerateShotFrameResult {
   success: boolean
   shot_id: string
   image_url?: string
+  source_url?: string
   image_id?: string
   start_image_url?: string
+  cached_start_image_url?: string
   start_image_history?: ShotImageHistory[]
   reference_images_count?: number
   error?: string
@@ -1076,6 +1351,99 @@ export async function generateProjectVideos(
   return response.data
 }
 
+// 视频流式生成事件类型
+export interface VideoStreamEvent {
+  type: 'start' | 'skip' | 'submitting' | 'submitted' | 'complete' | 'error' | 'polling_start' | 'polling' | 'timeout' | 'done'
+  shot_id?: string
+  shot_name?: string
+  task_id?: string
+  video_url?: string
+  current?: number
+  total?: number
+  submitted?: number
+  completed?: number
+  failed?: number
+  skipped?: number
+  pending?: number
+  percent?: number
+  phase?: 'submit' | 'poll'
+  elapsed?: number
+  message?: string
+  error?: string
+}
+
+// 流式生成视频 (SSE)
+export function generateProjectVideosStream(
+  projectId: string,
+  resolution: string = '720p',
+  onEvent: (event: VideoStreamEvent) => void,
+  onError?: (error: Error) => void
+): () => void {
+  const url = `${API_BASE}/api/agent/projects/${projectId}/generate-videos-stream?resolution=${encodeURIComponent(resolution)}`
+
+  const eventSource = new EventSource(url)
+
+  eventSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data) as VideoStreamEvent
+      onEvent(data)
+
+      // 如果完成或超时，关闭连接
+      if (data.type === 'done' || data.type === 'timeout') {
+        eventSource.close()
+      }
+    } catch (e) {
+      console.error('解析 SSE 事件失败:', e)
+    }
+  }
+
+  eventSource.onerror = (error) => {
+    console.error('SSE 连接错误:', error)
+    eventSource.close()
+    onError?.(new Error('连接中断'))
+  }
+
+  // 返回取消函数
+  return () => {
+    eventSource.close()
+  }
+}
+
+// Agent：生成旁白/对白音频（独立 TTS）
+export async function generateAgentAudio(
+  projectId: string,
+  options?: {
+    overwrite?: boolean
+    includeNarration?: boolean
+    includeDialogue?: boolean
+    shotIds?: string[]
+  }
+): Promise<{ success: boolean; generated: number; skipped: number; failed: number; results: Array<Record<string, unknown>> }> {
+  const response = await api.post(`/api/agent/projects/${projectId}/generate-audio`, {
+    overwrite: options?.overwrite ?? false,
+    includeNarration: options?.includeNarration ?? true,
+    includeDialogue: options?.includeDialogue ?? true,
+    shotIds: options?.shotIds
+  }, {
+    timeout: 1800000 // 30分钟：批量音频可能较慢
+  })
+  return response.data
+}
+
+export async function clearAgentAudio(
+  projectId: string,
+  options?: {
+    shotIds?: string[]
+    deleteFiles?: boolean
+  }
+): Promise<{ success: boolean; cleared_shots: number; removed_assets: number; deleted_files: number }> {
+  const response = await api.post(`/api/agent/projects/${projectId}/clear-audio`, {
+    shotIds: options?.shotIds,
+    deleteFiles: options?.deleteFiles ?? true
+  })
+  return response.data
+}
+
 // 执行完整流程
 export async function executeProjectPipeline(
   projectId: string,
@@ -1102,7 +1470,7 @@ export async function getProjectGenerationStatus(projectId: string): Promise<Pro
 export interface CustomProvider {
   id: string
   name: string
-  category: 'llm' | 'image' | 'storyboard' | 'video'
+  category: 'llm' | 'image' | 'storyboard' | 'video' | 'tts'
   isCustom: boolean
   apiKey: string
   baseUrl: string

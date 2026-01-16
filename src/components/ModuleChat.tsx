@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import {
-  Bot,
   User,
   Loader2,
   Trash2,
@@ -256,7 +255,11 @@ export default function ModuleChat({
       {/* 头部 */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
         <div className="flex items-center gap-2">
-          <Bot size={18} className="text-primary" />
+          <img
+            src="/yuanyuan/avatar-small.png"
+            alt="YuanYuan"
+            className="w-6 h-6 rounded-lg object-cover"
+          />
           <span className="font-medium text-sm">{config.title}</span>
         </div>
         <div className="flex items-center gap-1">
@@ -341,17 +344,17 @@ export default function ModuleChat({
             key={msg.id}
             className={`flex gap-2 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
           >
-            <div
-              className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 ${
-                msg.role === 'user' ? 'bg-primary/20' : 'bg-gray-700'
-              }`}
-            >
-              {msg.role === 'user' ? (
+            {msg.role === 'user' ? (
+              <div className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 bg-primary/20">
                 <User size={14} className="text-primary" />
-              ) : (
-                <Bot size={14} className="text-gray-300" />
-              )}
-            </div>
+              </div>
+            ) : (
+              <img
+                src="/yuanyuan/avatar-small.png"
+                alt="YuanYuan"
+                className="w-7 h-7 rounded-full object-cover flex-shrink-0"
+              />
+            )}
             <div
               className={`max-w-[85%] px-3 py-2 rounded-lg text-sm ${
                 msg.role === 'user'
@@ -366,11 +369,13 @@ export default function ModuleChat({
 
         {isLoading && (
           <div className="flex gap-2">
-            <div className="w-7 h-7 rounded-full bg-gray-700 flex items-center justify-center">
-              <Bot size={14} className="text-gray-300" />
-            </div>
+            <img
+              src="/yuanyuan/thinking.png"
+              alt="思考中"
+              className="w-7 h-7 rounded-full object-cover animate-pulse"
+            />
             <div className="px-3 py-2 bg-[#252525] rounded-lg">
-              <Loader2 size={14} className="animate-spin text-gray-400" />
+              <Loader2 size={14} className="animate-spin text-pink-400" />
             </div>
           </div>
         )}

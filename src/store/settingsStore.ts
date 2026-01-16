@@ -48,6 +48,66 @@ export interface ModelConfig {
   customProvider?: string
 }
 
+export interface VolcTTSSettings {
+  appid: string
+  accessToken: string
+  endpoint: string
+  cluster: string
+  model: string
+  encoding: string
+  rate: number
+  speedRatio: number
+  narratorVoiceType: string
+  dialogueMaleVoiceType: string
+  dialogueFemaleVoiceType: string
+  dialogueVoiceType: string
+}
+
+export interface FishTTSSettings {
+  apiKey: string
+  baseUrl: string
+  model: string
+  encoding: string
+  rate: number
+  speedRatio: number
+  narratorVoiceType: string
+  dialogueMaleVoiceType: string
+  dialogueFemaleVoiceType: string
+  dialogueVoiceType: string
+}
+
+export interface BailianTTSSettings {
+  apiKey: string
+  baseUrl: string
+  workspace: string
+  model: string
+  encoding: string
+  rate: number
+  speedRatio: number
+  narratorVoiceType: string
+  dialogueMaleVoiceType: string
+  dialogueFemaleVoiceType: string
+  dialogueVoiceType: string
+}
+
+export interface CustomTTSDefaults {
+  encoding: string
+  rate: number
+  speedRatio: number
+  narratorVoiceType: string
+  dialogueMaleVoiceType: string
+  dialogueFemaleVoiceType: string
+  dialogueVoiceType: string
+}
+
+export interface TTSConfig {
+  provider: string
+  volc: VolcTTSSettings
+  fish: FishTTSSettings
+  bailian: BailianTTSSettings
+  custom: CustomTTSDefaults
+}
+
 interface Settings {
   // 文本模型配置
   llm: ModelConfig
@@ -57,6 +117,8 @@ interface Settings {
   storyboard: ModelConfig
   // 视频模型配置
   video: ModelConfig
+  // 语音合成（旁白/对白）
+  tts: TTSConfig
   // 本地部署配置
   local: {
     enabled: boolean
@@ -73,6 +135,11 @@ interface SettingsState {
   updateImage: (updates: Partial<ModelConfig>) => void
   updateStoryboard: (updates: Partial<ModelConfig>) => void
   updateVideo: (updates: Partial<ModelConfig>) => void
+  updateTTS: (updates: Partial<TTSConfig>) => void
+  updateVolcTTS: (updates: Partial<VolcTTSSettings>) => void
+  updateFishTTS: (updates: Partial<FishTTSSettings>) => void
+  updateBailianTTS: (updates: Partial<BailianTTSSettings>) => void
+  updateCustomTTS: (updates: Partial<CustomTTSDefaults>) => void
   updateLocal: (updates: Partial<Settings['local']>) => void
   loadFromBackend: () => Promise<void>
   syncToBackend: () => Promise<void>
@@ -103,6 +170,57 @@ const defaultSettings: Settings = {
     baseUrl: '',
     model: ''
   },
+  tts: {
+    provider: 'volc_tts_v1_http',
+    volc: {
+      appid: '',
+      accessToken: '',
+      endpoint: 'https://openspeech.bytedance.com/api/v1/tts',
+      cluster: 'volcano_tts',
+      model: 'seed-tts-1.1',
+      encoding: 'mp3',
+      rate: 24000,
+      speedRatio: 1.0,
+      narratorVoiceType: '',
+      dialogueMaleVoiceType: '',
+      dialogueFemaleVoiceType: '',
+      dialogueVoiceType: ''
+    },
+    fish: {
+      apiKey: '',
+      baseUrl: 'https://api.fish.audio',
+      model: 'speech-1.5',
+      encoding: 'mp3',
+      rate: 24000,
+      speedRatio: 1.0,
+      narratorVoiceType: '',
+      dialogueMaleVoiceType: '',
+      dialogueFemaleVoiceType: '',
+      dialogueVoiceType: ''
+    },
+    bailian: {
+      apiKey: '',
+      baseUrl: 'wss://dashscope.aliyuncs.com/api-ws/v1/inference',
+      workspace: '',
+      model: 'cosyvoice-v1',
+      encoding: 'mp3',
+      rate: 24000,
+      speedRatio: 1.0,
+      narratorVoiceType: '',
+      dialogueMaleVoiceType: '',
+      dialogueFemaleVoiceType: '',
+      dialogueVoiceType: ''
+    },
+    custom: {
+      encoding: 'mp3',
+      rate: 24000,
+      speedRatio: 1.0,
+      narratorVoiceType: '',
+      dialogueMaleVoiceType: '',
+      dialogueFemaleVoiceType: '',
+      dialogueVoiceType: ''
+    }
+  },
   local: {
     enabled: false,
     comfyuiUrl: 'http://127.0.0.1:8188',
@@ -127,6 +245,14 @@ export const useSettingsStore = create<SettingsState>()(
               image: saved.image,
               storyboard: saved.storyboard || defaultSettings.storyboard,
               video: saved.video,
+              tts: {
+                ...defaultSettings.tts,
+                ...(((saved.tts as unknown as Settings['tts']) || {}) as Settings['tts']),
+                volc: { ...defaultSettings.tts.volc, ...(((saved.tts as any)?.volc || {}) as Partial<VolcTTSSettings>) },
+                fish: { ...defaultSettings.tts.fish, ...(((saved.tts as any)?.fish || {}) as Partial<FishTTSSettings>) },
+                bailian: { ...defaultSettings.tts.bailian, ...(((saved.tts as any)?.bailian || {}) as Partial<BailianTTSSettings>) },
+                custom: { ...defaultSettings.tts.custom, ...(((saved.tts as any)?.custom || {}) as Partial<CustomTTSDefaults>) }
+              },
               local: saved.local
             }
             set({ 
@@ -136,7 +262,7 @@ export const useSettingsStore = create<SettingsState>()(
             // 同步更新 localStorage
             localStorage.setItem('storyboarder-settings-v2', JSON.stringify({
               state: { settings: newSettings, isLoaded: true },
-              version: 2
+              version: 5
             }))
             console.log('[Settings] 从后端加载设置成功')
           } else {
@@ -190,6 +316,65 @@ export const useSettingsStore = create<SettingsState>()(
           }
         })),
 
+      updateTTS: (updates) =>
+        set((state) => ({
+          settings: {
+            ...state.settings,
+            tts: {
+              ...state.settings.tts,
+              ...updates,
+              volc: { ...state.settings.tts.volc, ...(updates.volc || {}) },
+              fish: { ...state.settings.tts.fish, ...(updates.fish || {}) },
+              bailian: { ...state.settings.tts.bailian, ...(updates.bailian || {}) },
+              custom: { ...state.settings.tts.custom, ...(updates.custom || {}) }
+            }
+          }
+        })),
+
+      updateVolcTTS: (updates) =>
+        set((state) => ({
+          settings: {
+            ...state.settings,
+            tts: {
+              ...state.settings.tts,
+              volc: { ...state.settings.tts.volc, ...updates }
+            }
+          }
+        })),
+
+      updateFishTTS: (updates) =>
+        set((state) => ({
+          settings: {
+            ...state.settings,
+            tts: {
+              ...state.settings.tts,
+              fish: { ...state.settings.tts.fish, ...updates }
+            }
+          }
+        })),
+
+      updateBailianTTS: (updates) =>
+        set((state) => ({
+          settings: {
+            ...state.settings,
+            tts: {
+              ...state.settings.tts,
+              bailian: { ...state.settings.tts.bailian, ...updates }
+            }
+          }
+        })),
+
+      updateCustomTTS: (updates) =>
+        set((state) => ({
+          settings: {
+            ...state.settings,
+            tts: {
+              ...state.settings.tts,
+              custom: { ...state.settings.tts.custom, ...updates }
+            }
+          }
+        })),
+
       updateLocal: (updates) =>
         set((state) => ({
           settings: {
@@ -206,9 +391,67 @@ export const useSettingsStore = create<SettingsState>()(
         if (!state?.settings?.llm) {
           return { settings: defaultSettings }
         }
-        return state
+
+        const legacyTts: any = (state.settings as any)?.tts
+        const hasNested =
+          legacyTts &&
+          typeof legacyTts === 'object' &&
+          ('volc' in legacyTts || 'fish' in legacyTts || 'bailian' in legacyTts || 'custom' in legacyTts)
+
+        const migratedTts: TTSConfig = hasNested
+          ? {
+              ...defaultSettings.tts,
+              ...(legacyTts as Partial<TTSConfig>),
+              volc: { ...defaultSettings.tts.volc, ...((legacyTts?.volc || {}) as Partial<VolcTTSSettings>) },
+              fish: { ...defaultSettings.tts.fish, ...((legacyTts?.fish || {}) as Partial<FishTTSSettings>) },
+              bailian: { ...defaultSettings.tts.bailian, ...((legacyTts?.bailian || {}) as Partial<BailianTTSSettings>) },
+              custom: { ...defaultSettings.tts.custom, ...((legacyTts?.custom || {}) as Partial<CustomTTSDefaults>) }
+            }
+          : {
+              provider: String(legacyTts?.provider || defaultSettings.tts.provider),
+              volc: {
+                ...defaultSettings.tts.volc,
+                appid: String(legacyTts?.appid || ''),
+                accessToken: String(legacyTts?.accessToken || ''),
+                cluster: String(legacyTts?.cluster || defaultSettings.tts.volc.cluster),
+                model: String(legacyTts?.model || defaultSettings.tts.volc.model),
+                encoding: String(legacyTts?.encoding || defaultSettings.tts.volc.encoding),
+                rate: Number(legacyTts?.rate || defaultSettings.tts.volc.rate),
+                speedRatio: Number(legacyTts?.speedRatio || defaultSettings.tts.volc.speedRatio),
+                narratorVoiceType: String(legacyTts?.narratorVoiceType || ''),
+                dialogueMaleVoiceType: String(legacyTts?.dialogueMaleVoiceType || ''),
+                dialogueFemaleVoiceType: String(legacyTts?.dialogueFemaleVoiceType || ''),
+                dialogueVoiceType: String(legacyTts?.dialogueVoiceType || '')
+              },
+              fish: {
+                ...defaultSettings.tts.fish,
+                apiKey: '',
+                baseUrl: String(legacyTts?.baseUrl || defaultSettings.tts.fish.baseUrl),
+                model: 'speech-1.5'
+              },
+              bailian: { ...defaultSettings.tts.bailian },
+              custom: { ...defaultSettings.tts.custom }
+            }
+
+        const bailianBaseUrl = String(migratedTts?.bailian?.baseUrl || '').trim()
+        const normalizedBailianBaseUrl =
+          bailianBaseUrl.startsWith('http') && bailianBaseUrl.includes('dashscope.aliyuncs.com')
+            ? 'wss://dashscope.aliyuncs.com/api-ws/v1/inference'
+            : bailianBaseUrl || defaultSettings.tts.bailian.baseUrl
+
+        return {
+          ...state,
+          settings: {
+            ...defaultSettings,
+            ...state.settings,
+            tts: {
+              ...migratedTts,
+              bailian: { ...migratedTts.bailian, baseUrl: normalizedBailianBaseUrl }
+            }
+          }
+        }
       },
-      version: 2
+      version: 5
     }
   )
 )

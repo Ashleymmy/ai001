@@ -8,6 +8,7 @@ import base64
 import asyncio
 import aiohttp
 import json
+import httpx
 from typing import Optional, Dict, Any, List
 
 # 视频输出目录
@@ -171,11 +172,10 @@ class VideoService:
         watermark: bool = False,
         generate_audio: bool = True
     ) -> Dict[str, Any]:
-        """调用火山引擎视频生成 API - 使用官方 SDK"""
-        try:
-            from volcenginesdkarkruntime import Ark
-        except ImportError:
-            raise Exception("请安装火山引擎 SDK: pip install 'volcengine-python-sdk[ark]'")
+        """调用火山引擎视频生成 API（Ark /contents/generations/tasks）
+
+        说明：这里改为 HTTP 直连，避免 SDK 在部分 Python 版本上兼容性问题。
+        """
         
         # 处理图片：火山引擎需要公网可访问的 URL 或 base64
         # 如果是 localhost URL，需要转换为 base64
@@ -193,12 +193,7 @@ class VideoService:
                 print(f"[VideoService] 转换本地图片失败: {e}")
         
         model = self.model or "doubao-seaweed-241128"
-        
-        # 初始化 Ark 客户端
-        client = Ark(
-            base_url=self.base_url or "https://ark.cn-beijing.volces.com/api/v3",
-            api_key=self.api_key
-        )
+        base_url = (self.base_url or "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
         
         # 火山引擎 seedance 模型支持的时长: 5秒或6秒
         # 将时长限制在支持的范围内
@@ -226,87 +221,124 @@ class VideoService:
             }
         ]
         
-        print(f"[VideoService] 火山引擎 SDK 调用: model={model}")
+        print(f"[VideoService] 火山引擎 HTTP 调用: model={model}")
         print(f"[VideoService] 参数: duration={supported_duration} (原始: {duration}), resolution={resolution}, ratio={ratio}, camera_fixed={camera_fixed}, watermark={watermark}")
         print(f"[VideoService] 图片格式: {'base64' if image_url.startswith('data:') else 'URL'}")
         
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model,
+            "content": content,
+        }
+        if generate_audio:
+            payload["generate_audio"] = True
+
+        def _is_generate_audio_invalid(resp: httpx.Response) -> bool:
+            if resp.status_code != 400:
+                return False
+            try:
+                data = resp.json()
+                err = data.get("error") if isinstance(data, dict) else None
+                if isinstance(err, dict):
+                    if str(err.get("param") or "").strip() == "generate_audio":
+                        return True
+                    msg = str(err.get("message") or "").lower()
+                    if "generate_audio" in msg:
+                        return True
+            except Exception:
+                pass
+            # fallback: text sniff
+            try:
+                return "generate_audio" in (resp.text or "").lower()
+            except Exception:
+                return False
+
         try:
-            # 使用 SDK 创建任务，添加 generate_audio 参数
-            create_result = client.content_generation.tasks.create(
-                model=model,
-                content=content,
-                generate_audio=generate_audio
-            )
-            
-            # create 返回的是 ContentGenerationTaskID，只有 id 属性
-            task_id = create_result.id
-            
+            audio_disabled = False
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                resp = await client.post(f"{base_url}/contents/generations/tasks", headers=headers, json=payload)
+                if resp.status_code >= 400 and generate_audio and _is_generate_audio_invalid(resp):
+                    # 兼容：部分模型（如 seedance-1-0-pro）不支持 generate_audio 参数；自动降级为“无音轨视频”
+                    print("[VideoService] 该模型不支持 generate_audio，自动降级为无音频生成")
+                    payload_no_audio = {"model": model, "content": content}
+                    resp = await client.post(f"{base_url}/contents/generations/tasks", headers=headers, json=payload_no_audio)
+                    audio_disabled = True
+
+                if resp.status_code >= 400:
+                    raise Exception(f"HTTP {resp.status_code}: {(resp.text or '')[:2000]}")
+                data = resp.json()
+
+            task_id = data.get("id") or data.get("task_id") or data.get("taskId")
+            if not task_id:
+                raise Exception(f"未返回 task_id: {json.dumps(data, ensure_ascii=False)[:2000]}")
+
             print(f"[VideoService] 火山引擎任务已提交: {task_id}")
-            
-            # 任务创建后需要轮询状态，这里返回 processing 状态
             return {
-                "task_id": task_id,
+                "task_id": str(task_id),
                 "status": "processing",
                 "video_url": None,
                 "duration": duration,
-                "seed": seed or 0
+                "seed": seed or 0,
+                "audio_disabled": bool(audio_disabled),
             }
-            
         except Exception as e:
             error_msg = str(e)
-            print(f"[VideoService] 火山引擎 SDK 错误: {error_msg}")
+            print(f"[VideoService] 火山引擎 HTTP 错误: {error_msg}")
             raise Exception(f"火山引擎调用失败: {error_msg}")
     
     async def _check_volcengine_status(self, task_id: str) -> Dict[str, Any]:
-        """检查火山引擎视频生成任务状态 - 使用官方 SDK"""
+        """检查火山引擎视频生成任务状态（Ark /contents/generations/tasks/{task_id}）"""
+        base_url = (self.base_url or "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+
         try:
-            from volcenginesdkarkruntime import Ark
-        except ImportError:
-            return {"status": "error", "video_url": None, "error": "SDK 未安装"}
-        
-        client = Ark(
-            base_url=self.base_url or "https://ark.cn-beijing.volces.com/api/v3",
-            api_key=self.api_key
-        )
-        
-        try:
-            result = client.content_generation.tasks.get(task_id=task_id)
-            status = result.status
-            
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                resp = await client.get(f"{base_url}/contents/generations/tasks/{task_id}", headers=headers)
+                if resp.status_code >= 400:
+                    return {
+                        "status": "error",
+                        "video_url": None,
+                        "error": f"HTTP {resp.status_code}: {(resp.text or '')[:2000]}",
+                    }
+                data = resp.json()
+
+            status = (data.get("status") or "").strip().lower()
+            if not status:
+                return {"status": "processing", "video_url": None, "progress": 50}
+
             print(f"[VideoService] 火山引擎任务 {task_id} 状态: {status}")
-            print(f"[VideoService] 火山引擎任务结果: {result}")
-            
-            if status == "succeeded":
+
+            if status in ("succeeded", "completed", "success"):
+                content = data.get("content") or {}
                 video_url = None
-                # content 是一个 Content 对象，直接有 video_url 属性
-                if hasattr(result, 'content') and result.content:
-                    content = result.content
-                    # 直接访问 video_url 属性
-                    if hasattr(content, 'video_url'):
-                        video_url = content.video_url
-                    elif isinstance(content, dict):
-                        video_url = content.get('video_url')
-                
-                print(f"[VideoService] 火山引擎视频 URL: {video_url}")
-                return {
-                    "status": "completed",
-                    "video_url": video_url
-                }
-            elif status == "failed":
-                error_msg = "生成失败"
-                if hasattr(result, 'error') and result.error:
-                    error_msg = result.error.message if hasattr(result.error, 'message') else str(result.error)
-                return {
-                    "status": "error",
-                    "video_url": None,
-                    "error": error_msg
-                }
+                if isinstance(content, dict):
+                    video_url = content.get("video_url") or content.get("videoUrl")
+                elif isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict):
+                            if item.get("video_url") or item.get("videoUrl"):
+                                video_url = item.get("video_url") or item.get("videoUrl")
+                                break
+                return {"status": "completed", "video_url": video_url}
+
+            if status in ("failed", "error"):
+                err = data.get("error") or {}
+                if isinstance(err, dict):
+                    msg = err.get("message") or err.get("msg") or json.dumps(err, ensure_ascii=False)
+                else:
+                    msg = str(err) if err else "生成失败"
+                return {"status": "error", "video_url": None, "error": msg}
+
+            progress = data.get("progress")
+            if isinstance(progress, (int, float)):
+                progress_val = int(progress)
             else:
-                return {
-                    "status": "processing",
-                    "video_url": None,
-                    "progress": 50
-                }
+                progress_val = 50
+            return {"status": "processing", "video_url": None, "progress": progress_val}
+
         except Exception as e:
             print(f"[VideoService] 火山引擎状态查询异常: {e}")
             return {"status": "error", "video_url": None, "error": str(e)}

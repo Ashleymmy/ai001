@@ -6,6 +6,8 @@ import asyncio
 import base64
 import random
 from typing import Optional, Dict, Any, List
+from datetime import datetime, timezone, timedelta
+from urllib.parse import urlparse, parse_qs
 import httpx
 
 
@@ -190,12 +192,44 @@ class ImageService:
             
             # 添加参考图支持
             if reference_images and len(reference_images) > 0:
-                # 过滤掉无效的 URL
-                valid_refs = [url for url in reference_images if url and url.startswith('http')]
+                # 过滤掉无效的 URL（并跳过明显过期的签名链接）
+                def is_probably_expired_signed_url(url: Any) -> bool:
+                    if not isinstance(url, str) or not url.startswith("http"):
+                        return False
+                    try:
+                        parsed = urlparse(url)
+                        qs = parse_qs(parsed.query or "")
+
+                        if "X-Tos-Date" in qs and "X-Tos-Expires" in qs:
+                            dt_raw = (qs.get("X-Tos-Date") or [""])[0]
+                            exp_raw = (qs.get("X-Tos-Expires") or ["0"])[0]
+                            if dt_raw and exp_raw:
+                                start = datetime.strptime(dt_raw, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+                                expires = int(exp_raw)
+                                return datetime.now(timezone.utc) > start + timedelta(seconds=max(0, expires - 30))
+
+                        if "X-Amz-Date" in qs and "X-Amz-Expires" in qs:
+                            dt_raw = (qs.get("X-Amz-Date") or [""])[0]
+                            exp_raw = (qs.get("X-Amz-Expires") or ["0"])[0]
+                            if dt_raw and exp_raw:
+                                start = datetime.strptime(dt_raw, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+                                expires = int(exp_raw)
+                                return datetime.now(timezone.utc) > start + timedelta(seconds=max(0, expires - 30))
+                    except Exception:
+                        return False
+                    return False
+
+                valid_refs = [
+                    url
+                    for url in reference_images
+                    if url and isinstance(url, str) and url.startswith("http") and not is_probably_expired_signed_url(url)
+                ]
                 if valid_refs:
                     # 豆包支持最多 10 张参考图
                     payload["image"] = valid_refs[:10]
                     print(f"[Volcengine] 使用 {len(valid_refs)} 张参考图进行角色一致性生成")
+                else:
+                    print("[Volcengine] 参考图均不可用（可能已过期），将忽略参考图继续生成")
             
             url = f"{self.base_url.rstrip('/')}/images/generations"
             print(f"[Volcengine] 调用: {url}, model={model}, size={width}x{height}")

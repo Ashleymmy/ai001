@@ -33,30 +33,34 @@ pip install -r requirements.txt
 1. 复制配置文件模板：
 ```bash
 cd backend/data
-copy settings.yaml.example settings.yaml
-copy custom_providers.yaml.example custom_providers.yaml
+copy settings.yaml.example settings.local.yaml
+copy custom_providers.yaml.example custom_providers.local.yaml
 ```
 
-2. 编辑 `settings.yaml`，填入你的 API Key：
+2. 编辑 `settings.local.yaml`，填入你的 API Key：
 ```yaml
 llm:
   provider: "doubao"
-  api_key: "YOUR_API_KEY_HERE"  # 替换为你的 API Key
-  base_url: "https://ark.cn-beijing.volces.com/api/v3"
+  apiKey: "YOUR_API_KEY_HERE"  # 替换为你的 API Key
+  baseUrl: "https://ark.cn-beijing.volces.com/api/v3"
   model: "doubao-seed-1-6-251015"
 
 image:
   provider: "custom_xxxxx"
-  api_key: "YOUR_API_KEY_HERE"  # 替换为你的 API Key
+  apiKey: "YOUR_API_KEY_HERE"  # 替换为你的 API Key
   # ... 其他配置
 ```
 
-3. 如果使用自定义服务商，编辑 `custom_providers.yaml`
+3. 如果使用自定义服务商，编辑 `custom_providers.local.yaml`
 
 ### 3. 启动服务
 
 #### 开发模式
 ```bash
+# 一键启动（Windows）
+npm run start
+
+# 或者：手动分别启动
 # 终端 1 - 启动后端
 cd backend
 python -m uvicorn main:app --reload --port 8000
@@ -103,7 +107,7 @@ ai001/
 
 **重要：保护你的 API Key**
 
-- ✅ `settings.yaml` 和 `custom_providers.yaml` 已添加到 `.gitignore`
+- ✅ `settings.local.yaml` 和 `custom_providers.local.yaml` 已添加到 `.gitignore`
 - ✅ 不会被提交到 Git 仓库
 - ✅ 使用 `.example` 文件作为配置模板
 - ⚠️ 永远不要将包含真实 API Key 的文件提交到公开仓库
@@ -129,6 +133,11 @@ ai001/
 ## 📄 许可证
 
 MIT License
+
+## 📚 开发文档
+
+- `开发文档.md`
+- `前端开发文档.md`
 
 ## 技术栈
 - 前端: Electron + React + TailwindCSS + Zustand

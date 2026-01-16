@@ -202,3 +202,48 @@ ipcMain.handle('get-system-info', () => {
     isPackaged: app.isPackaged
   }
 })
+
+ipcMain.handle('open-project', async () => {
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      filters: [
+        { name: 'Project Files', extensions: ['json'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    })
+
+    if (result.canceled || !result.filePaths?.[0]) return null
+    const filePath = result.filePaths[0]
+    return fs.readFileSync(filePath, 'utf-8')
+  } catch (err) {
+    console.error('open-project failed:', err)
+    return null
+  }
+})
+
+ipcMain.handle('save-project', async (event, data) => {
+  try {
+    const defaultName = (() => {
+      const raw = (data && typeof data === 'object' && data.name) ? String(data.name) : 'project'
+      const safe = raw.replace(/[\\/:*?"<>|]+/g, '_').trim()
+      return safe || 'project'
+    })()
+
+    const result = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: `${defaultName}.json`,
+      filters: [
+        { name: 'Project Files', extensions: ['json'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    })
+
+    if (result.canceled || !result.filePath) return false
+    const payload = typeof data === 'string' ? data : JSON.stringify(data ?? null, null, 2)
+    fs.writeFileSync(result.filePath, payload, 'utf-8')
+    return true
+  } catch (err) {
+    console.error('save-project failed:', err)
+    return false
+  }
+})

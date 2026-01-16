@@ -16,13 +16,7 @@ import {
   regenerateImage,
   healthCheck
 } from '../services/api'
-
-const STYLES = [
-  { id: 'cinematic', name: '电影感' },
-  { id: 'anime', name: '动漫' },
-  { id: 'realistic', name: '写实' },
-  { id: 'ink', name: '水墨' }
-]
+import { STYLES } from '../features/editor/constants'
 
 export default function EditorPage() {
   const {
@@ -58,7 +52,7 @@ export default function EditorPage() {
 
   useEffect(() => {
     if (!currentProject) {
-      createProject()
+      createProject('未命名项目')
     }
   }, [currentProject, createProject])
 

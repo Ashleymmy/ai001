@@ -1,598 +1,125 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Save,
   MessageSquare,
   Image,
   Video,
+  Mic,
   Server,
   CheckCircle,
   AlertCircle,
   Settings,
   Sparkles,
   Film,
-  ChevronDown,
-  ChevronRight,
-  Edit2,
-  Trash2,
-  Plus,
-  FolderCog,
-  X
 } from 'lucide-react'
 import {
   useSettingsStore,
   LLM_PROVIDERS,
   IMAGE_PROVIDERS,
   VIDEO_PROVIDERS,
-  ModelConfig
+  ModelConfig,
 } from '../store/settingsStore'
 import {
   updateSettings,
+  testConnection,
+  type TestConnectionCategory,
+  testTTSConnection,
   listCustomProviders,
   addCustomProvider,
   updateCustomProvider,
   deleteCustomProvider,
   CustomProvider
 } from '../services/api'
-
-// 自定义配置编辑弹窗
-function CustomProviderModal({
-  isOpen,
-  onClose,
-  onSave,
-  provider,
-  category
-}: {
-  isOpen: boolean
-  onClose: () => void
-  onSave: (data: { name: string; apiKey: string; baseUrl: string; model: string; models: string[] }) => void
-  provider?: CustomProvider | null
-  category: string
-}) {
-  const [name, setName] = useState('')
-  const [apiKey, setApiKey] = useState('')
-  const [baseUrl, setBaseUrl] = useState('')
-  const [model, setModel] = useState('')
-  const [modelsText, setModelsText] = useState('')
-
-  useEffect(() => {
-    if (provider) {
-      setName(provider.name)
-      setApiKey(provider.apiKey)
-      setBaseUrl(provider.baseUrl)
-      setModel(provider.model)
-      setModelsText(provider.models?.join(', ') || '')
-    } else {
-      setName('')
-      setApiKey('')
-      setBaseUrl('')
-      setModel('')
-      setModelsText('')
-    }
-  }, [provider, isOpen])
-
-  if (!isOpen) return null
-
-  const handleSubmit = () => {
-    const models = modelsText.split(',').map(m => m.trim()).filter(Boolean)
-    onSave({ name, apiKey, baseUrl, model, models })
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fadeIn">
-      <div className="glass-card p-6 w-full max-w-md mx-4 animate-scaleIn">
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="text-lg font-semibold">
-            {provider ? '编辑自定义配置' : '新增自定义配置'}
-          </h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-white">
-            <X size={20} />
-          </button>
-        </div>
-
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm text-gray-400 mb-2">配置名称</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="例如: 我的OpenAI、通义万相Pro"
-              className="w-full glass-input p-3 text-sm"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm text-gray-400 mb-2">API Key</label>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="输入 API Key"
-              className="w-full glass-input p-3 text-sm"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm text-gray-400 mb-2">API Base URL</label>
-            <input
-              type="text"
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder="https://api.example.com/v1"
-              className="w-full glass-input p-3 text-sm"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm text-gray-400 mb-2">默认模型</label>
-            <input
-              type="text"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder="例如: gpt-4, qwen-plus"
-              className="w-full glass-input p-3 text-sm"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm text-gray-400 mb-2">可选模型列表 (逗号分隔)</label>
-            <input
-              type="text"
-              value={modelsText}
-              onChange={(e) => setModelsText(e.target.value)}
-              placeholder="gpt-4, gpt-4-turbo, gpt-3.5-turbo"
-              className="w-full glass-input p-3 text-sm"
-            />
-          </div>
-        </div>
-
-        <div className="flex gap-3 mt-6">
-          <button
-            onClick={onClose}
-            className="flex-1 px-4 py-2.5 glass-button rounded-xl text-gray-400 hover:text-white"
-          >
-            取消
-          </button>
-          <button
-            onClick={handleSubmit}
-            disabled={!name.trim()}
-            className="flex-1 px-4 py-2.5 bg-gradient-to-r from-blue-500 to-purple-500 rounded-xl font-medium disabled:opacity-50"
-          >
-            保存
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-
-// 带操作按钮的下拉选择器
-function ProviderSelect({
-  config,
-  providers,
-  customProviders,
-  category,
-  onUpdate,
-  onEditCustom,
-  onDeleteCustom,
-  onAddCustom,
-  onManageCustom
-}: {
-  config: ModelConfig
-  providers: typeof LLM_PROVIDERS
-  customProviders: CustomProvider[]
-  category: string
-  onUpdate: (updates: Partial<ModelConfig>) => void
-  onEditCustom: (provider: CustomProvider) => void
-  onDeleteCustom: (providerId: string) => void
-  onAddCustom: () => void
-  onManageCustom: () => void
-}) {
-  const [isOpen, setIsOpen] = useState(false)
-  const [customExpanded, setCustomExpanded] = useState(false)
-  const dropdownRef = useRef<HTMLDivElement>(null)
-
-  // 点击外部关闭
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setIsOpen(false)
-        setCustomExpanded(false)
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [])
-
-  // 获取当前选中的显示名称
-  const getDisplayName = () => {
-    // 检查是否是自定义配置
-    const customProvider = customProviders.find(p => p.id === config.provider)
-    if (customProvider) {
-      return customProvider.name
-    }
-    // 系统预设
-    const preset = providers.find(p => p.id === config.provider)
-    return preset?.name || config.provider
-  }
-
-  const handleSelectPreset = (provider: typeof providers[0]) => {
-    onUpdate({
-      provider: provider.id,
-      baseUrl: provider.baseUrl || '',
-      model: provider.models[0] || '',
-      customProvider: undefined
-    })
-    setIsOpen(false)
-    setCustomExpanded(false)
-  }
-
-  const handleSelectCustom = (custom: CustomProvider) => {
-    onUpdate({
-      provider: custom.id,
-      baseUrl: custom.baseUrl,
-      model: custom.model,
-      apiKey: custom.apiKey,
-      customProvider: custom.name
-    })
-    setIsOpen(false)
-    setCustomExpanded(false)
-  }
-
-  // 过滤掉 'custom' 选项，因为我们会单独处理
-  const presetProviders = providers.filter(p => p.id !== 'custom')
-
-  return (
-    <div className="relative" ref={dropdownRef}>
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="w-full glass-input p-3 text-sm bg-gray-900/80 flex items-center justify-between"
-      >
-        <span>{getDisplayName()}</span>
-        <ChevronDown size={16} className={`transition-transform ${isOpen ? 'rotate-180' : ''}`} />
-      </button>
-
-      {isOpen && (
-        <div className="absolute top-full left-0 right-0 mt-1 rounded-xl overflow-hidden z-50 animate-fadeIn max-h-80 overflow-y-auto bg-gray-900/95 backdrop-blur-xl border border-white/20 shadow-2xl shadow-black/50">
-          {/* 系统预设选项 */}
-          {presetProviders.map((provider) => (
-            <div
-              key={provider.id}
-              className="flex items-center justify-between px-3 py-2.5 hover:bg-white/10 group transition-colors"
-            >
-              <button
-                onClick={() => handleSelectPreset(provider)}
-                className="flex-1 text-left text-sm"
-              >
-                {provider.name}
-              </button>
-              {/* 系统预设的编辑和删除按钮（仅显示，实际不可删除系统预设） */}
-              {provider.id !== 'placeholder' && provider.id !== 'none' && (
-                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      // 编辑系统预设 - 实际上是基于它创建自定义配置
-                      onAddCustom()
-                    }}
-                    className="p-1.5 hover:bg-white/10 rounded-lg text-gray-400 hover:text-blue-400"
-                    title="基于此创建自定义配置"
-                  >
-                    <Edit2 size={14} />
-                  </button>
-                </div>
-              )}
-            </div>
-          ))}
-
-          {/* 分隔线 */}
-          <div className="border-t border-white/10 my-1" />
-
-          {/* 自定义选项组 */}
-          <div>
-            <div
-              className="flex items-center justify-between px-3 py-2.5 hover:bg-white/10 cursor-pointer transition-colors"
-              onClick={() => setCustomExpanded(!customExpanded)}
-            >
-              <div className="flex items-center gap-2">
-                {customExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                <span className="text-sm font-medium text-blue-400">自定义配置</span>
-                {customProviders.length > 0 && (
-                  <span className="text-xs text-gray-500">({customProviders.length})</span>
-                )}
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onManageCustom()
-                  }}
-                  className="p-1.5 hover:bg-white/10 rounded-lg text-gray-400 hover:text-cyan-400"
-                  title="管理"
-                >
-                  <FolderCog size={14} />
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onAddCustom()
-                  }}
-                  className="p-1.5 hover:bg-white/10 rounded-lg text-gray-400 hover:text-green-400"
-                  title="新增"
-                >
-                  <Plus size={14} />
-                </button>
-              </div>
-            </div>
-
-            {/* 自定义配置列表 */}
-            {customExpanded && (
-              <div className="bg-gray-800/60 border-t border-white/5">
-                {customProviders.length === 0 ? (
-                  <div className="px-6 py-3 text-sm text-gray-500">
-                    暂无自定义配置，点击 + 添加
-                  </div>
-                ) : (
-                  customProviders.map((custom) => (
-                    <div
-                      key={custom.id}
-                      className="flex items-center justify-between px-6 py-2.5 hover:bg-white/10 group transition-colors"
-                    >
-                      <button
-                        onClick={() => handleSelectCustom(custom)}
-                        className="flex-1 text-left text-sm"
-                      >
-                        {custom.name}
-                      </button>
-                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            onEditCustom(custom)
-                          }}
-                          className="p-1.5 hover:bg-white/10 rounded-lg text-gray-400 hover:text-blue-400"
-                          title="编辑"
-                        >
-                          <Edit2 size={14} />
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            onDeleteCustom(custom.id)
-                          }}
-                          className="p-1.5 hover:bg-white/10 rounded-lg text-gray-400 hover:text-red-400"
-                          title="删除"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-
-function ModelConfigCard({
-  title,
-  icon: Icon,
-  config,
-  providers,
-  customProviders,
-  category,
-  onUpdate,
-  onEditCustom,
-  onDeleteCustom,
-  onAddCustom,
-  onManageCustom,
-  gradientFrom,
-  gradientTo
-}: {
-  title: string
-  icon: React.ElementType
-  config: ModelConfig
-  providers: typeof LLM_PROVIDERS
-  customProviders: CustomProvider[]
-  category: string
-  onUpdate: (updates: Partial<ModelConfig>) => void
-  onEditCustom: (provider: CustomProvider) => void
-  onDeleteCustom: (providerId: string) => void
-  onAddCustom: () => void
-  onManageCustom: () => void
-  gradientFrom: string
-  gradientTo: string
-}) {
-  const selectedProvider = providers.find((p) => p.id === config.provider)
-  const selectedCustom = customProviders.find((p) => p.id === config.provider)
-  const isCustom = config.provider === 'custom' || config.provider?.startsWith('custom_')
-  const isPlaceholder = config.provider === 'placeholder' || config.provider === 'none'
-  const isDoubao = config.provider === 'doubao'
-  
-  // 判断是否需要显示 Base URL 输入框
-  const needsBaseUrl = isCustom || config.provider === 'claude' || config.provider === 'midjourney'
-  
-  // 判断模型选择方式
-  const hasPresetModels = selectedProvider && selectedProvider.models.length > 0 && !isCustom && !isDoubao
-  const hasCustomModels = selectedCustom && selectedCustom.models && selectedCustom.models.length > 0
-
-  return (
-    <div className="glass-card p-5 hover-lift">
-      <div className="flex items-center gap-3 mb-5">
-        <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${gradientFrom} ${gradientTo} flex items-center justify-center shadow-lg`}>
-          <Icon size={18} className="text-white" />
-        </div>
-        <h3 className="font-semibold text-gradient">{title}</h3>
-      </div>
-
-      <div className="space-y-4">
-        {/* 服务商选择 - 使用新的下拉组件 */}
-        <div>
-          <label className="block text-sm text-gray-400 mb-2">服务商</label>
-          <ProviderSelect
-            config={config}
-            providers={providers}
-            customProviders={customProviders}
-            category={category}
-            onUpdate={onUpdate}
-            onEditCustom={onEditCustom}
-            onDeleteCustom={onDeleteCustom}
-            onAddCustom={onAddCustom}
-            onManageCustom={onManageCustom}
-          />
-        </div>
-
-        {/* API Key - 非占位图时显示 */}
-        {!isPlaceholder && (
-          <div className="animate-fadeIn">
-            <label className="block text-sm text-gray-400 mb-2">API Key</label>
-            <input
-              type="password"
-              value={config.apiKey}
-              onChange={(e) => onUpdate({ apiKey: e.target.value })}
-              placeholder="输入 API Key"
-              className="w-full glass-input p-3 text-sm"
-            />
-          </div>
-        )}
-
-        {/* API Base URL - 自定义或特定服务商时显示 */}
-        {needsBaseUrl && (
-          <div className="animate-fadeIn">
-            <label className="block text-sm text-gray-400 mb-2">API Base URL</label>
-            <input
-              type="text"
-              value={config.baseUrl}
-              onChange={(e) => onUpdate({ baseUrl: e.target.value })}
-              placeholder="https://api.example.com/v1"
-              className="w-full glass-input p-3 text-sm"
-            />
-          </div>
-        )}
-
-        {/* 模型选择 - 系统预设有模型列表时 */}
-        {hasPresetModels && (
-          <div className="animate-fadeIn">
-            <label className="block text-sm text-gray-400 mb-2">模型</label>
-            <select
-              value={config.model}
-              onChange={(e) => onUpdate({ model: e.target.value })}
-              className="w-full glass-input p-3 text-sm bg-gray-900/80"
-            >
-              {selectedProvider.models.map((m) => (
-                <option key={m} value={m} className="bg-gray-900 text-white">{m}</option>
-              ))}
-            </select>
-            <div className="mt-2">
-              <input
-                type="text"
-                value={config.model}
-                onChange={(e) => onUpdate({ model: e.target.value })}
-                placeholder="或手动输入其他模型名称"
-                className="w-full glass-input p-2 text-xs text-gray-400"
-              />
-            </div>
-          </div>
-        )}
-
-        {/* 模型选择 - 自定义配置有模型列表时 */}
-        {hasCustomModels && (
-          <div className="animate-fadeIn">
-            <label className="block text-sm text-gray-400 mb-2">模型</label>
-            <select
-              value={config.model}
-              onChange={(e) => onUpdate({ model: e.target.value })}
-              className="w-full glass-input p-3 text-sm bg-gray-900/80"
-            >
-              {selectedCustom.models.map((m) => (
-                <option key={m} value={m} className="bg-gray-900 text-white">{m}</option>
-              ))}
-            </select>
-            <div className="mt-2">
-              <input
-                type="text"
-                value={config.model}
-                onChange={(e) => onUpdate({ model: e.target.value })}
-                placeholder="或手动输入其他模型名称"
-                className="w-full glass-input p-2 text-xs text-gray-400"
-              />
-            </div>
-          </div>
-        )}
-
-        {/* 豆包特殊处理 */}
-        {isDoubao && (
-          <div className="animate-fadeIn">
-            <label className="block text-sm text-gray-400 mb-2">推理接入点 ID</label>
-            <input
-              type="text"
-              value={config.model}
-              onChange={(e) => onUpdate({ model: e.target.value })}
-              placeholder="ep-xxx 或模型名称"
-              className="w-full glass-input p-3 text-sm"
-            />
-            <p className="text-xs text-gray-500 mt-2">需要在火山引擎控制台创建推理接入点</p>
-          </div>
-        )}
-
-        {/* 手动输入模型名称 - 无预设模型时 */}
-        {!isPlaceholder && !hasPresetModels && !hasCustomModels && !isDoubao && (
-          <div className="animate-fadeIn">
-            <label className="block text-sm text-gray-400 mb-2">模型名称</label>
-            <input
-              type="text"
-              value={config.model}
-              onChange={(e) => onUpdate({ model: e.target.value })}
-              placeholder="输入模型名称，如 gpt-4, claude-3-opus"
-              className="w-full glass-input p-3 text-sm"
-            />
-          </div>
-        )}
-
-        {/* 配置状态 */}
-        <div className="flex items-center gap-2 text-xs pt-2">
-          {config.apiKey ? (
-            <span className="flex items-center gap-1.5 text-green-400 glass-button px-3 py-1.5 rounded-full">
-              <CheckCircle size={12} />
-              已配置
-            </span>
-          ) : isPlaceholder ? (
-            <span className="text-gray-500 glass-button px-3 py-1.5 rounded-full">无需配置</span>
-          ) : (
-            <span className="flex items-center gap-1.5 text-yellow-400 glass-button px-3 py-1.5 rounded-full">
-              <AlertCircle size={12} />
-              未配置 API Key
-            </span>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
+import { CustomProviderModal, ModelConfigCard } from '../features/settings/components'
+import { FishVoiceLibraryModal } from '../shared/fish/FishVoiceLibraryModal'
 
 export default function SettingsPage() {
-  const { settings, updateLLM, updateImage, updateStoryboard, updateVideo, updateLocal } = useSettingsStore()
+  const {
+    settings,
+    updateLLM,
+    updateImage,
+    updateStoryboard,
+    updateVideo,
+    updateTTS,
+    updateVolcTTS,
+    updateFishTTS,
+    updateBailianTTS,
+    updateCustomTTS,
+    updateLocal,
+  } = useSettingsStore()
   const [saving, setSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [activeTab, setActiveTab] = useState<'models' | 'local'>('models')
+  const ttsProvider = (settings.tts.provider || 'volc_tts_v1_http').trim() || 'volc_tts_v1_http'
+  const isFishTTS = ttsProvider.startsWith('fish')
+  const isVolcTTS = ttsProvider === 'volc_tts_v1_http'
+  const isBailianTTS = ttsProvider === 'aliyun_bailian_tts_v2'
+  const isCustomTTS = ttsProvider.startsWith('custom_')
+  const [fishLibraryOpen, setFishLibraryOpen] = useState(false)
+
+  const [testStates, setTestStates] = useState<Record<TestConnectionCategory, { status: 'idle' | 'testing' | 'success' | 'error'; message?: string }>>({
+    llm: { status: 'idle' },
+    image: { status: 'idle' },
+    storyboard: { status: 'idle' },
+    video: { status: 'idle' }
+  })
   
   // 自定义配置状态
   const [customProviders, setCustomProviders] = useState<Record<string, CustomProvider[]>>({
     llm: [],
     image: [],
     storyboard: [],
-    video: []
+    video: [],
+    tts: []
   })
   const [modalOpen, setModalOpen] = useState(false)
   const [editingProvider, setEditingProvider] = useState<CustomProvider | null>(null)
   const [editingCategory, setEditingCategory] = useState<string>('llm')
+
+  const [ttsTest, setTtsTest] = useState<{ status: 'idle' | 'testing' | 'success' | 'error'; message?: string }>({ status: 'idle' })
+
+  const handleTestTTS = async () => {
+    setTtsTest({ status: 'testing' })
+    try {
+      const defaults = isFishTTS
+        ? settings.tts.fish
+        : isBailianTTS
+          ? settings.tts.bailian
+          : isCustomTTS
+            ? settings.tts.custom
+            : settings.tts.volc
+      const voiceType =
+        defaults.narratorVoiceType ||
+        defaults.dialogueMaleVoiceType ||
+        defaults.dialogueFemaleVoiceType ||
+        defaults.dialogueVoiceType
+      const result = await testTTSConnection(settings.tts, voiceType, '测试语音合成')
+      setTtsTest({ status: result.success ? 'success' : 'error', message: result.message })
+    } catch (error) {
+      const message =
+        (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        (error as Error)?.message ||
+        '测试失败'
+      setTtsTest({ status: 'error', message })
+    }
+  }
+
+  const handleTestConnection = async (category: TestConnectionCategory, config: ModelConfig) => {
+    setTestStates(prev => ({ ...prev, [category]: { status: 'testing' } }))
+    try {
+      const result = await testConnection(category, config, settings.local)
+      setTestStates(prev => ({
+        ...prev,
+        [category]: { status: result.success ? 'success' : 'error', message: result.message }
+      }))
+    } catch (error) {
+      const message =
+        (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        (error as Error)?.message ||
+        '测试失败'
+      setTestStates(prev => ({ ...prev, [category]: { status: 'error', message } }))
+    }
+  }
 
   // 加载自定义配置
   useEffect(() => {
@@ -601,16 +128,18 @@ export default function SettingsPage() {
 
   const loadCustomProviders = async () => {
     try {
-      const [llm, image, video] = await Promise.all([
+      const [llm, image, video, tts] = await Promise.all([
         listCustomProviders('llm'),
         listCustomProviders('image'),
-        listCustomProviders('video')
+        listCustomProviders('video'),
+        listCustomProviders('tts')
       ])
       setCustomProviders({
         llm,
         image,
         storyboard: image, // storyboard 和 image 共用
-        video
+        video,
+        tts
       })
     } catch (error) {
       console.error('加载自定义配置失败:', error)
@@ -672,6 +201,7 @@ export default function SettingsPage() {
         image: settings.image,
         storyboard: settings.storyboard,
         video: settings.video,
+        tts: settings.tts,
         local: settings.local
       })
       setSaveStatus('success')
@@ -743,6 +273,8 @@ export default function SettingsPage() {
                 providers={LLM_PROVIDERS}
                 customProviders={customProviders.llm}
                 category="llm"
+                testState={testStates.llm}
+                onTestConnection={() => handleTestConnection('llm', settings.llm)}
                 onUpdate={updateLLM}
                 onEditCustom={handleEditCustom}
                 onDeleteCustom={handleDeleteCustom}
@@ -766,6 +298,8 @@ export default function SettingsPage() {
                 providers={IMAGE_PROVIDERS}
                 customProviders={customProviders.image}
                 category="image"
+                testState={testStates.image}
+                onTestConnection={() => handleTestConnection('image', settings.image)}
                 onUpdate={updateImage}
                 onEditCustom={handleEditCustom}
                 onDeleteCustom={handleDeleteCustom}
@@ -789,6 +323,8 @@ export default function SettingsPage() {
                 providers={IMAGE_PROVIDERS}
                 customProviders={customProviders.storyboard}
                 category="storyboard"
+                testState={testStates.storyboard}
+                onTestConnection={() => handleTestConnection('storyboard', settings.storyboard)}
                 onUpdate={updateStoryboard}
                 onEditCustom={handleEditCustom}
                 onDeleteCustom={handleDeleteCustom}
@@ -812,6 +348,8 @@ export default function SettingsPage() {
                 providers={VIDEO_PROVIDERS}
                 customProviders={customProviders.video}
                 category="video"
+                testState={testStates.video}
+                onTestConnection={() => handleTestConnection('video', settings.video)}
                 onUpdate={updateVideo}
                 onEditCustom={handleEditCustom}
                 onDeleteCustom={handleDeleteCustom}
@@ -820,6 +358,596 @@ export default function SettingsPage() {
                 gradientFrom="from-green-500"
                 gradientTo="to-emerald-500"
               />
+            </section>
+
+            <section className="animate-fadeInUp delay-450" style={{ animationFillMode: 'backwards' }}>
+              <div className="flex items-center gap-2 mb-4">
+                <Mic size={18} className="text-cyan-400" />
+                <h2 className="text-lg font-semibold">语音合成 (旁白/对白)</h2>
+              </div>
+              <p className="text-sm text-gray-500 mb-4">用于独立生成旁白/对白的人声轨（保留视频环境音/音效）</p>
+
+              <div className="glass-card p-6 space-y-4 hover-lift">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-sm text-gray-400">Provider</label>
+                      <button
+                        onClick={() => handleAddCustom('tts')}
+                        className="text-xs text-gray-300 hover:text-white glass-button px-3 py-1.5 rounded-lg"
+                        title="新增一个自定义 TTS Provider（OpenAI 兼容语音接口）"
+                      >
+                        新增自定义
+                      </button>
+                    </div>
+                    <select
+                      value={ttsProvider}
+                      onChange={(e) => {
+                        const provider = e.target.value
+                        updateTTS({ provider })
+                        if (provider.startsWith('fish')) {
+                          const cur = (settings.tts.fish.model || '').trim()
+                          if (!cur || cur.startsWith('seed-')) {
+                            updateFishTTS({ model: 'speech-1.5' })
+                          }
+                        }
+                      }}
+                      className="w-full glass-input p-3 text-sm bg-gray-900/80"
+                    >
+                      <option value="volc_tts_v1_http" className="bg-gray-900 text-white">Volc OpenSpeech</option>
+                      <option value="fish_tts_v1" className="bg-gray-900 text-white">Fish Audio</option>
+                      <option value="aliyun_bailian_tts_v2" className="bg-gray-900 text-white">阿里百炼（通用语音）</option>
+                      {customProviders.tts.length > 0 && (
+                        <option disabled className="bg-gray-900 text-gray-500">────────</option>
+                      )}
+                      {customProviders.tts.map((p) => (
+                        <option key={p.id} value={p.id} className="bg-gray-900 text-white">
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                    {isCustomTTS && (
+                      <div className="flex items-center gap-2 mt-2">
+                        <div className="text-xs text-gray-500 truncate flex-1">
+                          当前自定义：{customProviders.tts.find((p) => p.id === ttsProvider)?.name || ttsProvider}
+                        </div>
+                        {customProviders.tts.find((p) => p.id === ttsProvider) && (
+                          <button
+                            onClick={() => handleEditCustom(customProviders.tts.find((p) => p.id === ttsProvider)!)}
+                            className="text-xs text-gray-200 hover:text-white glass-button px-3 py-1.5 rounded-lg"
+                          >
+                            编辑
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {isFishTTS ? (
+                    <div>
+                      <label className="block text-sm text-gray-400 mb-2">Base URL</label>
+                      <input
+                        type="text"
+                        value={settings.tts.fish.baseUrl}
+                        onChange={(e) => updateFishTTS({ baseUrl: e.target.value })}
+                        placeholder="https://api.fish.audio"
+                        className="w-full glass-input p-3 text-sm"
+                      />
+                    </div>
+                  ) : isBailianTTS ? (
+                    <div>
+                      <label className="block text-sm text-gray-400 mb-2">WebSocket URL（可选）</label>
+                      <input
+                        type="text"
+                        value={settings.tts.bailian.baseUrl}
+                        onChange={(e) => updateBailianTTS({ baseUrl: e.target.value })}
+                        placeholder="wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+                        className="w-full glass-input p-3 text-sm"
+                      />
+                    </div>
+                  ) : isCustomTTS ? (
+                    <div>
+                      <label className="block text-sm text-gray-400 mb-2">API Base URL（自定义）</label>
+                      <input
+                        type="text"
+                        value={customProviders.tts.find((p) => p.id === ttsProvider)?.baseUrl || ''}
+                        readOnly
+                        placeholder="请点击“编辑”在自定义配置里设置"
+                        className="w-full glass-input p-3 text-sm opacity-80"
+                      />
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="block text-sm text-gray-400 mb-2">AppID</label>
+                      <input
+                        type="text"
+                        value={settings.tts.volc.appid}
+                        onChange={(e) => updateVolcTTS({ appid: e.target.value })}
+                        placeholder="控制台 AppID"
+                        className="w-full glass-input p-3 text-sm"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {isCustomTTS ? (
+                  <div className="glass-dark rounded-2xl p-4 text-sm text-gray-300">
+                    <div className="font-medium">自定义 TTS（OpenAI 兼容语音接口）</div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      鉴权/Base URL/模型在“自定义配置”里管理；这里填写默认 voice 与测试即可。
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm text-gray-400 mb-2">
+                          {isFishTTS || isBailianTTS ? 'API Key' : 'Access Token'}
+                        </label>
+                        <input
+                          type="password"
+                          value={
+                            isFishTTS
+                              ? settings.tts.fish.apiKey
+                              : isBailianTTS
+                                ? settings.tts.bailian.apiKey
+                                : settings.tts.volc.accessToken
+                          }
+                          onChange={(e) => {
+                            const v = e.target.value
+                            if (isFishTTS) updateFishTTS({ apiKey: v })
+                            else if (isBailianTTS) updateBailianTTS({ apiKey: v })
+                            else updateVolcTTS({ accessToken: v })
+                          }}
+                          placeholder={isFishTTS ? 'Fish API Key' : isBailianTTS ? '阿里百炼 API Key' : '控制台 Access Token'}
+                          className="w-full glass-input p-3 text-sm"
+                        />
+                      </div>
+
+                      {isFishTTS ? (
+                        <div>
+                          <label className="block text-sm text-gray-400 mb-2">Model (Header: model)</label>
+                          <input
+                            type="text"
+                            value={settings.tts.fish.model}
+                            onChange={(e) => updateFishTTS({ model: e.target.value })}
+                            placeholder="speech-1.5 或 s1"
+                            className="w-full glass-input p-3 text-sm"
+                          />
+                        </div>
+                      ) : isBailianTTS ? (
+                        <div>
+                          <label className="block text-sm text-gray-400 mb-2">Model</label>
+                          <input
+                            type="text"
+                            value={settings.tts.bailian.model}
+                            onChange={(e) => updateBailianTTS({ model: e.target.value })}
+                            placeholder="cosyvoice-v1"
+                            className="w-full glass-input p-3 text-sm"
+                          />
+                        </div>
+                      ) : (
+                        <div>
+                          <label className="block text-sm text-gray-400 mb-2">Cluster</label>
+                          <input
+                            type="text"
+                            value={settings.tts.volc.cluster}
+                            onChange={(e) => updateVolcTTS({ cluster: e.target.value })}
+                            placeholder="volcano_tts"
+                            className="w-full glass-input p-3 text-sm"
+                          />
+                        </div>
+                      )}
+                    </div>
+
+                    {isBailianTTS && (
+                      <div>
+                        <label className="block text-sm text-gray-400 mb-2">Workspace（可选）</label>
+                        <input
+                          type="text"
+                          value={settings.tts.bailian.workspace}
+                          onChange={(e) => updateBailianTTS({ workspace: e.target.value })}
+                          placeholder="百炼 workspace id（可留空）"
+                          className="w-full glass-input p-3 text-sm"
+                        />
+                      </div>
+                    )}
+
+                    {isVolcTTS && (
+                      <div>
+                        <label className="block text-sm text-gray-400 mb-2">模型版本</label>
+                        <input
+                          type="text"
+                          value={settings.tts.volc.model}
+                          onChange={(e) => updateVolcTTS({ model: e.target.value })}
+                          placeholder="seed-tts-1.1"
+                          className="w-full glass-input p-3 text-sm"
+                        />
+                      </div>
+                    )}
+                  </>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-2">
+                      默认旁白 {isFishTTS ? 'reference_id' : isVolcTTS ? 'voice_type' : 'voice'}
+                    </label>
+                    <input
+                      type="text"
+                      value={
+                        isFishTTS
+                          ? settings.tts.fish.narratorVoiceType
+                          : isBailianTTS
+                            ? settings.tts.bailian.narratorVoiceType
+                            : isCustomTTS
+                              ? settings.tts.custom.narratorVoiceType
+                              : settings.tts.volc.narratorVoiceType
+                      }
+                      onChange={(e) => {
+                        const v = e.target.value
+                        if (isFishTTS) updateFishTTS({ narratorVoiceType: v })
+                        else if (isBailianTTS) updateBailianTTS({ narratorVoiceType: v })
+                        else if (isCustomTTS) updateCustomTTS({ narratorVoiceType: v })
+                        else updateVolcTTS({ narratorVoiceType: v })
+                      }}
+                      placeholder={
+                        isFishTTS
+                          ? '例如：802e3bc2b27e49c2995d23ef70e6ac89'
+                          : isVolcTTS
+                            ? '例如：zh_female_cancan_mars_bigtts'
+                            : '例如：your_voice_name'
+                      }
+                      className="w-full glass-input p-3 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-2">
+                      默认对白（男） {isFishTTS ? 'reference_id' : isVolcTTS ? 'voice_type' : 'voice'}
+                    </label>
+                    <input
+                      type="text"
+                      value={
+                        isFishTTS
+                          ? settings.tts.fish.dialogueMaleVoiceType
+                          : isBailianTTS
+                            ? settings.tts.bailian.dialogueMaleVoiceType
+                            : isCustomTTS
+                              ? settings.tts.custom.dialogueMaleVoiceType
+                              : settings.tts.volc.dialogueMaleVoiceType
+                      }
+                      onChange={(e) => {
+                        const v = e.target.value
+                        if (isFishTTS) updateFishTTS({ dialogueMaleVoiceType: v })
+                        else if (isBailianTTS) updateBailianTTS({ dialogueMaleVoiceType: v })
+                        else if (isCustomTTS) updateCustomTTS({ dialogueMaleVoiceType: v })
+                        else updateVolcTTS({ dialogueMaleVoiceType: v })
+                      }}
+                      placeholder={
+                        isFishTTS
+                          ? '例如：802e3bc2b27e49c2995d23ef70e6ac89'
+                          : isVolcTTS
+                            ? '例如：zh_male_M392_conversation_wvae_bigtts'
+                            : '例如：your_voice_name'
+                      }
+                      className="w-full glass-input p-3 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-2">
+                      默认对白（女） {isFishTTS ? 'reference_id' : isVolcTTS ? 'voice_type' : 'voice'}
+                    </label>
+                    <input
+                      type="text"
+                      value={
+                        isFishTTS
+                          ? settings.tts.fish.dialogueFemaleVoiceType
+                          : isBailianTTS
+                            ? settings.tts.bailian.dialogueFemaleVoiceType
+                            : isCustomTTS
+                              ? settings.tts.custom.dialogueFemaleVoiceType
+                              : settings.tts.volc.dialogueFemaleVoiceType
+                      }
+                      onChange={(e) => {
+                        const v = e.target.value
+                        if (isFishTTS) updateFishTTS({ dialogueFemaleVoiceType: v })
+                        else if (isBailianTTS) updateBailianTTS({ dialogueFemaleVoiceType: v })
+                        else if (isCustomTTS) updateCustomTTS({ dialogueFemaleVoiceType: v })
+                        else updateVolcTTS({ dialogueFemaleVoiceType: v })
+                      }}
+                      placeholder={
+                        isFishTTS
+                          ? '例如：802e3bc2b27e49c2995d23ef70e6ac89'
+                          : isVolcTTS
+                            ? '例如：zh_female_meilinyyou_moon_bigtts'
+                            : '例如：your_voice_name'
+                      }
+                      className="w-full glass-input p-3 text-sm"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm text-gray-400 mb-2">
+                    默认对白（通用/兼容旧）{isFishTTS ? 'reference_id' : isVolcTTS ? 'voice_type' : 'voice'}（可选）
+                  </label>
+                  <input
+                    type="text"
+                    value={
+                      isFishTTS
+                        ? settings.tts.fish.dialogueVoiceType
+                        : isBailianTTS
+                          ? settings.tts.bailian.dialogueVoiceType
+                          : isCustomTTS
+                            ? settings.tts.custom.dialogueVoiceType
+                            : settings.tts.volc.dialogueVoiceType
+                    }
+                    onChange={(e) => {
+                      const v = e.target.value
+                      if (isFishTTS) updateFishTTS({ dialogueVoiceType: v })
+                      else if (isBailianTTS) updateBailianTTS({ dialogueVoiceType: v })
+                      else if (isCustomTTS) updateCustomTTS({ dialogueVoiceType: v })
+                      else updateVolcTTS({ dialogueVoiceType: v })
+                    }}
+                    placeholder={
+                      isFishTTS
+                        ? '可留空：建议优先填男女默认 reference_id'
+                        : isVolcTTS
+                          ? '可留空：未配置时将根据角色名/描述自动匹配内置音色库'
+                          : '可留空：建议优先填旁白/男女默认 voice'
+                    }
+                    className="w-full glass-input p-3 text-sm"
+                  />
+                  <p className="text-xs text-gray-500 mt-2">
+                    说明：若具体角色在 Agent 里填写了 <code className="px-1">voice_type</code>（或 <code className="px-1">voice_profile</code> 里直接填 voice_type），会优先使用角色配置覆盖。
+                  </p>
+                </div>
+
+                <div className="space-y-2 pt-1">
+                  {false && (
+                  <details className="w-full glass-dark rounded-2xl p-4 mb-2">
+                    <summary className="cursor-pointer text-sm text-gray-300 select-none">
+                      {isFishTTS ? '配置 Volc OpenSpeech（备用，不影响当前）' : '配置 Fish Audio（备用，不影响当前）'}
+                    </summary>
+                    <div className="mt-4 space-y-4">
+                      {isFishTTS ? (
+                        <>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-sm text-gray-400 mb-2">AppID</label>
+                              <input
+                                type="text"
+                                value={settings.tts.volc.appid}
+                                onChange={(e) => updateVolcTTS({ appid: e.target.value })}
+                                placeholder="控制台 AppID"
+                                className="w-full glass-input p-3 text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm text-gray-400 mb-2">Access Token</label>
+                              <input
+                                type="password"
+                                value={settings.tts.volc.accessToken}
+                                onChange={(e) => updateVolcTTS({ accessToken: e.target.value })}
+                                placeholder="控制台 Access Token"
+                                className="w-full glass-input p-3 text-sm"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div>
+                              <label className="block text-sm text-gray-400 mb-2">Endpoint</label>
+                              <input
+                                type="text"
+                                value={settings.tts.volc.endpoint}
+                                onChange={(e) => updateVolcTTS({ endpoint: e.target.value })}
+                                placeholder="https://openspeech.bytedance.com/api/v1/tts"
+                                className="w-full glass-input p-3 text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm text-gray-400 mb-2">Cluster</label>
+                              <input
+                                type="text"
+                                value={settings.tts.volc.cluster}
+                                onChange={(e) => updateVolcTTS({ cluster: e.target.value })}
+                                placeholder="volcano_tts"
+                                className="w-full glass-input p-3 text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm text-gray-400 mb-2">模型版本</label>
+                              <input
+                                type="text"
+                                value={settings.tts.volc.model}
+                                onChange={(e) => updateVolcTTS({ model: e.target.value })}
+                                placeholder="seed-tts-1.1"
+                                className="w-full glass-input p-3 text-sm"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div>
+                              <label className="block text-sm text-gray-400 mb-2">默认旁白 voice_type</label>
+                              <input
+                                type="text"
+                                value={settings.tts.volc.narratorVoiceType}
+                                onChange={(e) => updateVolcTTS({ narratorVoiceType: e.target.value })}
+                                placeholder="例如：zh_female_cancan_mars_bigtts"
+                                className="w-full glass-input p-3 text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm text-gray-400 mb-2">默认对白（男）voice_type</label>
+                              <input
+                                type="text"
+                                value={settings.tts.volc.dialogueMaleVoiceType}
+                                onChange={(e) => updateVolcTTS({ dialogueMaleVoiceType: e.target.value })}
+                                placeholder="例如：zh_male_M392_conversation_wvae_bigtts"
+                                className="w-full glass-input p-3 text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm text-gray-400 mb-2">默认对白（女）voice_type</label>
+                              <input
+                                type="text"
+                                value={settings.tts.volc.dialogueFemaleVoiceType}
+                                onChange={(e) => updateVolcTTS({ dialogueFemaleVoiceType: e.target.value })}
+                                placeholder="例如：zh_female_meilinyyou_moon_bigtts"
+                                className="w-full glass-input p-3 text-sm"
+                              />
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="block text-sm text-gray-400 mb-2">默认对白（通用/兼容旧）voice_type（可选）</label>
+                            <input
+                              type="text"
+                              value={settings.tts.volc.dialogueVoiceType}
+                              onChange={(e) => updateVolcTTS({ dialogueVoiceType: e.target.value })}
+                              placeholder="可留空：未配置时将根据角色名/描述自动匹配内置音色库"
+                              className="w-full glass-input p-3 text-sm"
+                            />
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-sm text-gray-400 mb-2">Base URL</label>
+                              <input
+                                type="text"
+                                value={settings.tts.fish.baseUrl}
+                                onChange={(e) => updateFishTTS({ baseUrl: e.target.value })}
+                                placeholder="https://api.fish.audio"
+                                className="w-full glass-input p-3 text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm text-gray-400 mb-2">API Key</label>
+                              <input
+                                type="password"
+                                value={settings.tts.fish.apiKey}
+                                onChange={(e) => updateFishTTS({ apiKey: e.target.value })}
+                                placeholder="Fish API Key"
+                                className="w-full glass-input p-3 text-sm"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                            <div className="md:col-span-2">
+                              <label className="block text-sm text-gray-400 mb-2">Model (Header: model)</label>
+                              <input
+                                type="text"
+                                value={settings.tts.fish.model}
+                                onChange={(e) => updateFishTTS({ model: e.target.value })}
+                                placeholder="speech-1.5 或 s1"
+                                className="w-full glass-input p-3 text-sm"
+                              />
+                            </div>
+                            <div>
+                              <button
+                                onClick={() => setFishLibraryOpen(true)}
+                                disabled={!settings.tts.fish.apiKey}
+                                className="w-full glass-button px-4 py-2 rounded-xl text-sm text-gray-200 hover:text-white disabled:opacity-50"
+                                title={settings.tts.fish.apiKey ? '列出 Fish voice models，并可上传音频创建 voice clone' : '请先填写 Fish.apiKey'}
+                              >
+                                音色库
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div>
+                              <label className="block text-sm text-gray-400 mb-2">默认旁白 reference_id</label>
+                              <input
+                                type="text"
+                                value={settings.tts.fish.narratorVoiceType}
+                                onChange={(e) => updateFishTTS({ narratorVoiceType: e.target.value })}
+                                placeholder="例如：802e3bc2b27e49c2995d23ef70e6ac89"
+                                className="w-full glass-input p-3 text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm text-gray-400 mb-2">默认对白（男）reference_id</label>
+                              <input
+                                type="text"
+                                value={settings.tts.fish.dialogueMaleVoiceType}
+                                onChange={(e) => updateFishTTS({ dialogueMaleVoiceType: e.target.value })}
+                                placeholder="例如：802e3bc2b27e49c2995d23ef70e6ac89"
+                                className="w-full glass-input p-3 text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm text-gray-400 mb-2">默认对白（女）reference_id</label>
+                              <input
+                                type="text"
+                                value={settings.tts.fish.dialogueFemaleVoiceType}
+                                onChange={(e) => updateFishTTS({ dialogueFemaleVoiceType: e.target.value })}
+                                placeholder="例如：802e3bc2b27e49c2995d23ef70e6ac89"
+                                className="w-full glass-input p-3 text-sm"
+                              />
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="block text-sm text-gray-400 mb-2">默认对白（通用/兼容旧）reference_id（可选）</label>
+                            <input
+                              type="text"
+                              value={settings.tts.fish.dialogueVoiceType}
+                              onChange={(e) => updateFishTTS({ dialogueVoiceType: e.target.value })}
+                              placeholder="可留空：建议优先填男女默认 reference_id"
+                              className="w-full glass-input p-3 text-sm"
+                            />
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </details>
+                  )}
+                  <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setFishLibraryOpen(true)}
+                    disabled={!settings.tts.fish.apiKey}
+                    className="glass-button px-4 py-2 rounded-xl text-sm text-gray-200 hover:text-white disabled:opacity-50"
+                    title={settings.tts.fish.apiKey ? '列出 Fish voice models，并可上传音频创建 voice clone' : '请先填写 Fish.apiKey'}
+                  >
+                    音色库
+                  </button>
+                  <button
+                    onClick={handleTestTTS}
+                    disabled={ttsTest.status === 'testing'}
+                    className="glass-button px-4 py-2 rounded-xl text-sm text-gray-200 hover:text-white disabled:opacity-50"
+                    title="发起一次最小 TTS 请求验证鉴权与参数（不保存）"
+                  >
+                    <span className="flex items-center gap-2">
+                      {ttsTest.status === 'testing' ? (
+                        <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      ) : (
+                        <Server size={16} className="text-cyan-300" />
+                      )}
+                      {ttsTest.status === 'testing' ? '测试中...' : '测试 TTS'}
+                    </span>
+                  </button>
+
+                  {ttsTest.status === 'success' && (
+                    <span className="flex items-center gap-2 text-green-400 text-sm glass-button px-3 py-2 rounded-xl">
+                      <CheckCircle size={16} />
+                      {ttsTest.message || '连接成功'}
+                    </span>
+                  )}
+                  {ttsTest.status === 'error' && (
+                    <span className="flex items-center gap-2 text-red-400 text-sm glass-button px-3 py-2 rounded-xl">
+                      <AlertCircle size={16} />
+                      {ttsTest.message || '连接失败'}
+                    </span>
+                  )}
+                  </div>
+                </div>
+              </div>
             </section>
           </div>
         )}
@@ -944,6 +1072,12 @@ export default function SettingsPage() {
         onSave={handleSaveCustom}
         provider={editingProvider}
         category={editingCategory}
+      />
+
+      <FishVoiceLibraryModal
+        isOpen={fishLibraryOpen}
+        onClose={() => setFishLibraryOpen(false)}
+        mode="manage"
       />
     </div>
   )

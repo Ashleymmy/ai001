@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { HashRouter, Routes, Route, useLocation } from 'react-router-dom'
+import { HashRouter, Routes, Route, useLocation, Navigate } from 'react-router-dom'
 import Layout from './components/Layout'
+import WelcomePage from './pages/WelcomePage'
 import HomePage from './pages/HomePage'
 import ScriptPage from './pages/ScriptPage'
 import ImagePage from './pages/ImagePage'
@@ -12,14 +13,34 @@ import CanvasPage from './pages/CanvasPage'
 import ProjectPage from './pages/ProjectPage'
 import { useSettingsStore } from './store/settingsStore'
 
+// 首次访问检测 key
+const VISITED_KEY = 'ai-storyboarder-visited'
+
+// 检查是否已访问过
+export const hasVisited = () => localStorage.getItem(VISITED_KEY) === 'true'
+
+// 设置已访问标记
+export const setVisited = () => localStorage.setItem(VISITED_KEY, 'true')
+
+// 清除已访问标记（用于返回欢迎页）
+export const clearVisited = () => localStorage.removeItem(VISITED_KEY)
+
+// 路由守卫组件 - 首次访问重定向到欢迎页
+function RequireVisited({ children }: { children: React.ReactNode }) {
+  if (!hasVisited()) {
+    return <Navigate to="/" replace />
+  }
+  return <>{children}</>
+}
+
 // 需要保持状态的页面列表
-const KEEP_ALIVE_ROUTES = ['/script', '/image', '/storyboard', '/video']
+const KEEP_ALIVE_ROUTES = ['/home/script', '/home/image', '/home/storyboard', '/home/video']
 
 // 页面缓存组件
 function KeepAliveOutlet() {
   const location = useLocation()
   const [visitedRoutes, setVisitedRoutes] = useState<Set<string>>(new Set())
-  
+
   useEffect(() => {
     const path = location.pathname
     // 只缓存需要保持状态的页面
@@ -34,38 +55,38 @@ function KeepAliveOutlet() {
   return (
     <>
       {/* 首页 - 不缓存 */}
-      <div style={{ display: currentPath === '/' ? 'block' : 'none', height: '100%' }}>
-        {currentPath === '/' && <HomePage />}
+      <div style={{ display: currentPath === '/home' ? 'block' : 'none', height: '100%' }}>
+        {currentPath === '/home' && <HomePage />}
       </div>
 
       {/* 剧本页 - 缓存 */}
-      <div style={{ display: currentPath === '/script' ? 'block' : 'none', height: '100%' }}>
-        {(visitedRoutes.has('/script') || currentPath === '/script') && <ScriptPage />}
+      <div style={{ display: currentPath === '/home/script' ? 'block' : 'none', height: '100%' }}>
+        {(visitedRoutes.has('/home/script') || currentPath === '/home/script') && <ScriptPage />}
       </div>
 
       {/* 图像页 - 缓存 */}
-      <div style={{ display: currentPath === '/image' ? 'block' : 'none', height: '100%' }}>
-        {(visitedRoutes.has('/image') || currentPath === '/image') && <ImagePage />}
+      <div style={{ display: currentPath === '/home/image' ? 'block' : 'none', height: '100%' }}>
+        {(visitedRoutes.has('/home/image') || currentPath === '/home/image') && <ImagePage />}
       </div>
 
       {/* 分镜页 - 缓存 */}
-      <div style={{ display: currentPath.startsWith('/storyboard') ? 'block' : 'none', height: '100%' }}>
-        {(visitedRoutes.has('/storyboard') || currentPath.startsWith('/storyboard')) && <StoryboardPage />}
+      <div style={{ display: currentPath.startsWith('/home/storyboard') ? 'block' : 'none', height: '100%' }}>
+        {(visitedRoutes.has('/home/storyboard') || currentPath.startsWith('/home/storyboard')) && <StoryboardPage />}
       </div>
 
       {/* 视频页 - 缓存 */}
-      <div style={{ display: currentPath === '/video' ? 'block' : 'none', height: '100%' }}>
-        {(visitedRoutes.has('/video') || currentPath === '/video') && <VideoPage />}
+      <div style={{ display: currentPath === '/home/video' ? 'block' : 'none', height: '100%' }}>
+        {(visitedRoutes.has('/home/video') || currentPath === '/home/video') && <VideoPage />}
       </div>
 
       {/* 设置页 - 不缓存 */}
-      <div style={{ display: currentPath === '/settings' ? 'block' : 'none', height: '100%' }}>
-        {currentPath === '/settings' && <SettingsPage />}
+      <div style={{ display: currentPath === '/home/settings' ? 'block' : 'none', height: '100%' }}>
+        {currentPath === '/home/settings' && <SettingsPage />}
       </div>
 
       {/* 项目页 - 不缓存 */}
-      <div style={{ display: currentPath.startsWith('/project/') ? 'block' : 'none', height: '100%' }}>
-        {currentPath.startsWith('/project/') && <ProjectPage />}
+      <div style={{ display: currentPath.startsWith('/home/project/') ? 'block' : 'none', height: '100%' }}>
+        {currentPath.startsWith('/home/project/') && <ProjectPage />}
       </div>
     </>
   )
@@ -92,13 +113,16 @@ function App() {
   return (
     <HashRouter>
       <Routes>
-        <Route path="/*" element={<LayoutWithKeepAlive />} />
-        {/* Agent 模式 - 独立布局 */}
-        <Route path="agent" element={<AgentPage />} />
-        <Route path="agent/:projectId" element={<AgentPage />} />
-        {/* Canvas 画布模式 */}
-        <Route path="canvas" element={<CanvasPage />} />
-        <Route path="canvas/:projectId" element={<CanvasPage />} />
+        {/* 欢迎页 - 独立布局，无侧边栏 */}
+        <Route path="/" element={<WelcomePage />} />
+        {/* 主应用页面 - 带 Layout，需要首次访问检测 */}
+        <Route path="/home/*" element={<RequireVisited><LayoutWithKeepAlive /></RequireVisited>} />
+        {/* Agent 模式 - 独立布局，需要首次访问检测 */}
+        <Route path="agent" element={<RequireVisited><AgentPage /></RequireVisited>} />
+        <Route path="agent/:projectId" element={<RequireVisited><AgentPage /></RequireVisited>} />
+        {/* Canvas 画布模式，需要首次访问检测 */}
+        <Route path="canvas" element={<RequireVisited><CanvasPage /></RequireVisited>} />
+        <Route path="canvas/:projectId" element={<RequireVisited><CanvasPage /></RequireVisited>} />
       </Routes>
     </HashRouter>
   )

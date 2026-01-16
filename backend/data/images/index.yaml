@@ -1,4 +1,163 @@
 images:
+- id: ac752738
+  prompt: Kitamura Haru, gentle junior high school boy with neat short black hair
+    and a soft warm smile, wearing classic Japanese navy blue school uniform with
+    white collar trim, standing on a sun-dappled rural country path, holding a worn
+    notebook in one hand, relaxed natural posture, Studio Ghibli 2D hand-drawn animation
+    style, soft and fluid line art, desaturated natural color palette, vintage rural
+    texture, nostalgic countryside aesthetic, soft warm afternoon sunlight filtering
+    through maple leaves, dappled light on clothes and ground, serene heartwarming
+    atmosphere, highly detailed, HD resolution, hand-painted texture, cinematic composition,
+    sharp but soft edges, professional animation cel quality
+  negative_prompt: 3D rendering, high saturation colors, harsh sharp lines, distorted
+    anatomy, blurry, pixelated, modern urban elements, harsh glare, overexposure,
+    cartoonish exaggeration, messy composition, deformed limbs, unnatural facial features,
+    grainy texture
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217684647414882811cc565cd59e977023febe5c684c8781795e_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260115%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260115T081231Z&X-Tos-Expires=86400&X-Tos-Signature=9eca6c3413fc6f9337ba065c830eefaff533bfea10923e8a3e87be4d1081798c&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 540488102
+  style: null
+  created_at: '2026-01-15T16:12:28.342405'
+- id: 0ba503a2
+  prompt: anthropomorphic reddish-brown fox, golden slit pupils, white fur on ear
+    tips, wearing dark vintage dress with snow-white frilled apron, fluffy bushy tail,
+    agile pose with a hint of tsundere attitude, expressive face, Studio Ghibli style,
+    heartwarming 2D hand-drawn animation, soft and smooth line art, low-saturated
+    natural color palette, vintage rustic texture, soft warm ambient lighting, cozy
+    comforting atmosphere, highly detailed, intricate hand-painted details, masterpiece,
+    best quality, cinematic composition, gentle brush strokes, sharp clear outlines
+  negative_prompt: 3D rendering, photorealistic, harsh contrast lighting, over-saturated
+    colors, messy rough lines, distorted body proportions, blurry, low resolution,
+    ugly, exaggerated cartoonish features unrelated to Ghibli style, flat color blocks,
+    no texture, grainy, pixelated
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/02176846452241953efce2506f8ba33cd433680ff709829110687_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260115%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260115T080852Z&X-Tos-Expires=86400&X-Tos-Signature=83fef7995663b48b3ab5275c5a131b06a3c9dc38db1b38f65aaeafb418106817&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 913420884
+  style: null
+  created_at: '2026-01-15T16:08:48.955990'
+- id: 6ebcb672
+  prompt: early 20s gentle young man, light brown messy short hair, dreamy almond-shaped
+    eyes, shy soft smile, worn-in khaki button-down shirt, faded light blue jeans,
+    slim build with long legs, delicate vulnerable soft demeanor, Studio Ghibli healing-style
+    2D hand-drawn animation, soft smooth line art, low-saturation natural color palette,
+    retro rural texture, warm soft ambient lighting, cozy comforting atmosphere, gentle
+    dappled light filtering through foliage, highly detailed hand-painted texture,
+    crisp clean lines, cinematic warm tone, sharp focus, 8k resolution, masterpiece-level
+    hand-drawn artwork
+  negative_prompt: 3D render, photorealistic style, high saturation vibrant colors,
+    blurry image, distorted body proportions, modern urban elements, harsh sharp lines,
+    overexposed lighting, underexposed areas, messy composition, ugly facial features,
+    plastic texture, non-hand-drawn elements, harsh shadows
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/02176846425091720e33ae3714a969f29832d54235fd2cc70c26b_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260115%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260115T080425Z&X-Tos-Expires=86400&X-Tos-Signature=4b7dafe7c80b729310dbff13e658342e11fd63b7fa398a072f44e5268aa63dec&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1564322695
+  style: null
+  created_at: '2026-01-15T16:04:21.505649'
+- id: 7bb31dad
+  prompt: Deep in a larch forest, a vintage cream-colored mansion with a second-floor
+    oval carved balcony, blooming red rose flower beds surrounding the front door;
+    interior featuring dark red velvet carpets, dining room with 6 square dining tables
+    covered with white tablecloths, each adorned with a single fresh red rose in a
+    vase, antique wooden window frames. Studio Ghibli style heartwarming 2D hand-drawn
+    animation, soft and smooth lines, low-saturation natural color palette, delicate
+    warm lighting and shadows, vintage rural texture. Cozy warm ambient light, tranquil
+    and serene atmosphere, highly detailed, intricate craftsmanship, sharp focus,
+    cinematic composition, masterpiece, ultra-detailed, professional hand-drawn illustration,
+    8K resolution
+  negative_prompt: 3D render, photorealistic, realistic photography, blurry, low resolution,
+    pixelated, distorted proportions, harsh shadows, bright neon colors, modern architectural
+    elements, messy interiors, ugly details, over-saturated colors, exaggerated non-Ghibli
+    cartoonish features, text, watermarks, grainy
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021768462355256e90bb41e29889bfd3490746bb2652e40ae1b0b_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260115%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260115T073246Z&X-Tos-Expires=86400&X-Tos-Signature=28ecb3ee375beef756db6a1d10cd820f34af08ed8bbe98a4babb36c9e6b90aef&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1307417720
+  style: null
+  created_at: '2026-01-15T15:32:42.932701'
+- id: 73b6f9ed
+  prompt: Deep in a larch forest, a vintage cream-colored Western-style mansion with
+    an intricately carved oval balcony on the second floor; blooming red rose beds
+    encircle the main entrance. Inside, dark red velvet carpets cover the floors,
+    and the dining hall features 6 square dining tables draped with white tablecloths,
+    each adorned with a single fresh red rose. Antique wooden window frames line the
+    walls. Studio Ghibli-style heartwarming 2D hand-drawn animation, soft and smooth
+    lines, low-saturation natural color palette, retro rural texture. Delicate warm
+    ambient lighting, cozy and tranquil atmosphere, gentle light and shadow transitions.
+    Highly detailed hand-painted art, cinematic composition, soft tactile textures,
+    sharp yet mellow outlines, professional animation illustration, high resolution
+  negative_prompt: 3D rendering, realistic photography, harsh contrast, bright neon
+    hues, modern architectural elements, cluttered interiors/exteriors, blurry details,
+    distorted proportions, rough jagged lines, over-saturated colors, flat lighting,
+    ugly, messy, text, watermarks
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/02176846229016453efce2506f8ba33cd433680ff709829c62631_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260115%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260115T073140Z&X-Tos-Expires=86400&X-Tos-Signature=4d197147305726db98033ecbfbf8978c0178e836933de5ae141ca4f52f032a75&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1475676906
+  style: null
+  created_at: '2026-01-15T15:31:37.349852'
+- id: 178727ec
+  prompt: 20-year-old young writer, thin-rimmed glasses, fair skin with a subtle haggard
+    look, eyes alternating between confused glints and bright sparks, slightly messy
+    tousled hair, wearing a faded off-white cotton shirt and navy blue jeans, carrying
+    a worn canvas tote bag, relaxed slouched posture, holding a tattered leather-bound
+    notebook, Studio Ghibli 2D hand-drawn animation style, soft fluid lines, low-saturation
+    natural color palette, delicate hand-painted textures, soft diffused afternoon
+    natural light, warm yet faintly melancholic healing atmosphere, subtle detailed
+    shadows, highly detailed, high resolution, crisp clean hand-drawn lines, cinematic
+    gentle lighting, professional hand-painted illustration quality
+  negative_prompt: 3D rendering, photorealistic, high saturation colors, rough jagged
+    lines, distorted facial features, blurry details, harsh contrast shadows, overexposed
+    lighting, cartoonish exaggeration, modern minimalist design, flat textures, plastic-like
+    materials
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021768459732686b9bcfeb8015686b01b555cb8b6882e453aa368_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260115%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260115T064906Z&X-Tos-Expires=86400&X-Tos-Signature=d22d62ddfe99ae5f01877390d3098f893268eddff0ebf6e1a5a890f980093f34&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1686115135
+  style: null
+  created_at: '2026-01-15T14:49:02.703551'
+- id: 6259702b
+  prompt: 10-year-old little boy with light brown messy hair, wearing blue hoodie
+    and faded washed-out jeans, energetic lively posture, healthy childlike appearance,
+    2D Japanese anime thick painting style, blending delicate scene texture of "Spirited
+    Away" and psychological thriller atmosphere of "Perfect Blue", split-screen composition,
+    bright warm-toned realistic scene on one half with cozy vibrant vibe, dim high-contrast
+    cool-toned fantasy scene on the other half with tense eerie undertones, dramatic
+    cinematic lighting, highly detailed, intricate texture details, sharp focus, smooth
+    brushstrokes, professional digital painting, vivid color grading, high definition
+  negative_prompt: low resolution, blurry, out of focus, distorted facial features,
+    bad anatomy, disproportionate body parts, flat lighting, dull colors, grainy texture,
+    messy lines, unrealistic proportions, extra limbs, missing fingers, cartoonish
+    simplification, ugly, deformed
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217682087723994a1893a7016da6ddb77c20742a6044e986b89a_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260112%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260112T090622Z&X-Tos-Expires=86400&X-Tos-Signature=305907c931e0fcba1651acd192bf357f5418ff57f93e54cdb08b3c43073584f4&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_8036d120
+  model: ep-20260107170506-p4w79
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 476616072
+  style: null
+  created_at: '2026-01-12T17:06:20.750421'
 - id: 3cd95b6c
   prompt: 5-year-old little girl named Duoduo, black pigtails with light pink bows
     at the ends, round chubby cheeks, big sparkling eyes, small round nose, slight
@@ -131,4 +290,4 @@ images:
   seed: 1545869874
   style: ''
   created_at: '2026-01-07T17:35:45.571061'
-updated_at: '2026-01-09T14:03:11.125989'
+updated_at: '2026-01-15T16:12:28.342405'

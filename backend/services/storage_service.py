@@ -19,6 +19,8 @@ SETTINGS_TEMPLATE_FILE = os.path.join(DATA_DIR, "settings.yaml")
 SETTINGS_LOCAL_FILE = os.path.join(DATA_DIR, "settings.local.yaml")
 CUSTOM_PROVIDERS_TEMPLATE_FILE = os.path.join(DATA_DIR, "custom_providers.yaml")
 CUSTOM_PROVIDERS_LOCAL_FILE = os.path.join(DATA_DIR, "custom_providers.local.yaml")
+PROMPTS_TEMPLATE_FILE = os.path.join(DATA_DIR, "prompts.yaml")
+PROMPTS_LOCAL_FILE = os.path.join(DATA_DIR, "prompts.local.yaml")
 
 # 确保目录存在
 for d in [DATA_DIR, PROJECTS_DIR, SCRIPTS_DIR, IMAGES_DIR, CHAT_DIR, EXPORT_DIR]:
@@ -65,6 +67,17 @@ class StorageService:
         if os.path.exists(SETTINGS_TEMPLATE_FILE):
             return _load_yaml(SETTINGS_TEMPLATE_FILE)
         return None
+
+    # ==================== Prompt 配置管理 ====================
+
+    def _prompts_file(self) -> str:
+        if os.path.exists(PROMPTS_LOCAL_FILE):
+            return PROMPTS_LOCAL_FILE
+        return PROMPTS_TEMPLATE_FILE
+
+    def get_prompts(self) -> Dict[str, Any]:
+        """获取提示词配置（system prompt / templates）。"""
+        return _load_yaml(self._prompts_file())
     
     # ==================== 自定义配置预设管理 ====================
     

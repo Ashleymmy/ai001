@@ -1,10 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
-  FileText,
-  Image,
-  Film,
-  Video,
   ArrowLeft,
   Clock,
   History,
@@ -17,55 +13,14 @@ import {
   Layout,
   MoreHorizontal,
   Trash2,
-  Settings
+  Settings,
+  Film
 } from 'lucide-react'
 import { useProjectStore } from '../store/projectStore'
 import { getProjectHistory } from '../services/api'
-
-interface HistoryItem {
-  action: string
-  timestamp: string
-  data?: unknown
-}
-
-const MODULE_CARDS = [
-  {
-    id: 'script',
-    name: '剧本创作',
-    description: '创作和编辑剧本、故事大纲',
-    icon: FileText,
-    gradient: 'from-violet-500 to-purple-400',
-    shadow: 'shadow-violet-500/30',
-    path: '/script'
-  },
-  {
-    id: 'image',
-    name: '图像生成',
-    description: '生成和编辑 AI 图像',
-    icon: Image,
-    gradient: 'from-pink-500 to-rose-400',
-    shadow: 'shadow-pink-500/30',
-    path: '/image'
-  },
-  {
-    id: 'storyboard',
-    name: '分镜制作',
-    description: '将剧本转化为分镜画面',
-    icon: Film,
-    gradient: 'from-orange-500 to-amber-400',
-    shadow: 'shadow-orange-500/30',
-    pathWithId: true
-  },
-  {
-    id: 'video',
-    name: '视频生成',
-    description: '将分镜图片生成视频',
-    icon: Video,
-    gradient: 'from-emerald-500 to-teal-400',
-    shadow: 'shadow-emerald-500/30',
-    path: '/video'
-  }
-]
+import { MODULE_CARDS } from '../shared/moduleCards'
+import type { HistoryItem } from '../features/project/types'
+import { formatTime, getActionText } from '../features/project/utils'
 
 export default function ProjectPage() {
   const location = useLocation()
@@ -126,44 +81,20 @@ export default function ProjectPage() {
     if (!currentProject) return
     if (confirm('确定要删除这个项目吗？此操作不可恢复。')) {
       await deleteProject(currentProject.id)
-      navigate('/')
+      navigate('/home')
     }
   }
 
-  const formatTime = (isoString: string) => {
-    const date = new Date(isoString)
-    return date.toLocaleString('zh-CN', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    })
-  }
-
-  const getActionText = (action: string) => {
-    const map: Record<string, string> = {
-      'created': '创建项目',
-      'updated': '更新项目',
-      'storyboard_added': '添加分镜',
-      'storyboard_updated': '更新分镜',
-      'storyboard_deleted': '删除分镜',
-      'script_updated': '更新剧本',
-      'style_changed': '修改风格',
-      'reference_updated': '更新参考图'
-    }
-    return map[action] || action
-  }
-
-  const navigateToModule = (module: typeof MODULE_CARDS[0]) => {
+  const navigateToModule = (module: (typeof MODULE_CARDS)[0]) => {
     // 所有模块都带上项目ID，方便返回
     if (module.id === 'storyboard') {
-      navigate(`/storyboard/${projectId}`)
+      navigate(`/home/storyboard/${projectId}`)
     } else if (module.id === 'script') {
-      navigate(`/script?project=${projectId}`)
+      navigate(`/home/script?project=${projectId}`)
     } else if (module.id === 'image') {
-      navigate(`/image?project=${projectId}`)
+      navigate(`/home/image?project=${projectId}`)
     } else if (module.id === 'video') {
-      navigate(`/video?project=${projectId}`)
+      navigate(`/home/video?project=${projectId}`)
     }
   }
 
@@ -183,7 +114,7 @@ export default function ProjectPage() {
       <div className="h-full flex items-center justify-center">
         <div className="text-center">
           <p className="text-gray-400 mb-4">项目不存在或已被删除</p>
-          <button onClick={() => navigate('/')} className="btn-primary">
+          <button onClick={() => navigate('/home')} className="btn-primary">
             返回首页
           </button>
         </div>
@@ -197,7 +128,7 @@ export default function ProjectPage() {
       <div className="flex items-center justify-between px-6 py-4 glass-dark border-b border-white/5">
         <div className="flex items-center gap-4">
           <button
-            onClick={() => navigate('/')}
+            onClick={() => navigate('/home')}
             className="p-2 hover:bg-white/10 rounded-xl transition-all"
           >
             <ArrowLeft size={20} />
@@ -280,7 +211,7 @@ export default function ProjectPage() {
                   <button
                     onClick={() => {
                       setShowMenu(false)
-                      navigate('/settings')
+                      navigate('/home/settings')
                     }}
                     className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-white/10 text-left text-sm"
                   >

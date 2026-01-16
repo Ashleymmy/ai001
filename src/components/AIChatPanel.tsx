@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { MessageCircle, X, Bot, User, Loader2, Minimize2 } from 'lucide-react'
-import { chatWithAI, stopChatGeneration } from '../services/api'
+import { MessageCircle, X, User, Loader2, Minimize2 } from 'lucide-react'
+import { agentChat } from '../services/api'
 import ChatInput from './ChatInput'
 
 interface Message {
@@ -16,7 +16,7 @@ export default function AIChatPanel() {
     {
       id: '1',
       role: 'assistant',
-      content: '你好！我是你的创意助手 ✨\n\n有什么我可以帮助你的吗？'
+      content: '你好！我是 YuanYuan，你的创意助手 ✨\n\n有什么我可以帮助你的吗？'
     }
   ])
   const [input, setInput] = useState('')
@@ -105,7 +105,6 @@ export default function AIChatPanel() {
   }, [isDragging, clampPosition])
 
   const handleStop = () => {
-    stopChatGeneration()
     setIsLoading(false)
   }
 
@@ -122,11 +121,11 @@ export default function AIChatPanel() {
     setIsLoading(true)
 
     try {
-      const response = await chatWithAI(input, '创意助手模式')
+      const response = await agentChat(input, undefined, { assistant_mode: 'manager' })
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: response
+        content: response.content || ''
       }
       setMessages(prev => [...prev, assistantMessage])
     } catch (error: unknown) {
@@ -180,11 +179,13 @@ export default function AIChatPanel() {
         onClick={() => !isDragging && setIsMinimized(false)}
         onMouseDown={handleDragStart}
       >
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 via-indigo-500 to-purple-500 flex items-center justify-center shadow-lg shadow-indigo-500/30">
-          <Bot size={20} className="text-white drop-shadow-md" strokeWidth={2.5} />
-        </div>
+        <img
+          src="/yuanyuan/avatar.png"
+          alt="YuanYuan"
+          className="w-10 h-10 rounded-xl shadow-lg shadow-pink-500/30 object-cover"
+        />
         <div>
-          <p className="text-sm font-medium">创意助手</p>
+          <p className="text-sm font-medium">YuanYuan</p>
           <p className="text-xs text-gray-500">点击展开</p>
         </div>
         <button
@@ -213,11 +214,13 @@ export default function AIChatPanel() {
         onMouseDown={handleDragStart}
       >
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 via-indigo-500 to-purple-500 flex items-center justify-center shadow-lg shadow-indigo-500/30">
-            <Bot size={20} className="text-white drop-shadow-md" strokeWidth={2.5} />
-          </div>
+          <img
+            src="/yuanyuan/avatar.png"
+            alt="YuanYuan"
+            className="w-10 h-10 rounded-xl shadow-lg shadow-pink-500/30 object-cover"
+          />
           <div>
-            <h3 className="font-semibold">创意助手</h3>
+            <h3 className="font-semibold">YuanYuan</h3>
             <p className="text-xs text-gray-500">随时为你提供灵感</p>
           </div>
         </div>
@@ -246,13 +249,13 @@ export default function AIChatPanel() {
             style={{ animationDelay: `${index * 0.05}s` }}
           >
             <div className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 ${
-              msg.role === 'user' 
-                ? 'bg-primary/20' 
-                : 'gradient-primary'
+              msg.role === 'user'
+                ? 'bg-primary/20'
+                : ''
             }`}>
-              {msg.role === 'user' 
-                ? <User size={14} className="text-primary" /> 
-                : <Bot size={14} className="text-white" />
+              {msg.role === 'user'
+                ? <User size={14} className="text-primary" />
+                : <img src="/yuanyuan/avatar-small.png" alt="YuanYuan" className="w-8 h-8 rounded-xl object-cover" />
               }
             </div>
             <div className={`max-w-[80%] px-4 py-3 rounded-2xl text-sm ${
@@ -266,13 +269,15 @@ export default function AIChatPanel() {
         ))}
         {isLoading && (
           <div className="flex gap-3 animate-fadeIn">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-blue-500 via-indigo-500 to-purple-500 flex items-center justify-center shadow-md">
-              <Bot size={14} className="text-white drop-shadow" strokeWidth={2.5} />
-            </div>
+            <img
+              src="/yuanyuan/thinking.png"
+              alt="思考中"
+              className="w-8 h-8 rounded-xl object-cover animate-pulse"
+            />
             <div className="px-4 py-3 glass rounded-2xl rounded-tl-md">
               <div className="flex items-center gap-2">
-                <Loader2 size={14} className="animate-spin text-primary" />
-                <span className="text-sm text-gray-400">思考中...</span>
+                <Loader2 size={14} className="animate-spin text-pink-400" />
+                <span className="text-sm text-gray-400">YuanYuan 思考中...</span>
               </div>
             </div>
           </div>
