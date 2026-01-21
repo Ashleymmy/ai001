@@ -107,17 +107,28 @@ class AgentProject:
     @classmethod
     def from_dict(cls, data: Dict) -> "AgentProject":
         """从字典创建"""
-        project = cls(data.get("id"))
-        project.name = data.get("name", "未命名项目")
-        project.creative_brief = data.get("creative_brief", {})
-        project.elements = data.get("elements", {})
-        project.segments = data.get("segments", [])
-        project.visual_assets = data.get("visual_assets", [])
-        project.audio_assets = data.get("audio_assets", [])
-        project.timeline = data.get("timeline", [])
-        project.messages = data.get("messages", [])
-        project.agent_memory = data.get("agent_memory", [])
-        project.created_at = data.get("created_at", datetime.now().isoformat())
-        project.updated_at = data.get("updated_at", datetime.now().isoformat())
+        if not isinstance(data, dict):
+            data = {}
+
+        project = cls(data.get("id") if isinstance(data.get("id"), str) and data.get("id") else None)
+
+        name = data.get("name")
+        project.name = name if isinstance(name, str) and name.strip() else "未命名项目"
+
+        project.creative_brief = data.get("creative_brief") if isinstance(data.get("creative_brief"), dict) else {}
+        project.elements = data.get("elements") if isinstance(data.get("elements"), dict) else {}
+        project.segments = data.get("segments") if isinstance(data.get("segments"), list) else []
+
+        project.visual_assets = data.get("visual_assets") if isinstance(data.get("visual_assets"), list) else []
+        project.audio_assets = data.get("audio_assets") if isinstance(data.get("audio_assets"), list) else []
+        project.timeline = data.get("timeline") if isinstance(data.get("timeline"), list) else []
+
+        project.messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+        project.agent_memory = data.get("agent_memory") if isinstance(data.get("agent_memory"), list) else []
+
+        created_at = data.get("created_at")
+        updated_at = data.get("updated_at")
+        project.created_at = created_at if isinstance(created_at, str) and created_at.strip() else datetime.now().isoformat()
+        project.updated_at = updated_at if isinstance(updated_at, str) and updated_at.strip() else datetime.now().isoformat()
         return project
 

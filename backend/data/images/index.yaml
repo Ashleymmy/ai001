@@ -1,4 +1,28 @@
 images:
+- id: aff77227
+  prompt: 8-year-old cute gentle-looking blonde boy with soft wavy hair, clear bright
+    eyes blending innocence and quiet melancholy, wearing a sky-blue waist trench
+    coat with gold trim, white knit scarf, brown leather ankle boots, posing with
+    either hands tucked into coat pockets or knees hugged to chest, 2D hand-drawn
+    anime style, inspired by Hayao Miyazaki's soft color palette and French fairy
+    tale delicate line art, low-saturated macaron color tones, smooth hand-drawn texture,
+    warm soft diffused golden hour light, dreamy nostalgic atmosphere, subtle bokeh
+    background with tiny star-like glimmers, highly detailed, sharp clean line art,
+    vibrant yet muted colors, cinematic composition, professional digital painting,
+    8k resolution, ultra-detailed, intricate costume details, gentle expressive features
+  negative_prompt: 3D rendering, photorealistic, harsh shadows, over-saturated colors,
+    distorted body proportions, blurry edges, messy lines, text, watermarks, ugly
+    facial features, deformed limbs, noisy grainy background, over-exposed areas,
+    exaggerated cartoonish features that break fairy tale tone
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/02176898507038813d48c4760d2f20ff0aabc46dcd14fa8c4c763_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260121%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260121T084446Z&X-Tos-Expires=86400&X-Tos-Signature=098bb11b75cf2b4d7a8a4318397903d621f544e861fbac277d7fe512e29ad4b7&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1561521541
+  style: null
+  created_at: '2026-01-21T16:44:45.667139'
 - id: ac752738
   prompt: Kitamura Haru, gentle junior high school boy with neat short black hair
     and a soft warm smile, wearing classic Japanese navy blue school uniform with
@@ -290,4 +314,4 @@ images:
   seed: 1545869874
   style: ''
   created_at: '2026-01-07T17:35:45.571061'
-updated_at: '2026-01-15T16:12:28.342405'
+updated_at: '2026-01-21T16:44:45.667139'

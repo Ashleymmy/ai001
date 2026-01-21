@@ -121,7 +121,10 @@ export default function AIChatPanel() {
     setIsLoading(true)
 
     try {
-      const response = await agentChat(input, undefined, { assistant_mode: 'manager' })
+      const response = await agentChat(input, undefined, {
+        assistant_mode: 'manager',
+        chat_history: messages.slice(-20).map((m) => ({ role: m.role, content: m.content }))
+      })
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',

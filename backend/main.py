@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
 from typing import Optional, List, Dict, Any
@@ -28,7 +28,12 @@ from services.tts_service import (
     VolcTTSService,
 )
 
-app = FastAPI(title="AI Storyboarder Backend")
+
+class UTF8JSONResponse(JSONResponse):
+    media_type = "application/json; charset=utf-8"
+
+
+app = FastAPI(title="AI Storyboarder Backend", default_response_class=UTF8JSONResponse)
 
 app.add_middleware(
     CORSMiddleware,
@@ -159,7 +164,7 @@ class SettingsRequest(BaseModel):
     storyboard: Optional[ModelConfig] = None
     video: ModelConfig
     local: LocalConfig
-    tts: Optional[TTSConfig] = None
+    tts: Optional["TTSConfig"] = None
 
 
 class TestConnectionRequest(BaseModel):
@@ -2218,13 +2223,29 @@ async def agent_chat(request: AgentChatRequest):
     
     # 构建上下文
     context = request.context or {}
+    if not isinstance(context, dict):
+        context = {}
     project_data = None
     if request.projectId:
         # 加载项目数据作为上下文
         project_data = storage.get_agent_project(request.projectId)
         if project_data:
             context["project"] = project_data
-    
+
+    # 兼容“未保存项目”场景：前端会传 elements/segments，但没有 projectId。
+    if not project_data and "project" not in context:
+        elements = context.get("elements")
+        segments = context.get("segments")
+        if isinstance(elements, dict) or isinstance(segments, list):
+            context["project"] = {
+                "id": "unsaved",
+                "name": "unsaved",
+                "creative_brief": context.get("creative_brief") or context.get("creativeBrief") or {},
+                "elements": elements if isinstance(elements, dict) else {},
+                "segments": segments if isinstance(segments, list) else [],
+                "updated_at": datetime.utcnow().isoformat() + "Z",
+            }
+     
     result = await service.chat(request.message, context)
 
     # 将对话写入项目的 agent_memory，供后续“基于上下文回答”使用（减少幻觉）
@@ -2644,11 +2665,15 @@ async def favorite_element_image(project_id: str, element_id: str, request: Favo
         raise HTTPException(status_code=404, detail="元素不存在")
     
     # 获取图片历史
-    image_history = element.get("image_history", [])
+    image_history = element.get("image_history") or []
+    if not isinstance(image_history, list):
+        image_history = []
     
     # 找到要收藏的图片
     target_image = None
     for img in image_history:
+        if not isinstance(img, dict):
+            continue
         if img.get("id") == request.imageId:
             target_image = img
             img["is_favorite"] = True
@@ -2683,7 +2708,11 @@ async def favorite_shot_image(project_id: str, shot_id: str, request: FavoriteIm
     # 在所有段落中查找镜头
     target_shot = None
     for segment in project.segments:
-        for shot in segment.get("shots", []):
+        if not isinstance(segment, dict):
+            continue
+        for shot in (segment.get("shots") or []):
+            if not isinstance(shot, dict):
+                continue
             if shot.get("id") == shot_id:
                 target_shot = shot
                 break
@@ -2694,11 +2723,15 @@ async def favorite_shot_image(project_id: str, shot_id: str, request: FavoriteIm
         raise HTTPException(status_code=404, detail="镜头不存在")
     
     # 获取图片历史
-    image_history = target_shot.get("start_image_history", [])
+    image_history = target_shot.get("start_image_history") or []
+    if not isinstance(image_history, list):
+        image_history = []
     
     # 找到要收藏的图片
     target_image = None
     for img in image_history:
+        if not isinstance(img, dict):
+            continue
         if img.get("id") == request.imageId:
             target_image = img
             img["is_favorite"] = True
@@ -2990,8 +3023,15 @@ async def generate_project_frames_stream(
         # 收集所有镜头
         all_shots = []
         for segment in project.segments:
-            for shot in segment.get("shots", []):
-                all_shots.append((segment["id"], shot))
+            if not isinstance(segment, dict):
+                continue
+            seg_id = segment.get("id") if isinstance(segment.get("id"), str) else ""
+            shots = segment.get("shots") or []
+            if not isinstance(shots, list):
+                continue
+            for shot in shots:
+                if isinstance(shot, dict) and isinstance(shot.get("id"), str) and shot.get("id"):
+                    all_shots.append((seg_id, shot))
 
         total = len(all_shots)
         generated = 0
@@ -3004,18 +3044,20 @@ async def generate_project_frames_stream(
         for i, (segment_id, shot) in enumerate(all_shots):
             current = i + 1
             overall_percent = int((current / total) * 100) if total > 0 else 100
+            shot_id = shot.get("id")
+            shot_name = shot.get("name", "") if isinstance(shot.get("name"), str) else ""
 
             # 显式排除的镜头：无论是否已有起始帧都跳过（用于“除第一张外生成”等场景）
-            if shot.get("id") in excluded_shot_ids:
+            if shot_id in excluded_shot_ids:
                 skipped += 1
-                yield f"data: {json.dumps({'type': 'skip', 'shot_id': shot['id'], 'shot_name': shot.get('name', ''), 'current': current, 'total': total, 'percent': overall_percent, 'reason': 'excluded'})}\n\n"
+                yield f"data: {json.dumps({'type': 'skip', 'shot_id': shot_id, 'shot_name': shot_name, 'current': current, 'total': total, 'percent': overall_percent, 'reason': 'excluded'})}\n\n"
                 continue
 
             # 跳过已有起始帧的镜头
             existing_url = shot.get("start_image_url")
             if (not regenerate) and existing_url and executor._should_skip_existing_image(existing_url):
                 skipped += 1
-                yield f"data: {json.dumps({'type': 'skip', 'shot_id': shot['id'], 'shot_name': shot.get('name', ''), 'current': current, 'total': total, 'percent': overall_percent, 'reason': 'already_has_frame'})}\n\n"
+                yield f"data: {json.dumps({'type': 'skip', 'shot_id': shot_id, 'shot_name': shot_name, 'current': current, 'total': total, 'percent': overall_percent, 'reason': 'already_has_frame'})}\n\n"
                 continue
 
             try:
@@ -3041,10 +3083,12 @@ async def generate_project_frames_stream(
                         pass
 
                 # 发送生成中事件
-                yield f"data: {json.dumps({'type': 'generating', 'shot_id': shot['id'], 'shot_name': shot.get('name', ''), 'current': current, 'total': total, 'percent': overall_percent, 'stage': 'prompt'})}\n\n"
+                yield f"data: {json.dumps({'type': 'generating', 'shot_id': shot_id, 'shot_name': shot_name, 'current': current, 'total': total, 'percent': overall_percent, 'stage': 'prompt'})}\n\n"
 
                 # 解析元素引用，构建完整提示词
-                prompt = shot.get("prompt", shot.get("description", ""))
+                prompt = shot.get("prompt") if isinstance(shot.get("prompt"), str) else ""
+                if not prompt.strip():
+                    prompt = shot.get("description") if isinstance(shot.get("description"), str) else ""
                 resolved_prompt = executor._resolve_element_references(prompt, project.elements)
 
                 # 收集镜头中涉及的角色参考图
@@ -3057,7 +3101,7 @@ async def generate_project_frames_stream(
                 full_prompt = f"{resolved_prompt}, {character_consistency}, {visualStyle}, cinematic composition, consistent character design, same art style throughout, high quality, detailed"
 
                 # 发送图片生成阶段事件
-                yield f"data: {json.dumps({'type': 'generating', 'shot_id': shot['id'], 'shot_name': shot.get('name', ''), 'current': current, 'total': total, 'percent': overall_percent, 'stage': 'image', 'reference_count': len(reference_images)})}\n\n"
+                yield f"data: {json.dumps({'type': 'generating', 'shot_id': shot_id, 'shot_name': shot_name, 'current': current, 'total': total, 'percent': overall_percent, 'stage': 'image', 'reference_count': len(reference_images)})}\n\n"
 
                 # 生成图片
                 image_result = await executor.image_service.generate(
@@ -3110,7 +3154,7 @@ async def generate_project_frames_stream(
                 generated += 1
 
                 # 发送完成事件
-                yield f"data: {json.dumps({'type': 'complete', 'shot_id': shot['id'], 'shot_name': shot.get('name', ''), 'image_url': display_url, 'source_url': source_url, 'image_id': image_id, 'current': current, 'total': total, 'generated': generated, 'percent': overall_percent})}\n\n"
+                yield f"data: {json.dumps({'type': 'complete', 'shot_id': shot_id, 'shot_name': shot_name, 'image_url': display_url, 'source_url': source_url, 'image_id': image_id, 'current': current, 'total': total, 'generated': generated, 'percent': overall_percent})}\n\n"
 
             except Exception as e:
                 failed += 1
@@ -3120,7 +3164,7 @@ async def generate_project_frames_stream(
                     storage.save_agent_project(project.to_dict())
                 except Exception:
                     pass
-                yield f"data: {json.dumps({'type': 'error', 'shot_id': shot['id'], 'shot_name': shot.get('name', ''), 'error': str(e), 'current': current, 'total': total, 'percent': overall_percent})}\n\n"
+                yield f"data: {json.dumps({'type': 'error', 'shot_id': shot_id, 'shot_name': shot_name, 'error': str(e), 'current': current, 'total': total, 'percent': overall_percent})}\n\n"
 
         # 发送结束事件
         yield f"data: {json.dumps({'type': 'done', 'generated': generated, 'failed': failed, 'skipped': skipped, 'total': total, 'percent': 100})}\n\n"

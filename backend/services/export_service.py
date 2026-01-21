@@ -79,12 +79,13 @@ class ExportService:
             failed_count = 0
             failed_records: List[Dict[str, str]] = []
             for elem_id, elem in elements.items():
-                if elem.get('image_url'):
+                element_url = elem.get("cached_image_url") or elem.get("image_url")
+                if element_url:
                     safe_name = sanitize_filename(elem.get('name', elem_id), fallback=str(elem_id))
-                    filename = f"{safe_name}{infer_ext(elem['image_url'], '.png')}"
+                    filename = f"{safe_name}{infer_ext(str(element_url), '.png')}"
                     filepath = os.path.join(elements_dir, filename)
                     try:
-                        await self._download_file(elem['image_url'], filepath)
+                        await self._download_file(str(element_url), filepath)
                         element_count += 1
                         print(f"[ExportService] 已下载角色: {filename}")
                     except Exception as e:
@@ -92,7 +93,7 @@ class ExportService:
                         failed_records.append({
                             "type": "element",
                             "name": str(elem.get("name") or elem_id),
-                            "url": str(elem.get("image_url") or ""),
+                            "url": str(element_url or ""),
                             "error": str(e),
                         })
                         print(f"[ExportService] 角色下载失败: {filename} ({e})")
@@ -109,7 +110,11 @@ class ExportService:
                     unique_suffix = f"_{shot_id}" if shot_id and shot_id not in safe_shot_name else ""
                     
                     # 起始帧
-                    start_frame_url = shot.get('start_image_url') or shot.get('start_frame_url')
+                    start_frame_url = (
+                        shot.get("cached_start_image_url")
+                        or shot.get("start_image_url")
+                        or shot.get("start_frame_url")
+                    )
                     if start_frame_url:
                         filename = f"{safe_shot_name}{unique_suffix}_frame{infer_ext(start_frame_url, '.png')}"
                         filepath = os.path.join(frames_dir, filename)

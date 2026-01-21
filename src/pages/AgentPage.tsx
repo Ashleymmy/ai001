@@ -358,14 +358,79 @@ export default function AgentPage() {
     }
   }, [sessionId, urlProjectId])
 
+  const resetAgentWorkspace = useCallback((options?: { showProjectList?: boolean }) => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+      abortControllerRef.current = null
+    }
+    if (generationCancelRef.current) {
+      generationCancelRef.current()
+      generationCancelRef.current = null
+    }
+
+    setSending(false)
+    setGenerationProgress(null)
+    setGenerationStage('idle')
+
+    setProjectId(null)
+    setProjectName('未命名项目')
+    setElements({})
+    setSegments([])
+    setCreativeBrief({})
+    setVisualAssets([])
+    setAudioAssets([])
+    setHasUnsavedChanges(false)
+
+    setShowExitDialog(false)
+    setWaitingForConfirm(null)
+    setInputMessage('')
+    setUploadedFiles([])
+
+    setActiveModule('elements')
+    setExpandedCards(new Set(['brief']))
+    setExpandedElements(new Set())
+    setExpandedSegments(new Set())
+    setPreviewImage(null)
+
+    setImportElementsOpen(false)
+    setImportSourceProjectId(null)
+    setImportSourceProject(null)
+    setImportSelectedElementIds(new Set())
+    setImportingElements(false)
+    setImportElementQuery('')
+    setImportElementTypeFilter('all')
+    setImportElementShowOnlyMissing(false)
+    setImportElementShowOnlyConflicts(false)
+
+    setImportShotRefsOpen(false)
+    setImportShotRefsTargetShotId(null)
+    setImportShotRefsSourceProjectId(null)
+    setImportShotRefsSourceProject(null)
+    setImportShotRefsSelectedUrls(new Set())
+    setImportingShotRefs(false)
+
+    setIsScriptDoctoring(false)
+    setIsCompletingAssets(false)
+    setIsAudioChecking(false)
+
+    if (options?.showProjectList ?? true) {
+      setShowProjectList(true)
+    }
+  }, [])
+
   // 记录来源项目 ID（如果是从普通项目进入的）
 
   useEffect(() => {
     if (urlProjectId) {
       loadProject(urlProjectId)
       setShowProjectList(false)
+      return
     }
-  }, [urlProjectId])
+
+    // Switching back to `/agent` (no projectId): avoid keeping stale state from the
+    // previously opened project, otherwise a "new" project can inherit old content.
+    resetAgentWorkspace({ showProjectList: true })
+  }, [urlProjectId, resetAgentWorkspace])
 
   // Auto-poll backend to update video_url for shots that are still processing.
   useEffect(() => {
@@ -462,6 +527,14 @@ export default function AgentPage() {
          (error as { response?: { status?: number } }).response?.status === 404)
       
       if (isNotFound && urlProjectId) {
+        if (urlProjectId.startsWith('agent_')) {
+          console.log('[Agent] Agent project not found:', urlProjectId)
+          resetAgentWorkspace({ showProjectList: true })
+          navigate('/agent', { replace: true })
+          addMessage('assistant', '⚠️ 该 Agent 项目不存在或已被删除，已返回项目列表。')
+          return null
+        }
+
         console.log('[Agent] 项目不存在，可能是从普通项目进入，开始新的 Agent 项目')
         // 记录来源项目 ID，以便后续关联
         // 清除 projectId，让用户开始新项目
@@ -734,7 +807,19 @@ export default function AgentPage() {
       }
 
       type AgentAction =
-        | { type: 'update_shot'; shot_id: string; patch: { prompt?: string; description?: string; narration?: string }; reason?: string }
+        | {
+            type: 'update_shot'
+            shot_id: string
+            patch: {
+              prompt?: string
+              video_prompt?: string
+              description?: string
+              narration?: string
+              dialogue_script?: string
+              duration?: number
+            }
+            reason?: string
+          }
         | { type: 'regenerate_shot_frame'; shot_id: string; visualStyle?: string }
         | { type: 'update_element'; element_id: string; patch: { description?: string }; reason?: string }
 
@@ -754,7 +839,10 @@ export default function AgentPage() {
           a.patch &&
           typeof a.patch.prompt === 'string' &&
           !('description' in a.patch) &&
-          !('narration' in a.patch)
+          !('narration' in a.patch) &&
+          !('video_prompt' in a.patch) &&
+          !('dialogue_script' in a.patch) &&
+          !('duration' in a.patch)
         )
 
       // 安全阈值：默认只允许一次修改聚焦一个目标；但允许“批量只改 shot.prompt”
@@ -786,7 +874,7 @@ export default function AgentPage() {
       const updateShotInSegments = (
         segs: AgentSegment[],
         shotId: string,
-        patch: { prompt?: string; description?: string; narration?: string }
+        patch: { prompt?: string; video_prompt?: string; description?: string; narration?: string; dialogue_script?: string; duration?: number }
       ): AgentSegment[] => {
         return segs.map(seg => ({
           ...seg,
@@ -795,8 +883,13 @@ export default function AgentPage() {
             return {
               ...shot,
               ...(typeof patch.prompt === 'string' ? { prompt: patch.prompt } : {}),
+              ...(typeof patch.video_prompt === 'string' ? { video_prompt: patch.video_prompt } : {}),
               ...(typeof patch.description === 'string' ? { description: patch.description } : {}),
-              ...(typeof patch.narration === 'string' ? { narration: patch.narration } : {})
+              ...(typeof patch.narration === 'string' ? { narration: patch.narration } : {}),
+              ...(typeof patch.dialogue_script === 'string' ? { dialogue_script: patch.dialogue_script } : {}),
+              ...(typeof patch.duration === 'number' && Number.isFinite(patch.duration) && patch.duration > 0
+                ? { duration: patch.duration }
+                : {})
             }
           })
         }))
@@ -994,13 +1087,17 @@ export default function AgentPage() {
       
       // 检测是否是创作请求（仅在“尚未有分镜结构”时触发，避免把“生成起始帧/重生成/提示词修改”等误判为新项目规划）
       const hasStoryboardStructure = segments.length > 0 || Object.keys(elements).length > 0
+      const looksLikeVideoBrief =
+        /时长|分钟|秒|画风|风格|2d|3d|动漫|动画|短片|视频|故事|剧情|广告|宣传|教程|科普/i.test(userMsg) ||
+        /\d+(?:\.\d+)?\s*(?:min|s)\b/i.test(userMsg.trim().toLowerCase())
       const isCreationRequest =
         !hasStoryboardStructure &&
         (userMsg.includes('制作') ||
           userMsg.includes('创建') ||
           userMsg.includes('做一个') ||
           // “生成”太泛：仅在明确“生成一个视频/短片/动画”等场景下才当作创作请求
-          (userMsg.includes('生成') && (userMsg.includes('视频') || userMsg.includes('短片') || userMsg.includes('动画'))))
+          (userMsg.includes('生成') && (userMsg.includes('视频') || userMsg.includes('短片') || userMsg.includes('动画'))) ||
+          looksLikeVideoBrief)
 
       if (isCreationRequest) {
         setGenerationStage('planning')
@@ -1151,11 +1248,19 @@ ${plan.elements.map(e => `- ${e.name} (${e.type})`).join('\n')}
           ])
         } else {
           setGenerationStage('idle')
-          const result = await agentChat(userMsg, projectId || undefined, { elements, segments })
+          const result = await agentChat(userMsg, projectId || undefined, {
+            elements,
+            segments,
+            chat_history: messages.slice(-20).map((m) => ({ role: m.role, content: m.content }))
+          })
           addMessage('assistant', result.content, result.data, result.options, result.confirmButton, result.progress)
         }
       } else {
-        const result = await agentChat(userMsg, projectId || undefined, { elements, segments })
+        const result = await agentChat(userMsg, projectId || undefined, {
+          elements,
+          segments,
+          chat_history: messages.slice(-20).map((m) => ({ role: m.role, content: m.content }))
+        })
         addMessage('assistant', result.content, result.data, result.options, result.confirmButton, result.progress)
       }
     } catch (error: unknown) {
