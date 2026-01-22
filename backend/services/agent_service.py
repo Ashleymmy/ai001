@@ -64,7 +64,7 @@ ELEMENT_PROMPT_TEMPLATE = """请为以下角色/元素生成详细的图像生�
 
 输出格式：
 ```json
-{{
+{{ 
   "prompt": "英文提示词",
   "negative_prompt": "负面提示词",
   "recommended_resolution": "推荐分辨率"
@@ -471,13 +471,125 @@ class AgentService:
         def try_load(raw: str) -> Optional[Any]:
             if not isinstance(raw, str):
                 return None
-            s = raw.strip()
+            s = raw.strip().lstrip("\ufeff")
             if not s:
                 return None
             try:
                 return json.loads(s)
             except Exception:
+                pass
+
+            # Best-effort repair for common "JSON-like" outputs from LLMs
+            # (e.g. semicolons, trailing commas, comments, smart quotes).
+            def repair_jsonish(text: str) -> str:
+                t = (text or "").strip().lstrip("\ufeff")
+                if not t:
+                    return t
+
+                # normalize smart quotes
+                t = (
+                    t.replace("“", '"')
+                    .replace("”", '"')
+                    .replace("„", '"')
+                    .replace("‟", '"')
+                    .replace("’", "'")
+                    .replace("‘", "'")
+                )
+
+                # remove comments and replace separators outside of strings
+                out: List[str] = []
+                i = 0
+                in_str = False
+                escape = False
+                while i < len(t):
+                    ch = t[i]
+                    if in_str:
+                        out.append(ch)
+                        if escape:
+                            escape = False
+                        elif ch == "\\":
+                            escape = True
+                        elif ch == '"':
+                            in_str = False
+                        i += 1
+                        continue
+
+                    if ch == '"':
+                        in_str = True
+                        out.append(ch)
+                        i += 1
+                        continue
+
+                    # line comment: //
+                    if ch == "/" and i + 1 < len(t) and t[i + 1] == "/":
+                        i += 2
+                        while i < len(t) and t[i] not in ("\n", "\r"):
+                            i += 1
+                        continue
+
+                    # block comment: /* ... */
+                    if ch == "/" and i + 1 < len(t) and t[i + 1] == "*":
+                        i += 2
+                        while i + 1 < len(t) and not (t[i] == "*" and t[i + 1] == "/"):
+                            i += 1
+                        i += 2 if i + 1 < len(t) else 0
+                        continue
+
+                    # treat semicolons as commas (common in JS-like object output)
+                    if ch in (";", "；"):
+                        out.append(",")
+                        i += 1
+                        continue
+
+                    out.append(ch)
+                    i += 1
+
+                t = "".join(out)
+
+                # remove trailing commas before } or ]
+                out2: List[str] = []
+                i = 0
+                in_str = False
+                escape = False
+                while i < len(t):
+                    ch = t[i]
+                    if in_str:
+                        out2.append(ch)
+                        if escape:
+                            escape = False
+                        elif ch == "\\":
+                            escape = True
+                        elif ch == '"':
+                            in_str = False
+                        i += 1
+                        continue
+
+                    if ch == '"':
+                        in_str = True
+                        out2.append(ch)
+                        i += 1
+                        continue
+
+                    if ch == ",":
+                        j = i + 1
+                        while j < len(t) and t[j].isspace():
+                            j += 1
+                        if j < len(t) and t[j] in ("}", "]"):
+                            i += 1
+                            continue
+
+                    out2.append(ch)
+                    i += 1
+
+                return "".join(out2)
+
+            try:
+                repaired = repair_jsonish(s)
+                if repaired and repaired != s:
+                    return json.loads(repaired)
+            except Exception:
                 return None
+            return None
 
         # 1) Preferred: ```json ... ```
         json_match = re.search(r"```(?:json|JSON)\\s*([\\s\\S]*?)\\s*```", reply)
@@ -978,15 +1090,238 @@ class AgentService:
                 "content": f"AI 助手调用失败: {str(e)}"
             }
     
+    def _normalize_project_plan(self, data: Any) -> Optional[Dict[str, Any]]:
+        """Normalize LLM planning output into the canonical AgentProjectPlan shape."""
+        if not isinstance(data, dict):
+            return None
+
+        # unwrap common wrappers
+        for wrap_key in ("plan", "result", "data"):
+            wrapped = data.get(wrap_key)
+            if isinstance(wrapped, dict):
+                data = wrapped
+                break
+
+        def nk(key: Any) -> str:
+            if not isinstance(key, str):
+                return ""
+            return re.sub(r"[^a-z0-9]+", "", key.lower())
+
+        def pick(obj: Any, *candidates: str) -> Any:
+            if not isinstance(obj, dict):
+                return None
+            key_map: Dict[str, str] = {}
+            for k in obj.keys():
+                if isinstance(k, str):
+                    key_map[nk(k)] = k
+            for cand in candidates:
+                k = key_map.get(nk(cand))
+                if k is not None:
+                    return obj.get(k)
+            return None
+
+        def as_str(value: Any) -> str:
+            if isinstance(value, str):
+                return value.strip()
+            if value is None:
+                return ""
+            return str(value).strip()
+
+        def ensure_prefix(raw_id: str, prefix: str, fallback: str) -> str:
+            rid = (raw_id or "").strip()
+            if not rid:
+                rid = fallback
+            if rid.startswith(prefix):
+                return rid
+            if rid.isdigit():
+                return f"{prefix}{rid}"
+            slug = re.sub(r"[^A-Za-z0-9_]+", "_", rid).strip("_") or fallback.replace(prefix, "")
+            return f"{prefix}{slug}"
+
+        # --- creative brief ---
+        brief_raw = pick(
+            data,
+            "creative_brief",
+            "creativeBrief",
+            "Creative_Brief",
+            "brief",
+            "project_overview",
+            "projectOverview",
+        )
+        if not isinstance(brief_raw, dict):
+            brief_raw = data
+
+        title = as_str(pick(brief_raw, "title", "project_name", "Project_Name", "name")) or "未命名项目"
+        duration = as_str(pick(brief_raw, "duration", "total_duration", "Total_Duration")) or ""
+        visual_style = as_str(pick(brief_raw, "visual_style", "Visual_Style", "style")) or ""
+        emotional_tone = as_str(pick(brief_raw, "emotional_tone", "Emotional_Tone", "tone", "core_theme", "Core_Theme")) or ""
+        language = as_str(pick(brief_raw, "language", "Language")) or "中文"
+        aspect_ratio = as_str(pick(brief_raw, "aspect_ratio", "Aspect_Ratio", "aspect")) or "16:9"
+        video_type = as_str(pick(brief_raw, "video_type", "Video_Type", "type")) or "Narrative Story"
+        narrative_driver = as_str(pick(brief_raw, "narrative_driver", "Narrative_Driver", "driver")) or "旁白驱动"
+        narrator_voice_profile = as_str(
+            pick(brief_raw, "narratorVoiceProfile", "narrator_voice_profile", "Narrator_Voice_Profile", "voice_profile")
+        )
+
+        creative_brief: Dict[str, Any] = {
+            "title": title,
+            "video_type": video_type,
+            "narrative_driver": narrative_driver,
+            "emotional_tone": emotional_tone,
+            "visual_style": visual_style,
+            "duration": duration,
+            "aspect_ratio": aspect_ratio,
+            "language": language,
+        }
+        if narrator_voice_profile:
+            creative_brief["narratorVoiceProfile"] = narrator_voice_profile
+
+        # --- elements ---
+        elements_raw = pick(data, "elements", "key_elements", "Key_Elements", "characters", "assets")
+        elements: List[Dict[str, Any]] = []
+
+        if isinstance(elements_raw, list):
+            for i, item in enumerate(elements_raw):
+                if not isinstance(item, dict):
+                    continue
+                eid = ensure_prefix(as_str(pick(item, "id")), "Element_", f"Element_{i+1}")
+                name = as_str(pick(item, "name", "Name")) or eid
+                typ = as_str(pick(item, "type", "Type", "element_type", "Element_Type")) or ""
+                if typ not in ("character", "object", "scene"):
+                    typ = "character"
+                desc = as_str(pick(item, "description", "Description", "visual_description", "Visual_Description")) or ""
+                voice_profile = as_str(pick(item, "voice_profile", "Voice_Profile", "voiceProfile")) or ""
+                out = {"id": eid, "name": name, "type": typ, "description": desc}
+                if voice_profile:
+                    out["voice_profile"] = voice_profile
+                elements.append(out)
+        elif isinstance(elements_raw, dict):
+            for i, (k, v) in enumerate(elements_raw.items()):
+                if not isinstance(k, str):
+                    continue
+                if not isinstance(v, dict):
+                    v = {}
+                eid = ensure_prefix(k, "Element_", f"Element_{i+1}")
+                name = as_str(pick(v, "name", "Name", "label", "Label", "display_name", "Display_Name")) or eid
+                typ = as_str(pick(v, "type", "Type", "element_type", "Element_Type")) or ""
+                if typ not in ("character", "object", "scene"):
+                    upper = eid.upper()
+                    if "SCENE" in upper or "BG" in upper:
+                        typ = "scene"
+                    elif "PROP" in upper or "OBJECT" in upper or "ITEM" in upper:
+                        typ = "object"
+                    else:
+                        typ = "character"
+                desc = as_str(pick(v, "description", "Description", "visual_description", "Visual_Description")) or ""
+                voice_profile = as_str(pick(v, "voice_profile", "Voice_Profile", "voiceProfile")) or ""
+                out = {"id": eid, "name": name, "type": typ, "description": desc}
+                if voice_profile:
+                    out["voice_profile"] = voice_profile
+                elements.append(out)
+
+        # --- segments / shots ---
+        def normalize_shot(raw_shot: Any, index: int) -> Dict[str, Any]:
+            if not isinstance(raw_shot, dict):
+                sid = ensure_prefix("", "Shot_", f"Shot_{index+1}")
+                return {
+                    "id": sid,
+                    "name": sid,
+                    "type": "standard",
+                    "duration": "5",
+                    "description": "",
+                    "prompt": "",
+                    "video_prompt": "",
+                    "narration": "",
+                    "dialogue_script": "",
+                }
+
+            sid = as_str(pick(raw_shot, "id", "shot_id", "Shot_Id", "shotId")) or as_str(pick(raw_shot, "shot", "number", "index"))
+            sid = ensure_prefix(sid, "Shot_", f"Shot_{index+1}")
+            name = as_str(pick(raw_shot, "name", "shot_name", "Shot_Name", "title")) or sid
+            typ = as_str(pick(raw_shot, "type", "shot_type", "Shot_Type", "scene_type", "Scene_Type")) or "standard"
+            duration = as_str(pick(raw_shot, "duration", "Duration", "duration_seconds", "durationSeconds")) or "5"
+            desc = as_str(pick(raw_shot, "description", "Description", "desc")) or ""
+            prompt = as_str(pick(raw_shot, "prompt", "Prompt", "image_prompt", "Image_Prompt", "imagePrompt")) or ""
+            video_prompt = as_str(pick(raw_shot, "video_prompt", "Video_Prompt", "videoPrompt")) or ""
+            narration = as_str(pick(raw_shot, "narration", "Narration", "voiceover", "Voiceover")) or ""
+            dialogue_script = as_str(pick(raw_shot, "dialogue_script", "Dialogue_Script", "dialogue", "Dialogue")) or ""
+            return {
+                "id": sid,
+                "name": name,
+                "type": typ,
+                "duration": duration,
+                "description": desc,
+                "prompt": prompt,
+                "video_prompt": video_prompt,
+                "narration": narration,
+                "dialogue_script": dialogue_script,
+            }
+
+        def normalize_segment(raw_seg: Any, index: int) -> Dict[str, Any]:
+            if not isinstance(raw_seg, dict):
+                seg_id = ensure_prefix("", "Segment_", f"Segment_{index+1}")
+                return {"id": seg_id, "name": seg_id, "description": "", "shots": []}
+
+            seg_id = ensure_prefix(as_str(pick(raw_seg, "id", "segment_id", "Segment_Id", "segmentId")), "Segment_", f"Segment_{index+1}")
+            name = as_str(pick(raw_seg, "name", "Name", "title", "Title")) or seg_id
+            description = as_str(pick(raw_seg, "description", "Description", "desc")) or ""
+            shots_raw = pick(raw_seg, "shots", "Shots", "shot_list", "shotList") or []
+            shots: List[Dict[str, Any]] = []
+            if isinstance(shots_raw, list):
+                for j, shot in enumerate(shots_raw):
+                    shots.append(normalize_shot(shot, j))
+            return {"id": seg_id, "name": name, "description": description, "shots": shots}
+
+        segments_raw = pick(data, "segments", "Segments")
+        segments: List[Dict[str, Any]] = []
+        if isinstance(segments_raw, list):
+            for i, seg in enumerate(segments_raw):
+                segments.append(normalize_segment(seg, i))
+        else:
+            shots_raw = pick(data, "storyboard_with_prompts", "Storyboard_With_Prompts", "shots", "Shots")
+            if isinstance(shots_raw, list):
+                segments = [
+                    {
+                        "id": "Segment_1",
+                        "name": "Storyboard",
+                        "description": "",
+                        "shots": [normalize_shot(s, i) for i, s in enumerate(shots_raw)],
+                    }
+                ]
+
+        cost_raw = pick(data, "cost_estimate", "Cost_Estimate", "cost")
+        if not isinstance(cost_raw, dict):
+            cost_raw = {}
+        cost_estimate = {
+            "elements": as_str(pick(cost_raw, "elements", "Elements")) or "TBD",
+            "shots": as_str(pick(cost_raw, "shots", "Shots")) or "TBD",
+            "audio": as_str(pick(cost_raw, "audio", "Audio")) or "TBD",
+            "total": as_str(pick(cost_raw, "total", "Total")) or "TBD",
+        }
+
+        return {
+            "creative_brief": creative_brief,
+            "elements": elements,
+            "segments": segments,
+            "cost_estimate": cost_estimate,
+        }
+
     async def plan_project(self, user_request: str, style: str = "吉卜力2D") -> Dict[str, Any]:
         """规划项目 - 根据用户需求生成完整的项目规划"""
         if not self._ensure_client():
-            return {"error": "未配置 LLM API Key"}
+            return {"success": False, "error": "未配置 LLM API Key"}
         
         try:
             prompt = self._format_prompt_safe(
                 self._get_prompt("agent.project_planning_prompt", DEFAULT_PROJECT_PLANNING_PROMPT),
                 user_request=user_request,
+            )
+            prompt = (
+                "IMPORTANT:\n"
+                "- Output must be valid JSON (double quotes, no trailing commas, no semicolons).\n"
+                "- Keys must match the template exactly (snake_case).\n"
+                "- Output only ONE ```json ... ``` code block, with no extra text.\n\n"
+                + prompt
             )
             
             response = await self.client.chat.completions.create(
@@ -995,18 +1330,42 @@ class AgentService:
                     {"role": "system", "content": self._get_prompt("agent.system_prompt", DEFAULT_AGENT_SYSTEM_PROMPT)},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.8,
+                temperature=0.2,
                 max_tokens=6000
             )
             
             reply = response.choices[0].message.content or ""
             
-            # 提取 JSON
-            json_match = re.search(r'```json\s*([\s\S]*?)\s*```', reply)
-            if json_match:
-                plan = json.loads(json_match.group(1))
-                return {"success": True, "plan": plan}
-            
+            # 提取 JSON：模型可能不总是用 ```json 代码块，这里做宽松解析
+            data = self._extract_json_from_reply(reply)
+            normalized = self._normalize_project_plan(data)
+            if normalized:
+                return {"success": True, "plan": normalized}
+
+            # Repair attempt: ask the model to output strict JSON matching the schema.
+            try:
+                repair_prompt = (
+                    "你的上一条回复无法被程序解析为符合 schema 的 JSON。"
+                    "请严格按下面模板重新输出。注意：只输出一个 ```json ... ``` 代码块，不要其他文字。\n\n"
+                    + prompt
+                )
+                repair_response = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": self._get_prompt("agent.system_prompt", DEFAULT_AGENT_SYSTEM_PROMPT)},
+                        {"role": "user", "content": repair_prompt},
+                    ],
+                    temperature=0.2,
+                    max_tokens=6000,
+                )
+                repair_reply = repair_response.choices[0].message.content or ""
+                repaired = self._extract_json_from_reply(repair_reply)
+                normalized2 = self._normalize_project_plan(repaired)
+                if normalized2:
+                    return {"success": True, "plan": normalized2}
+            except Exception as e:
+                print(f"[Agent] project planning repair failed: {e}")
+
             return {"success": False, "error": "无法解析项目规划", "raw": reply}
             
         except Exception as e:
@@ -1249,16 +1608,10 @@ class AgentService:
     
     def _parse_response(self, reply: str) -> Dict[str, Any]:
         """解析 LLM 响应"""
-        # 尝试提取 JSON
-        json_match = re.search(r'```json\s*([\s\S]*?)\s*```', reply)
-        if json_match:
-            try:
-                data = json.loads(json_match.group(1))
-                return {"type": "structured", "data": data, "content": reply}
-            except json.JSONDecodeError:
-                pass
+        data = self._extract_json_from_reply(reply)
+        if data is not None:
+            return {"type": "structured", "data": data, "content": reply}
 
-        # 普通文本响应
         return {"type": "text", "content": reply}
     
     def build_shot_prompt(

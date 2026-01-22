@@ -193,7 +193,7 @@ DEFAULT_PROJECT_PLANNING_PROMPT = """请根据用户的需求，生成完整的�
       ]
     }}
   ],
-  "cost_estimate": {{
+  "cost_estimate": {{      
     "elements": "元素生成预估积分",
     "shots": "镜头生成预估积分",
     "audio": "音频生成预估积分",

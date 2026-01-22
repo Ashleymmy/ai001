@@ -106,6 +106,15 @@ export function ChatMessageItem({
                 <JsonDataCard data={message.data as Record<string, unknown>} />
               </div>
             )}
+
+            {message.confirmButton?.action === 'apply_agent_patch' &&
+              message.data &&
+              typeof message.data === 'object' &&
+              !Array.isArray(message.data) && (
+              <div className="mt-3">
+                <JsonDataCard data={message.data as Record<string, unknown>} />
+              </div>
+            )}
         </>
       )}
       

@@ -1,0 +1,413 @@
+{"response_type": "project_confirmation",
+
+"creative_brief": {
+
+"project_name": "哑舍·黄粱枕",
+
+"project_description": "改编自玄色小说《哑舍》，讲述医生因手术失误陷入精神困境，在哑舍获得黄粱枕后，通过梦境预演危机并最终战胜心魔的故事",
+
+"total_duration": "180秒",
+
+"visual_style": "新海诚式背景美术与中式神秘主义融合，高饱和度光影、细腻雨景，哑舍内部深沉色调，精致国风手绘2D动漫",
+
+"audio_style": "开场急促电子音->幽静古琴与沉香声->滑稽后惊悚弦乐->激昂鼓点->温暖治愈钢琴曲",
+
+"core_elements": [
+
+"Element_DOCTOR",
+
+"Element_CHUNGE",
+
+"Element_YA_SHE_BOSS",
+
+"Element_FEMALE_PATIENT",
+
+"Element_YELLOW_MILLET_PILLOW"
+
+]
+
+},
+
+"character_designs": {
+
+"Element_DOCTOR": {
+
+"name": "医生",
+
+"visual_description": "年轻男性，面容清秀略带疲惫，黑眼圈明显，白大褂整洁，眼神从空洞迷茫逐渐转为坚定，中式手绘2D风格"
+
+},
+
+"Element_CHUNGE": {
+
+"name": "淳戈",
+
+"visual_description": "壮汉体型，面容憨厚，常穿白大褂，梦境中穿粉色蕾丝女仆装，胸口印喜羊羊，中式手绘2D风格"
+
+},
+
+"Element_YA_SHE_BOSS": {
+
+"name": "哑舍老板",
+
+"visual_description": "年轻男性，面容温润，常穿绣红龙的黑色唐装，眼神深邃神秘，中式手绘2D风格"
+
+},
+
+"Element_FEMALE_PATIENT": {
+
+"name": "女患者",
+
+"visual_description": "年轻女性，面容苍白，常穿白裙，梦境中胸腔敞开、血流不止，中式手绘2D风格"
+
+},
+
+"Element_YELLOW_MILLET_PILLOW": {
+
+"name": "黄粱枕",
+
+"visual_description": "青釉瓷枕，质如碧玉，表面流转奇异光泽，中式手绘2D风格"
+
+}
+
+},
+
+"storyboard": [
+
+{
+
+"shot_id": 1,
+
+"duration": 4,
+
+"scene": "忆·手术台",
+
+"visual_description": "剧烈晃动的特写，戴手套的双手满是鲜血，慌乱止血，背景报警红光",
+
+"audio": "【音效】急促心跳+长鸣滴—— 【VO】哪怕已经过去了一个月，那种鲜血粘稠的触感，依然死死粘在他的手上。",
+
+"image_prompt": "特写，第一人称视角，戴着橡胶手套的双手沾满鲜血，正在进行紧张的手术操作，视野模糊，周围是红色的警报灯光，高对比度，恐惧感，精致国风手绘2d动漫，压抑氛围，no-text",
+
+"video_prompt": "镜头剧烈抖动，双手在慌乱地尝试止血，鲜血不断涌出，红色警报灯在画面边缘疯狂闪烁，no-text"
+
+},
+
+{
+
+"shot_id": 2,
+
+"duration": 3,
+
+"scene": "现·卧室",
+
+"visual_description": "特写一只苍白的手疯狂点击鼠标，屏幕蓝光映在脸上",
+
+"audio": "【音效】疯狂的鼠标点击声 【VO】医生不敢睡觉。",
+
+"image_prompt": "特写，昏暗的房间，一只苍白的手正在快速点击鼠标，电脑屏幕发出冷蓝色的光，背景模糊，精致国风手绘2d动漫，现代孤独感，no-text",
+
+"video_prompt": "手指高频率点击鼠标左键，与上一镜头的紧张止血形成动作上的“视觉匹配剪辑”，no-text"
+
+},
+
+{
+
+"shot_id": 3,
+
+"duration": 6,
+
+"scene": "现·卧室",
+
+"visual_description": "医生盯着卡通农场游戏，眼球布满红血丝，时钟指向凌晨3点",
+
+"audio": "【VO】一闭眼就是那场手术。于是，他选择躲进网络游戏里，像个行尸走肉般熬过漫漫长夜。",
+
+"image_prompt": "中景，侧面，[Element_DOCTOR]蜷缩在电脑椅上，黑眼圈极重，神情麻木，电脑屏幕上显示着卡通风格的农场偷菜游戏界面，墙上的时钟指向凌晨3点，精致国风手绘2d动漫，冷暖对比，no-text",
+
+"video_prompt": "[Element_DOCTOR]机械地移动鼠标，眼睛一眨不眨，时钟的分针快速转动（延时摄影感），暗示时间的流逝，no-text"
+
+},
+
+{
+
+"shot_id": 4,
+
+"duration": 5,
+
+"scene": "现·走廊闪回",
+
+"visual_description": "医生行尸走肉般走路，身边闪现出半透明的手术推车和家属画面",
+
+"audio": "【音效】嘈杂的人声回音 【VO】愧疚，是一把无形的刀。",
+
+"image_prompt": "中景，[Element_DOCTOR]穿着白大褂低头走路，精神萎靡，画面叠加着一层半透明的回忆画面（担架车、血袋、焦急的家属），重影效果，精致国风手绘2d动漫，迷幻感，no-text",
+
+"video_prompt": "[Element_DOCTOR]走路踉跄，回忆的画面像幻觉一样在他身边一闪而过，他痛苦地闭了一下眼，no-text"
+
+},
+
+{
+
+"shot_id": 5,
+
+"duration": 5,
+
+"scene": "现·办公室",
+
+"visual_description": "淳戈拿听诊器敲医生的头，医生掩饰性地干笑",
+
+"audio": "【淳戈】喂！醒醒！看主任那眼神，都恨不得把你活体解剖了！ 【医生】嘿嘿……我不是故意的…… 【淳戈】别装了。虽然病人救回来了，但你不能永远困在那次失误里！",
+
+"image_prompt": "双人中景，[Element_CHUNGE]一脸担忧地看着[Element_DOCTOR]，[Element_DOCTOR]正趴在桌上补觉被敲醒，[Element_DOCTOR]在笑但眼神空洞，精致国风手绘2d动漫，职场生活，no-text",
+
+"video_prompt": "[Element_CHUNGE]收起听诊器，眉头紧锁，嘴唇动作对应台词，[Element_DOCTOR]避开眼神，挠头干笑，no-text"
+
+},
+
+{
+
+"shot_id": 6,
+
+"duration": 5,
+
+"scene": "现·一角",
+
+"visual_description": "医生看女患者背影，幻视成血衣",
+
+"audio": "【音效】耳鸣声 【VO】救回来了吗？在医生眼里，她就是无声的审判。",
+
+"image_prompt": "主观视角，走廊尽头站着[Element_FEMALE_PATIENT]，在[Element_DOCTOR]眼中，她的白衣瞬间变成红色的血衣，又瞬间变回白衣，惊悚感，精致国风手绘2d动漫，视觉干扰，no-text",
+
+"video_prompt": "[Element_FEMALE_PATIENT]转身的瞬间，画面闪烁故障效果（Glitch），[Element_DOCTOR]猛地转过身背靠墙壁喘息，no-text"
+
+},
+
+{
+
+"shot_id": 7,
+
+"duration": 6,
+
+"scene": "现·街道",
+
+"visual_description": "黄昏，医生逃进古朴的哑舍",
+
+"audio": "【VO】他需要一个地方躲藏。哑舍，成了他唯一的避难所。",
+
+"image_prompt": "远景，黄昏街道，[Element_DOCTOR]快步走向街角一家古朴的店（哑舍），与周围匆忙的行人格格不入，路灯刚亮，孤独感，精致国风手绘2d动漫，新海诚式光影，no-text",
+
+"video_prompt": "[Element_DOCTOR]快步走入画面，推开那扇沉重的木门，将喧嚣关在门外，no-text"
+
+},
+
+{
+
+"shot_id": 8,
+
+"duration": 7,
+
+"scene": "现·店内",
+
+"visual_description": "哑舍内幽暗神秘，老板穿着红龙唐装微笑",
+
+"audio": "【老板】欢迎光临。看来你的精神并不太好。 【医生】唉，晚上睡不好。有没有什么能助眠的？",
+
+"image_prompt": "广角全景，古董店内部，光线昏暗神秘，只有油灯摇曳，[Element_YA_SHE_BOSS]穿着黑色唐装，胸口绣着狰狞的红龙，正坐在黄花梨木椅上看书，精致国风手绘2d动漫，丁达尔效应，no-text",
+
+"video_prompt": "[Element_DOCTOR]推门而入带入一阵风，烛火摇曳，[Element_YA_SHE_BOSS]缓缓放下书，抬头露出神秘的微笑，no-text"
+
+},
+
+{
+
+"shot_id": 9,
+
+"duration": 6,
+
+"scene": "现·柜台",
+
+"visual_description": "老板推出青釉瓷枕，特写其光泽",
+
+"audio": "【老板】这是黄粱枕。能让你美梦成真。但记住——中途醒来千万别睡回笼觉，否则美梦变噩梦，噩梦成真。",
+
+"image_prompt": "特写，[Element_YA_SHE_BOSS]白皙修长的手将一个锦盒推向镜头，盒中放着[Element_YELLOW_MILLET_PILLOW]，色如碧玉，表面流转着奇异的光泽，背景是模糊的红色烛光，精致国风手绘2d动漫，高光质感，no-text",
+
+"video_prompt": "镜头聚焦在[Element_YELLOW_MILLET_PILLOW]上，瓷枕表面仿佛有水波流动，光泽诱人，[Element_YA_SHE_BOSS]的手指轻轻敲击枕头边缘，no-text"
+
+},
+
+{
+
+"shot_id": 10,
+
+"duration": 8,
+
+"scene": "现·入睡",
+
+"visual_description": "深夜，医生枕着瓷枕入睡，周围泛起柔光",
+
+"audio": "【VO】虽然不信，但他还是枕着睡了。奇异的流光中，他沉入了梦乡。",
+
+"image_prompt": "俯拍中景，[Element_DOCTOR]穿着睡衣躺在床上，头枕着[Element_YELLOW_MILLET_PILLOW]，房间昏暗，[Element_DOCTOR]闭着眼，神情安详，精致国风手绘2d动漫，睡意朦胧，no-text",
+
+"video_prompt": "[Element_DOCTOR]呼吸变得沉重均匀，画面边缘开始出现彩色的光斑和模糊，逐渐吞没画面，进入梦境转场，no-text"
+
+},
+
+{
+
+"shot_id": 11,
+
+"duration": 6,
+
+"scene": "梦·荒诞",
+
+"visual_description": "冰箱里塞满了游戏里才会有的发光蔬菜和人参",
+
+"audio": "【VO】这个梦荒诞得可爱。游戏里的虚拟蔬菜填满了冰箱。",
+
+"image_prompt": "第一人称视角，打开冰箱门，冰箱里整整齐齐码放着几排带着泥土的新鲜胡萝卜、巨大的白菜和人参，色彩过度饱和，发着金光，精致国风手绘2d动漫，超现实主义，no-text",
+
+"video_prompt": "冰箱门被拉开，金光射出，蔬菜们仿佛在呼吸般微微颤动，no-text"
+
+},
+
+{
+
+"shot_id": 12,
+
+"duration": 8,
+
+"scene": "梦·反差",
+
+"visual_description": "淳戈穿着粉色女仆装，一脸娇羞地端盘子",
+
+"audio": "【淳戈】(夹子音)主人，吃夜宵啦！要不要做个SPA？ 【VO】甚至那个壮汉淳戈，都变成了乖巧的女仆。",
+
+"image_prompt": "全景，客厅，[Element_CHUNGE]穿着极不合身的粉色蕾丝女仆装，胸口印着喜羊羊，脸上挂着恐怖的“慈母”笑容，端着盘子，背景飘落花瓣，精致国风手绘2d动漫，滑稽，no-text",
+
+"video_prompt": "[Element_CHUNGE]扭捏地走向镜头，眨了眨眼，[Element_DOCTOR]（背影）惊恐地后退，手中的雨伞掉落，no-text"
+
+},
+
+{
+
+"shot_id": 13,
+
+"duration": 5,
+
+"scene": "梦·转折",
+
+"visual_description": "医生贪恋梦境再次睡下，光影瞬间变红",
+
+"audio": "【VO】但他忘记了老板的忠告。当他贪恋美梦再次睡去……",
+
+"image_prompt": "特写，[Element_DOCTOR]的脸埋在[Element_YELLOW_MILLET_PILLOW]里，嘴角上扬，随后光线骤变，一道闪电般的红光划过脸庞，表情开始变得不安，精致国风手绘2d动漫，光影突变，no-text",
+
+"video_prompt": "镜头快速推进[Element_DOCTOR]的眉心，画面闪烁，配合心跳声，色调瞬间变暗，no-text"
+
+},
+
+{
+
+"shot_id": 14,
+
+"duration": 8,
+
+"scene": "梦·噩梦",
+
+"visual_description": "手术台，心电长鸣，开膛破肚的女病人突然坐起",
+
+"audio": "【音效】尖锐警报 【女患者】(嘶吼)是你！是你害死了我！",
+
+"image_prompt": "荷兰角（倾斜构图），手术室，无影灯惨白，[Element_DOCTOR]满脸惊恐，手套上全是鲜血，手术台上的[Element_FEMALE_PATIENT]（胸腔敞开）突然直挺挺地坐起来，背景红光，精致国风手绘2d动漫，恐怖氛围，no-text",
+
+"video_prompt": "[Element_FEMALE_PATIENT]猛地坐起，身上的管子被扯断，血液飞溅，[Element_DOCTOR]惊恐地向后跌倒，no-text"
+
+},
+
+{
+
+"shot_id": 15,
+
+"duration": 6,
+
+"scene": "梦·惊魂",
+
+"visual_description": "女鬼流血泪的脸极速逼近",
+
+"audio": "【医生】不是！我不是故意的！",
+
+"image_prompt": "极特写，[Element_FEMALE_PATIENT]苍白扭曲的脸，眼睛流着血泪，嘴巴大张怒吼，占据整个画面，极具压迫感，精致国风手绘2d动漫，暗黑风格，no-text",
+
+"video_prompt": "[Element_FEMALE_PATIENT]的脸向镜头极速冲来，画面瞬间黑屏，no-text"
+
+},
+
+{
+
+"shot_id": 16,
+
+"duration": 7,
+
+"scene": "现·惊醒",
+
+"visual_description": "医生惊醒，满头大汗，窗外暴雨如注",
+
+"audio": "【音效】雷雨声 【VO】惊醒后的清晨，窗外暴雨如注，竟和梦里一模一样。",
+
+"image_prompt": "中景，[Element_DOCTOR]从床上弹起，大口喘气，浑身湿透，旁边一只哈士奇歪头看着他，窗外狂风暴雨拍打着玻璃，精致国风手绘2d动漫，冷汗淋漓，no-text",
+
+"video_prompt": "[Element_DOCTOR]惊魂未定地摸了摸脸，转头看向窗外，闪电划过照亮[Element_YELLOW_MILLET_PILLOW]，no-text"
+
+},
+
+{
+
+"shot_id": 17,
+
+"duration": 6,
+
+"scene": "现·宿命",
+
+"visual_description": "会议室，主任递病历，淳戈的座位空着",
+
+"audio": "【主任】淳戈请假了。这台手术你来接手。 【VO】一切都在诡异地重演。",
+
+"image_prompt": "中景，严肃的中年主任将一份厚厚的病历递给[Element_DOCTOR]，[Element_DOCTOR]双手颤抖地接过，背景是空荡荡的淳戈的座位，精致国风手绘2d动漫，压抑，no-text",
+
+"video_prompt": "[Element_DOCTOR]接过病历，眼神惊恐地看向旁边空着的座位，瞳孔震动，no-text"
+
+},
+
+{
+
+"shot_id": 18,
+
+"duration": 8,
+
+"scene": "现·手术",
+
+"visual_description": "医生在手术台，视角与梦境重合",
+
+"audio": "【VO】熟悉的场景，跳动的心脏。他仿佛看见了死神的镰刀已经举起。",
+
+"image_prompt": "主观视角（透过护目镜），看到鲜活跳动的心脏，手术钳在旁边操作，周围是绿色的手术服和无影灯强光，高度紧张，精致国风手绘2d动漫，写实细节，no-text",
+
+"video_prompt": "[Element_DOCTOR]的手紧紧握着止血钳，由于紧张而微微颤抖，汗水滴落在护目镜内侧，no-text"
+
+},
+
+{
+
+"shot_id": 19,
+
+"duration": 7,
+
+"scene": "现·抉择",
+
+"visual_description": "主任要缝合，医生预感到危机，大喊阻止",
+
+"audio": "【主任】转为内循环。 【医生】等一下！",
+
+"image_prompt": "特写，[Element_DOCTOR]的眼睛特写，眼神从恐惧瞬间转为坚定，瞳孔中

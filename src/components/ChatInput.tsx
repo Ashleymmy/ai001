@@ -121,11 +121,12 @@ export default function ChatInput({
   const [currentAccept, setCurrentAccept] = useState('')
   
   const { settings, updateLLM } = useSettingsStore()
+  const isUploading = uploadedFiles.some(f => f.uploading)
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      if (!isLoading && (value.trim() || uploadedFiles.length > 0)) onSend()
+      if (!isLoading && !isUploading && (value.trim() || uploadedFiles.length > 0)) onSend()
     }
   }
 
@@ -477,7 +478,7 @@ export default function ChatInput({
               ) : (
                 <button
                   onClick={onSend}
-                  disabled={!value.trim() && uploadedFiles.length === 0}
+                  disabled={isUploading || (!value.trim() && uploadedFiles.length === 0)}
                   className="h-8 px-4 bg-gradient-to-r from-primary to-purple-500 text-white rounded-xl hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2 text-sm font-medium shadow-lg shadow-primary/25"
                 >
                   <Send size={14} />

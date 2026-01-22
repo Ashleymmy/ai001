@@ -1,4 +1,225 @@
 images:
+- id: e5edd748
+  prompt: 'Burly and muscular male doctor named Chunge, short resolute spiky hair,
+    stethoscope looped around his neck, crisp white lab coat stretched taut by well-defined
+    bulging muscles, sincere, honest and down-to-earth facial expression, standing
+    in a natural upright posture; Exquisite Chinese-style hand-drawn 2D anime style
+    with dual scene variations: 1. Real-world setting: deep, moody tones of Chinese
+    mysticism, dim atmospheric lighting, soft rain diffusing ambient light, extremely
+    detailed raindrop and wet surface textures; 2. Dream setting: Makoto Shinkai-style
+    high-saturation ethereal lighting, surreal exaggerated visual compositions, dramatic
+    lens flares, vivid refracted colors through falling rain, ethereal glowing rain
+    droplets; Ultra-detailed intricate line art, smooth color gradients, cinematic
+    framing, realistic fabric and skin textures, sharp focus, 8K resolution, photorealistic
+    rain details'
+  negative_prompt: Low resolution, blurry, distorted anatomy, disproportionate limbs,
+    ugly or mismatched facial features, flat and dull color palettes, messy or broken
+    line art, unrealistic lighting, non-Chinese artistic elements, out of focus, grainy
+    or noisy texture, 3D rendered effects, overly simplistic cartoon style, overexposed
+    highlights, underexposed shadows, missing rain details, insincere or aggressive
+    facial expressions, stiff unnatural posture
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769048062130ff0e10ef3dc4fa8284497cad29aae403fe693e_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260122%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260122T021436Z&X-Tos-Expires=86400&X-Tos-Signature=ffac1a8d9e3387381c0216512aaf9ed14fce70143e147e30210ae950e59b91b6&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 325339948
+  style: null
+  created_at: '2026-01-22T10:14:34.497450'
+- id: b751ee5b
+  prompt: 'A burly, heavily muscled male doctor with a broad, sturdy torso, firm short
+    hair, a stethoscope hanging around his neck, his white lab coat stretched tight
+    across well-defined muscles, wearing a sincere, honest, and guileless facial expression.
+    Exquisite Chinese-style hand-painted 2D anime art style: for realistic scenarios,
+    use deep, muted color palettes of Chinese mysticism paired with dim, profound
+    atmospheric lighting to create a mysterious and solemn mood; for dream scenarios,
+    apply Makoto Shinkai-style high-saturation, luminous lighting alongside surreal
+    exaggerated visual elements to build a dreamlike, ethereal atmosphere. Include
+    intricate, highly detailed rain scene details throughout, ultra-detailed, 8K resolution,
+    sharp focus, intricate texture rendering, cinematic composition, soft hand-painted
+    brushstrokes, professional character illustration, vivid color transitions'
+  negative_prompt: Blurry, low resolution, distorted body proportions, ugly or blank
+    facial expressions, messy or disheveled hair, ill-fitting or wrinkled lab coats,
+    flat or harsh lighting, dull or mismatched color tones, surreal elements that
+    conflict with the intended style, missing rain details, cartoonish distortions
+    inconsistent with 2D anime aesthetics, grainy texture
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217690477529153f971518a0c9d7974f8da0b075e934d37a8f69_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260122%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260122T020931Z&X-Tos-Expires=86400&X-Tos-Signature=560ca4818729204f094f62bc6e7dc940618c8dcc22268dc666136f97a7959462&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 381092172
+  style: null
+  created_at: '2026-01-22T10:09:30.031386'
+- id: 9836cc34
+  prompt: 'Huangliang Pillow (traditional Chinese celadon porcelain pillow from folklore),
+    jade-like smooth lustrous texture, surface flowing with a mysterious iridescent
+    sheen, ergonomic shape perfectly fitting human neck curve, no humans, no split
+    frame, consistent tonal style within each scene, exquisite Chinese-style hand-painted
+    2D anime, dual themed depictions: 1. Realistic scenario with Chinese mysterious
+    dark deep tones, dim dramatic low-key lighting, serene enigmatic atmosphere; 2.
+    Dreamscape with Makoto Shinkai-style high-saturation surreal lighting, exaggerated
+    surreal visual elements, delicate detailed rain scene with glistening raindrops
+    clinging to pillow surface, ultra-detailed, hyper-realistic glaze textures, sharp
+    focus, cinematic composition, smooth hand-drawn lines, intricate details, 8K resolution'
+  negative_prompt: humans, human figures, split screen, distorted pillow shape, blurry
+    texture, low resolution, messy composition, rough lines, discolored glaze, unrealistic
+    lighting, text overlays, broken frame, disproportionate shape, amateur art, flat
+    colors
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769047683133b1540e0519088842060f281dec849b0498e1c7_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260122%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260122T020819Z&X-Tos-Expires=86400&X-Tos-Signature=cac12eba383f19ec0544ae044b67ffb372a69b43c8440abfc9e1a42f75051220&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1226602264
+  style: null
+  created_at: '2026-01-22T10:08:18.142260'
+- id: be9a0616
+  prompt: white disposable paper cup with minimalistic blue patterns printed on its
+    body, wrapped in a textured corrugated paper heat insulation sleeve, warm translucent
+    white steam gently curling upward from the cup mouth, filled with rich hot milk
+    tea; set in a cohesive non-split scene, exquisite Chinese-style hand-drawn 2D
+    anime art, blending Chinese mystical deep tonal base with Makoto Shinkai-style
+    high-saturated dramatic lighting and surreal subtle exaggerations, delicate rain
+    droplets clinging to the cup surface and falling slowly, soft rain mist lingering
+    in the background, warm glow from the steam contrasting beautifully with the rainy
+    atmosphere; highly detailed, ultra-detailed, sharp focus, 8K resolution, masterpiece,
+    professional illustration, smooth hand-drawn lines, harmonious color palette,
+    realistic texture of corrugated paper and paper cup, lifelike steam movement,
+    intricate rain details
+  negative_prompt: split screen, humans, people, figures, distorted cup shape, blurry
+    details, low resolution, messy composition, inconsistent art style, dull flat
+    colors, no steam, missing heat insulation sleeve, incorrect blue patterns, non-anime
+    style, non-Chinese style, discolored milk tea, harsh lighting, overly saturated
+    colors that break harmony
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769047560233efbbaf1e4382fe9087cb4ac5bb5b3b648836af_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260122%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260122T020613Z&X-Tos-Expires=86400&X-Tos-Signature=e6a086b6fa3cc8d8cf7b2eb05998b02e2555155dfdfcd5d21b5baba8171b34c9&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 977636478
+  style: null
+  created_at: '2026-01-22T10:06:11.919650'
+- id: d253302a
+  prompt: 'Antique bronze wind chime with intricate hollowed-out dragon patterns,
+    hanging inside the door of Yashe (a mystical Chinese antique shop), subtle bronze
+    patina on its surface, wind gently stirring it to sway slightly, hinting at a
+    crisp distant chime. Exquisite Chinese-style 2D anime hand-drawn style. For realistic
+    scene: deep Chinese mysterious color palette, dim atmospheric ambient light filtering
+    through door cracks, quiet and enigmatic ambiance. For dreamscape scene: Makoto
+    Shinkai-style high-saturation ethereal lighting, surreal exaggerated visual presentation,
+    delicate rain scene details with glistening raindrops and light refractions, glowing
+    edges surrounding the wind chime, dreamy otherworldly vibe. Ultra-detailed, sharp
+    focus, cinematic lighting, rich textured rendering, 8K resolution, masterpiece,
+    professional digital illustration, meticulous attention to patina and rain details'
+  negative_prompt: Human figures, split frame, inconsistent color tones, blurry textures,
+    low resolution, distorted wind chime shape, messy background, flat lighting, pixelated,
+    ugly proportions, unrelated objects, text, watermarks
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/02176904744934813d48c4760d2f20ff0aabc46dcd14fa81edc59_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260122%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260122T020435Z&X-Tos-Expires=86400&X-Tos-Signature=dcaefeb1d9785e880acd8ed505bcb45e3718f01bea4a1296f6737cffc8a4609d&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1354935248
+  style: null
+  created_at: '2026-01-22T10:04:34.129673'
+- id: '13766655'
+  prompt: 'Dark red brocade box, surface intricately embroidered with golden cloud
+    patterns, silver metal clasp inlaid on the edge of the lid, interior lined with
+    soft white silk padding, heavy and exquisite texture tailored for housing antiques;
+    exquisite Chinese-style hand-painted 2D anime style, dual scene rendering: real-world
+    scene features deep, muted tones of Chinese mysticism with subtle ambient lighting,
+    dream scene adopts Makoto Shinkai-inspired high-saturation vivid lighting and
+    shadows paired with surreal exaggerated visual expressions, complemented by highly
+    detailed delicate rain scene elements; 8K resolution, ultra-detailed, intricate
+    textures, sharp focus, cinematic quality, professional color grading, photorealistic
+    details'
+  negative_prompt: No people, no split screen, disunified color tones, low resolution,
+    blurry, distorted, pixelated, grainy, ugly, messy composition, flat lighting,
+    dull colors, rough edges
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/02176904732223320e33ae3714a969f29832d54235fd2ccad71b0_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260122%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260122T020222Z&X-Tos-Expires=86400&X-Tos-Signature=a2379a602103a47eb9a6071e02881860cae8a1b5c6fedf9e368bf272b448e611&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1589882953
+  style: null
+  created_at: '2026-01-22T10:02:20.761411'
+- id: bf12ce65
+  prompt: Stainless steel medical hemostat with cold metallic luster, sharp pointed
+    precision tips, handles featuring non-slip textured grips, resting on an antique
+    Chinese lacquered tray in a rain-drenched setting, exquisite hand-painted Chinese-style
+    2D anime illustration, unified deep moody color palette blending Chinese mysticism
+    tones with Makoto Shinkai-style hyper-saturated volumetric lighting refracting
+    through ultra-detailed raindrops, ethereal surreal atmosphere, raindrops delicately
+    clinging to the hemostat's surface and surrounding area, intricate linework, smooth
+    traditional brush strokes, realistic metallic texture, crystal-clear raindrop
+    details, cinematic composition, masterpiece, 8K, ultra-high resolution
+  negative_prompt: Human figures, split frame, disunified color tones, blurry details,
+    distorted hemostat shape, dull flat lighting, low resolution, text, watermarks,
+    messy brushwork, irrelevant objects
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769047225159d9bd2cabe63500bc1fad307541601c16d869ec_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260122%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260122T020044Z&X-Tos-Expires=86400&X-Tos-Signature=4a52c569566ee0274de3dc6bc0c2da3935b70a0f1794428aa89c2de77cebf1d6&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1755147596
+  style: null
+  created_at: '2026-01-22T10:00:43.035692'
+- id: '49942187'
+  prompt: 'Stainless steel medical hemostat with cold metallic luster, sharp pointed
+    tip, handle with anti-slip texture, exquisite Chinese-style hand-painted 2D anime
+    style, dual atmosphere integration: foreground features a realistic scene with
+    deep mysterious Chinese-style dark tones and dim atmospheric lighting, background
+    transitions to a Makoto Shinkai-style surreal dreamscape with high-saturation
+    glowing light effects and exaggerated surreal expression, exquisite rain scene
+    details including glistening raindrops on metal surface and delicate rain streaks
+    in the air, ultra-detailed, sharp focus, smooth hand-painted lines, realistic
+    metal texture, consistent harmonious color style, no split frame, no people'
+  negative_prompt: People, split frame, inconsistent color palette, blurry details,
+    low resolution, distorted hemostat shape, rough texture, absence of rain elements,
+    non-Chinese style elements, non-2D anime style, dull flat lighting, no surreal
+    effects, disorganized composition
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217690470887416a0b6f9037ae98ed8c3a7859aa85dfee566d10_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260122%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260122T015829Z&X-Tos-Expires=86400&X-Tos-Signature=da16ff3ecdf9e1f41000f0a8e8d4a9619afcfc2c86c0a4631d9c34c6a6c2f8ef&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1119020838
+  style: null
+  created_at: '2026-01-22T09:58:28.185758'
+- id: cb6736e5
+  prompt: 'Standard medical record book with blue cover, inner pages showing printed
+    patient diagnosis and treatment records, slightly worn corners and edges, white
+    hospital logo printed on the cover, no human figures, non-split screen, unified
+    tonal style. Exquisite Chinese-style hand-painted 2D anime: realistic scene with
+    deep, mysterious tones of Chinese mysticism, dreamlike atmosphere with Makoto
+    Shinkai-inspired high-saturation light and shadow plus surreal exaggerated elements,
+    intricate rainy scene details with glistening raindrops coating the book''s surface.
+    Dim, atmospheric deep lighting for realistic context; vibrant, ethereal high-contrast
+    glowing lighting for dream context. Ultra-detailed, sharp focus, intricate linework,
+    smooth brushstrokes, cinematic visual quality, lifelike paper texture, vivid color
+    transitions'
+  negative_prompt: People, human subjects, split screen, disjointed color tones, blurry
+    details, low resolution, distorted book form, messy composition, text errors,
+    overexposed areas, dull flat colors, unrelated objects
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217690469933395ed129591da48e074cf9db74a161503f8bdb4f_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260122%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260122T015652Z&X-Tos-Expires=86400&X-Tos-Signature=f7f8c9b94c67722b3ca6611cef616021b7d59bc569003171c8ede2cb397dbfbb&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 356559579
+  style: null
+  created_at: '2026-01-22T09:56:51.116635'
 - id: aff77227
   prompt: 8-year-old cute gentle-looking blonde boy with soft wavy hair, clear bright
     eyes blending innocence and quiet melancholy, wearing a sky-blue waist trench
@@ -314,4 +535,4 @@ images:
   seed: 1545869874
   style: ''
   created_at: '2026-01-07T17:35:45.571061'
-updated_at: '2026-01-21T16:44:45.667139'
+updated_at: '2026-01-22T10:14:34.497450'

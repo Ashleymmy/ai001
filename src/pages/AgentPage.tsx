@@ -109,15 +109,47 @@ function canonicalizeMediaUrl(url: string) {
   return u.replace(/^https?:\/\/(?:localhost|127\.0\.0\.1):8000(?=\/api\/)/i, '')
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function unwrapStructuredPayload(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null
+  let obj: Record<string, unknown> = value
+  for (const key of ['data', 'result', 'plan']) {
+    const inner = obj[key]
+    if (isRecord(inner)) obj = inner
+  }
+  return obj
+}
+
+function looksLikeAgentPatch(value: unknown): boolean {
+  const obj = unwrapStructuredPayload(value)
+  if (!obj) return false
+  const keys = [
+    'elements',
+    'segments',
+    'creative_brief',
+    'creativeBrief',
+    'Creative_Brief',
+    'Key_Elements',
+    'key_elements',
+    'Storyboard_With_Prompts',
+    'storyboard_with_prompts',
+  ]
+  return keys.some((k) => k in obj)
+}
+
 export default function AgentPage() {
   const navigate = useNavigate()
   const location = useLocation()
   
   const urlProjectId = location.pathname.match(/\/agent\/([^/]+)/)?.[1] || null
+  const initialAgentProjectId = urlProjectId && urlProjectId.startsWith('agent_') ? urlProjectId : null
   
   const [activeModule, setActiveModule] = useState<ModuleType>('elements')
   const [projectName, setProjectName] = useState('未命名项目')
-  const [projectId, setProjectId] = useState<string | null>(urlProjectId)
+  const [projectId, setProjectId] = useState<string | null>(initialAgentProjectId)
   const [sessionId] = useState<string>(() => {
     // 无项目时使用的 session ID，从 localStorage 获取或创建新的
     const saved = localStorage.getItem('agent-chat-session-id')
@@ -422,7 +454,15 @@ export default function AgentPage() {
 
   useEffect(() => {
     if (urlProjectId) {
-      loadProject(urlProjectId)
+      if (urlProjectId.startsWith('agent_')) {
+        loadProject(urlProjectId)
+        setShowProjectList(false)
+        return
+      }
+
+      // Entered with a non-agent projectId (e.g. from ProjectPage): don't try to
+      // load it as an Agent project; start a fresh workspace.
+      resetAgentWorkspace({ showProjectList: false })
       setShowProjectList(false)
       return
     }
@@ -664,7 +704,7 @@ export default function AgentPage() {
     // 如果 URL 中的项目 ID 是 Agent 项目（以 agent_ 开头），返回首页
     // 否则返回对应的普通项目页面
     if (urlProjectId && !urlProjectId.startsWith('agent_')) {
-      return `/project/${urlProjectId}`
+      return `/home/project/${urlProjectId}`
     }
     return '/'
   }
@@ -977,6 +1017,271 @@ export default function AgentPage() {
           }
         }
       }
+    } else if (action === 'apply_agent_patch') {
+      const root = unwrapStructuredPayload(payload)
+      if (!root) {
+        addMessage('assistant', '❌ 无法解析要应用的内容（payload 不是对象）')
+        return
+      }
+
+      const pick = (obj: Record<string, unknown>, ...keys: string[]) => {
+        for (const k of keys) {
+          if (k in obj) return obj[k]
+        }
+        return undefined
+      }
+
+      const now = new Date().toISOString()
+
+      // --- creative brief ---
+      const briefRaw = pick(root, 'creative_brief', 'creativeBrief', 'Creative_Brief', 'brief')
+      const briefObj = isRecord(briefRaw) ? briefRaw : null
+      const briefPatch: Partial<CreativeBrief> = {}
+      const setBriefStr = (key: keyof CreativeBrief, val: unknown) => {
+        if (typeof val === 'string' && val.trim()) briefPatch[key] = val.trim()
+      }
+
+      if (briefObj) {
+        setBriefStr('title', pick(briefObj, 'title', 'Project_Name', 'project_name', 'name'))
+        setBriefStr('videoType', pick(briefObj, 'videoType', 'video_type', 'Video_Type'))
+        setBriefStr('narrativeDriver', pick(briefObj, 'narrativeDriver', 'narrative_driver', 'Narrative_Driver'))
+        setBriefStr('emotionalTone', pick(briefObj, 'emotionalTone', 'emotional_tone', 'Emotional_Tone', 'Core_Theme'))
+        setBriefStr('visualStyle', pick(briefObj, 'visualStyle', 'visual_style', 'Visual_Style'))
+        setBriefStr('duration', pick(briefObj, 'duration', 'total_duration', 'Total_Duration'))
+        setBriefStr('aspectRatio', pick(briefObj, 'aspectRatio', 'aspect_ratio', 'Aspect_Ratio'))
+        setBriefStr('language', pick(briefObj, 'language', 'Language'))
+        setBriefStr(
+          'narratorVoiceProfile',
+          pick(briefObj, 'narratorVoiceProfile', 'narrator_voice_profile', 'Narrator_Voice_Profile')
+        )
+      }
+
+      const briefChanged = Object.keys(briefPatch).length > 0
+      const nextCreativeBrief = briefChanged ? { ...creativeBrief, ...briefPatch } : creativeBrief
+
+      // --- elements ---
+      const elementsRaw = pick(root, 'elements', 'Key_Elements', 'key_elements', 'keyElements')
+      let nextElements = elements
+      let elementsChanged = false
+
+      const applyElementPatch = (id: string, raw: Record<string, unknown>) => {
+        const current = nextElements[id]
+        const name = (typeof raw.name === 'string' && raw.name.trim())
+          ? raw.name.trim()
+          : (typeof raw.Element_Name === 'string' && raw.Element_Name.trim())
+            ? raw.Element_Name.trim()
+            : current?.name || id
+        const type = (typeof raw.type === 'string' && raw.type.trim())
+          ? raw.type.trim()
+          : (typeof raw.Element_Type === 'string' && raw.Element_Type.trim())
+            ? raw.Element_Type.trim()
+            : current?.type || 'character'
+        const description = (typeof raw.description === 'string')
+          ? raw.description
+          : (typeof raw.Description === 'string')
+            ? raw.Description
+            : current?.description || ''
+
+        const voice_profile = (typeof raw.voice_profile === 'string' && raw.voice_profile.trim())
+          ? raw.voice_profile.trim()
+          : (typeof raw.voiceProfile === 'string' && raw.voiceProfile.trim())
+            ? raw.voiceProfile.trim()
+            : current?.voice_profile
+
+        const reference_images = Array.isArray(raw.reference_images)
+          ? raw.reference_images.filter((v) => typeof v === 'string' && v.trim()).map((v) => (v as string).trim())
+          : Array.isArray(raw.referenceImages)
+            ? raw.referenceImages.filter((v) => typeof v === 'string' && v.trim()).map((v) => (v as string).trim())
+            : current?.reference_images
+
+        const image_url = typeof raw.image_url === 'string' ? raw.image_url : current?.image_url
+        const cached_image_url = typeof raw.cached_image_url === 'string' ? raw.cached_image_url : current?.cached_image_url
+
+        nextElements = {
+          ...nextElements,
+          [id]: {
+            id,
+            name,
+            type,
+            description,
+            voice_profile,
+            reference_images,
+            image_url,
+            cached_image_url,
+            image_history: current?.image_history,
+            created_at: current?.created_at || now
+          }
+        }
+        elementsChanged = true
+      }
+
+      if (Array.isArray(elementsRaw)) {
+        for (const item of elementsRaw) {
+          if (!isRecord(item)) continue
+          const id = (typeof item.id === 'string' && item.id.trim()) ? item.id.trim() : ''
+          if (!id) continue
+          applyElementPatch(id, item)
+        }
+      } else if (isRecord(elementsRaw)) {
+        for (const [k, v] of Object.entries(elementsRaw)) {
+          if (!isRecord(v)) continue
+          const id = (typeof v.id === 'string' && v.id.trim()) ? v.id.trim() : k
+          if (!id) continue
+          applyElementPatch(id, v)
+        }
+      }
+
+      // --- segments/shots ---
+      const segmentsRaw = pick(
+        root,
+        'segments',
+        'Storyboard_With_Prompts',
+        'storyboard_with_prompts',
+        'storyboard',
+        'Storyboard'
+      )
+
+      let nextSegments = segments
+      let segmentsChanged = false
+
+      const parseDuration = (val: unknown): number | null => {
+        if (typeof val === 'number' && Number.isFinite(val) && val > 0) return val
+        if (typeof val === 'string') {
+          const n = Number.parseFloat(val)
+          if (Number.isFinite(n) && n > 0) return n
+        }
+        return null
+      }
+
+      const segmentsArray: unknown[] | null = Array.isArray(segmentsRaw)
+        ? segmentsRaw
+        : isRecord(segmentsRaw) && Array.isArray(segmentsRaw.segments)
+          ? (segmentsRaw.segments as unknown[])
+          : null
+
+      if (segmentsArray && segmentsArray.length > 0) {
+        const segsCopy: AgentSegment[] = segments.map(seg => ({
+          ...seg,
+          shots: seg.shots.map(shot => ({ ...shot }))
+        }))
+        const segIndex = new Map(segsCopy.map((s, idx) => [s.id, idx]))
+
+        for (const segItem of segmentsArray) {
+          if (!isRecord(segItem)) continue
+          const segIdVal = pick(segItem, 'id', 'segment_id', 'segmentId')
+          const segId = typeof segIdVal === 'string' && segIdVal.trim() ? segIdVal.trim() : ''
+          if (!segId) continue
+
+          const existingIdx = segIndex.get(segId)
+          const segObj: AgentSegment = existingIdx != null
+            ? segsCopy[existingIdx]
+            : {
+                id: segId,
+                name: segId,
+                description: '',
+                shots: [],
+                created_at: now
+              }
+
+          const segName = pick(segItem, 'name', 'segment_name')
+          const segDesc = pick(segItem, 'description', 'segment_description')
+          if (typeof segName === 'string' && segName.trim()) segObj.name = segName.trim()
+          if (typeof segDesc === 'string') segObj.description = segDesc
+
+          const shotsRaw = pick(segItem, 'shots', 'Shots')
+          if (Array.isArray(shotsRaw)) {
+            const shotIndex = new Map(segObj.shots.map((s, idx) => [s.id, idx]))
+            for (const shotItem of shotsRaw) {
+              if (!isRecord(shotItem)) continue
+              const shotIdVal = pick(shotItem, 'id', 'shot_id', 'shotId')
+              const shotId = typeof shotIdVal === 'string' && shotIdVal.trim() ? shotIdVal.trim() : ''
+              if (!shotId) continue
+
+              const sidx = shotIndex.get(shotId)
+              const shotObj: AgentShot = sidx != null
+                ? segObj.shots[sidx]
+                : {
+                    id: shotId,
+                    name: shotId,
+                    type: 'standard',
+                    description: '',
+                    prompt: '',
+                    narration: '',
+                    duration: 5,
+                    status: 'pending',
+                    created_at: now
+                  }
+
+              const sName = pick(shotItem, 'name', 'shot_name')
+              const sType = pick(shotItem, 'type', 'shot_type')
+              const sDesc = pick(shotItem, 'description', 'shot_description')
+              const sPrompt = pick(shotItem, 'prompt')
+              const sVideoPrompt = pick(shotItem, 'video_prompt', 'videoPrompt')
+              const sNarr = pick(shotItem, 'narration')
+              const sDialogue = pick(shotItem, 'dialogue_script', 'dialogueScript')
+              const sDur = parseDuration(pick(shotItem, 'duration'))
+
+              if (typeof sName === 'string' && sName.trim()) shotObj.name = sName.trim()
+              if (typeof sType === 'string' && sType.trim()) shotObj.type = sType.trim()
+              if (typeof sDesc === 'string') shotObj.description = sDesc
+              if (typeof sPrompt === 'string') shotObj.prompt = sPrompt
+              if (typeof sVideoPrompt === 'string') shotObj.video_prompt = sVideoPrompt
+              if (typeof sNarr === 'string') shotObj.narration = sNarr
+              if (typeof sDialogue === 'string') shotObj.dialogue_script = sDialogue
+              if (sDur != null) shotObj.duration = sDur
+
+              if (sidx == null) {
+                segObj.shots = [...segObj.shots, shotObj]
+                shotIndex.set(shotId, segObj.shots.length - 1)
+              }
+            }
+          }
+
+          if (existingIdx == null) {
+            segsCopy.push(segObj)
+            segIndex.set(segId, segsCopy.length - 1)
+          } else {
+            segsCopy[existingIdx] = { ...segObj, shots: [...segObj.shots] }
+          }
+        }
+
+        nextSegments = segsCopy
+        segmentsChanged = true
+      }
+
+      if (!briefChanged && !elementsChanged && !segmentsChanged) {
+        addMessage('assistant', '⚠️ 未发现可应用的变更')
+        return
+      }
+
+      if (briefChanged) setCreativeBrief(nextCreativeBrief)
+      if (elementsChanged) {
+        setElements(nextElements)
+        setExpandedElements(prev => new Set([...Array.from(prev), ...Object.keys(nextElements)]))
+      }
+      if (segmentsChanged) {
+        setSegments(nextSegments)
+        setExpandedSegments(prev => new Set([...Array.from(prev), ...nextSegments.map(s => s.id)]))
+      }
+
+      setActiveModule('storyboard')
+      setHasUnsavedChanges(true)
+
+      if (projectId) {
+        try {
+          const updates: Partial<AgentProject> = {}
+          if (briefChanged) updates.creative_brief = nextCreativeBrief
+          if (elementsChanged) updates.elements = nextElements
+          if (segmentsChanged) updates.segments = nextSegments
+          await updateAgentProject(projectId, updates)
+          addMessage('assistant', '✅ 已应用到故事板并保存')
+        } catch (e) {
+          console.error('[AgentPage] apply_agent_patch save failed:', e)
+          addMessage('assistant', `❌ 保存失败：${e instanceof Error ? e.message : '未知错误'}`)
+        }
+      } else {
+        addMessage('assistant', '✅ 已应用到故事板（未保存项目），可点击左下角保存')
+      }
     } else if (action === 'view_storyboard') {
       // 切换到分镜面板并展开所有相关卡片
       setActiveModule('storyboard')
@@ -1248,20 +1553,30 @@ ${plan.elements.map(e => `- ${e.name} (${e.type})`).join('\n')}
           ])
         } else {
           setGenerationStage('idle')
-          const result = await agentChat(userMsg, projectId || undefined, {
+          const result = await agentChat(aiMessageContent, projectId || undefined, {
             elements,
             segments,
             chat_history: messages.slice(-20).map((m) => ({ role: m.role, content: m.content }))
           })
-          addMessage('assistant', result.content, result.data, result.options, result.confirmButton, result.progress)
+          const confirmButton =
+            result.confirmButton ||
+            (looksLikeAgentPatch(result.data)
+              ? { label: '应用到故事板', action: 'apply_agent_patch', payload: result.data }
+              : undefined)
+          addMessage('assistant', result.content, result.data, result.options, confirmButton, result.progress)
         }
       } else {
-        const result = await agentChat(userMsg, projectId || undefined, {
+        const result = await agentChat(aiMessageContent, projectId || undefined, {
           elements,
           segments,
           chat_history: messages.slice(-20).map((m) => ({ role: m.role, content: m.content }))
         })
-        addMessage('assistant', result.content, result.data, result.options, result.confirmButton, result.progress)
+        const confirmButton =
+          result.confirmButton ||
+          (looksLikeAgentPatch(result.data)
+            ? { label: '应用到故事板', action: 'apply_agent_patch', payload: result.data }
+            : undefined)
+        addMessage('assistant', result.content, result.data, result.options, confirmButton, result.progress)
       }
     } catch (error: unknown) {
       console.error('发送失败:', error)

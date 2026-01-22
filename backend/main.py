@@ -1274,12 +1274,39 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
         base64_data = base64.b64encode(content).decode("utf-8")
         preview_url = f"data:{content_type};base64,{base64_data}"
     
-    # 对于文本文件，返回内容
+    # 对于文本文件，返回内容（尽量解码）
     text_content = None
-    if category in ['code', 'document'] and file_size < 1024 * 1024:  # 小于 1MB 的文本文件
+    if category in ['code', 'document'] and file_size < 1024 * 1024 and ext not in ['.pdf', '.docx']:  # 小于 1MB 的文本文件
         try:
-            text_content = content.decode('utf-8')
-        except:
+            import codecs
+
+            if content.startswith(codecs.BOM_UTF8):
+                text_content = content.decode('utf-8-sig')
+            elif content.startswith(codecs.BOM_UTF16_LE) or content.startswith(codecs.BOM_UTF16_BE):
+                text_content = content.decode('utf-16')
+            else:
+                try:
+                    text_content = content.decode('utf-8')
+                except UnicodeDecodeError:
+                    sample = content[:4096]
+                    if sample and sample.count(b'\x00') / len(sample) > 0.2:
+                        try:
+                            text_content = content.decode('utf-16-le')
+                        except UnicodeDecodeError:
+                            try:
+                                text_content = content.decode('utf-16-be')
+                            except UnicodeDecodeError:
+                                text_content = None
+
+                    if text_content is None:
+                        try:
+                            text_content = content.decode('gb18030')
+                        except UnicodeDecodeError:
+                            try:
+                                text_content = content.decode('gbk')
+                            except UnicodeDecodeError:
+                                text_content = content.decode('utf-8', errors='replace')
+        except Exception:
             pass
     
     # 解析 Word 文档 (.docx)
