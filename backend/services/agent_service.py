@@ -583,12 +583,90 @@ class AgentService:
 
                 return "".join(out2)
 
+            repaired: Optional[str] = None
             try:
                 repaired = repair_jsonish(s)
                 if repaired and repaired != s:
-                    return json.loads(repaired)
+                    try:
+                        return json.loads(repaired)
+                    except Exception:
+                        pass
             except Exception:
-                return None
+                repaired = None
+
+            def salvage_truncated_json(text: str) -> Optional[str]:
+                """Attempt to close a truncated JSON object/array (best-effort).
+
+                This is useful when the model output is cut off mid-string near the end.
+                We close any unterminated string and then close remaining brackets.
+                """
+                t = (text or "").strip().lstrip("\ufeff")
+                if not t or t[0] not in "{[":
+                    return None
+
+                stack: List[str] = []
+                in_str = False
+                escape = False
+                for ch in t:
+                    if in_str:
+                        if escape:
+                            escape = False
+                        elif ch == "\\":
+                            escape = True
+                        elif ch == '"':
+                            in_str = False
+                        continue
+
+                    if ch == '"':
+                        in_str = True
+                        continue
+
+                    if ch in "{[":
+                        stack.append(ch)
+                        continue
+
+                    if ch in "}]":
+                        if not stack:
+                            return None
+                        opener = stack[-1]
+                        if (opener == "{" and ch == "}") or (opener == "[" and ch == "]"):
+                            stack.pop()
+                            continue
+                        return None
+
+                needs_fix = in_str or escape or bool(stack)
+                if not needs_fix:
+                    return None
+
+                out = t.rstrip()
+
+                # If we ended inside a string, make sure the closing quote won't be escaped.
+                if in_str:
+                    backslashes = 0
+                    i = len(out) - 1
+                    while i >= 0 and out[i] == "\\":
+                        backslashes += 1
+                        i -= 1
+                    if backslashes % 2 == 1:
+                        out += "\\"
+                    out += '"'
+
+                # Strip trailing separators that would break after we append closers.
+                out = out.rstrip()
+                while out and out[-1] in (",", ":"):
+                    out = out[:-1].rstrip()
+
+                for opener in reversed(stack):
+                    out += "}" if opener == "{" else "]"
+                return out
+
+            for candidate in (repaired, s):
+                salvaged = salvage_truncated_json(candidate or "")
+                if salvaged:
+                    try:
+                        return json.loads(salvaged)
+                    except Exception:
+                        pass
             return None
 
         # 1) Preferred: ```json ... ```
@@ -1050,7 +1128,7 @@ class AgentService:
                 model=self.model,
                 messages=messages,
                 temperature=0.7,
-                max_tokens=4000
+                max_tokens=6000
             )
             
             reply = response.choices[0].message.content or ""
@@ -1177,7 +1255,17 @@ class AgentService:
             creative_brief["narratorVoiceProfile"] = narrator_voice_profile
 
         # --- elements ---
-        elements_raw = pick(data, "elements", "key_elements", "Key_Elements", "characters", "assets")
+        elements_raw = pick(
+            data,
+            "elements",
+            "key_elements",
+            "Key_Elements",
+            "characters",
+            "assets",
+            "character_designs",
+            "characterDesigns",
+            "Character_Designs",
+        )
         elements: List[Dict[str, Any]] = []
 
         if isinstance(elements_raw, list):
@@ -1206,9 +1294,9 @@ class AgentService:
                 typ = as_str(pick(v, "type", "Type", "element_type", "Element_Type")) or ""
                 if typ not in ("character", "object", "scene"):
                     upper = eid.upper()
-                    if "SCENE" in upper or "BG" in upper:
+                    if "SCENE" in upper or "BG" in upper or "LOCATION" in upper:
                         typ = "scene"
-                    elif "PROP" in upper or "OBJECT" in upper or "ITEM" in upper:
+                    elif any(tok in upper for tok in ("PROP", "OBJECT", "ITEM", "PILLOW", "WEAPON", "TOOL", "VEHICLE", "CAR")):
                         typ = "object"
                     else:
                         typ = "character"
@@ -1218,6 +1306,31 @@ class AgentService:
                 if voice_profile:
                     out["voice_profile"] = voice_profile
                 elements.append(out)
+
+        # Ensure core elements exist (for schemas like { creative_brief: { core_elements: [...] } })
+        core_raw = pick(brief_raw, "core_elements", "coreElements", "Core_Elements")
+        core_ids: List[str] = []
+        if isinstance(core_raw, list):
+            for v in core_raw:
+                if isinstance(v, str) and v.strip():
+                    core_ids.append(ensure_prefix(v.strip(), "Element_", v.strip()))
+        if core_ids:
+            by_id: Dict[str, Dict[str, Any]] = {
+                e.get("id"): e for e in elements if isinstance(e, dict) and isinstance(e.get("id"), str) and e.get("id")
+            }
+            for cid in core_ids:
+                if cid in by_id:
+                    continue
+                upper = cid.upper()
+                if "SCENE" in upper or "BG" in upper or "LOCATION" in upper:
+                    typ = "scene"
+                elif any(tok in upper for tok in ("PROP", "OBJECT", "ITEM", "PILLOW", "WEAPON", "TOOL", "VEHICLE", "CAR")):
+                    typ = "object"
+                else:
+                    typ = "character"
+                placeholder = {"id": cid, "name": cid, "type": typ, "description": ""}
+                elements.append(placeholder)
+                by_id[cid] = placeholder
 
         # --- segments / shots ---
         def normalize_shot(raw_shot: Any, index: int) -> Dict[str, Any]:
@@ -1237,13 +1350,15 @@ class AgentService:
 
             sid = as_str(pick(raw_shot, "id", "shot_id", "Shot_Id", "shotId")) or as_str(pick(raw_shot, "shot", "number", "index"))
             sid = ensure_prefix(sid, "Shot_", f"Shot_{index+1}")
-            name = as_str(pick(raw_shot, "name", "shot_name", "Shot_Name", "title")) or sid
+            name = as_str(pick(raw_shot, "name", "shot_name", "Shot_Name", "title", "scene", "Scene")) or sid
             typ = as_str(pick(raw_shot, "type", "shot_type", "Shot_Type", "scene_type", "Scene_Type")) or "standard"
             duration = as_str(pick(raw_shot, "duration", "Duration", "duration_seconds", "durationSeconds")) or "5"
-            desc = as_str(pick(raw_shot, "description", "Description", "desc")) or ""
+            desc = as_str(
+                pick(raw_shot, "description", "Description", "desc", "visual_description", "Visual_Description", "shot_description", "Shot_Description")
+            ) or ""
             prompt = as_str(pick(raw_shot, "prompt", "Prompt", "image_prompt", "Image_Prompt", "imagePrompt")) or ""
             video_prompt = as_str(pick(raw_shot, "video_prompt", "Video_Prompt", "videoPrompt")) or ""
-            narration = as_str(pick(raw_shot, "narration", "Narration", "voiceover", "Voiceover")) or ""
+            narration = as_str(pick(raw_shot, "narration", "Narration", "voiceover", "Voiceover", "audio", "Audio")) or ""
             dialogue_script = as_str(pick(raw_shot, "dialogue_script", "Dialogue_Script", "dialogue", "Dialogue")) or ""
             return {
                 "id": sid,
@@ -1278,7 +1393,7 @@ class AgentService:
             for i, seg in enumerate(segments_raw):
                 segments.append(normalize_segment(seg, i))
         else:
-            shots_raw = pick(data, "storyboard_with_prompts", "Storyboard_With_Prompts", "shots", "Shots")
+            shots_raw = pick(data, "storyboard_with_prompts", "Storyboard_With_Prompts", "shots", "Shots", "storyboard", "Storyboard")
             if isinstance(shots_raw, list):
                 segments = [
                     {
@@ -1331,7 +1446,7 @@ class AgentService:
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.2,
-                max_tokens=6000
+                max_tokens=8000
             )
             
             reply = response.choices[0].message.content or ""
@@ -1356,7 +1471,7 @@ class AgentService:
                         {"role": "user", "content": repair_prompt},
                     ],
                     temperature=0.2,
-                    max_tokens=6000,
+                    max_tokens=8000,
                 )
                 repair_reply = repair_response.choices[0].message.content or ""
                 repaired = self._extract_json_from_reply(repair_reply)

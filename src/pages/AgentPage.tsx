@@ -116,7 +116,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function unwrapStructuredPayload(value: unknown): Record<string, unknown> | null {
   if (!isRecord(value)) return null
   let obj: Record<string, unknown> = value
-  for (const key of ['data', 'result', 'plan']) {
+  for (const key of ['data', 'result', 'plan', 'patch', 'updates']) {
     const inner = obj[key]
     if (isRecord(inner)) obj = inner
   }
@@ -136,8 +136,43 @@ function looksLikeAgentPatch(value: unknown): boolean {
     'key_elements',
     'Storyboard_With_Prompts',
     'storyboard_with_prompts',
+    'Storyboard',
+    'storyboard',
+    'Character_Designs',
+    'character_designs',
+    'characterDesigns',
   ]
   return keys.some((k) => k in obj)
+}
+
+function createAgentChatSessionId() {
+  return `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+function buildInitialAgentMessages(): ChatMessage[] {
+  return [
+    {
+      id: '1',
+      role: 'assistant',
+      content: `你好！我是 YuanYuan AI 视频制作助手 ✨
+
+我可以帮你将创意转化为完整的视频作品。只需要告诉我你想制作什么，我会：
+
+**第一步** 📋 分析需求，制定创意简报
+**第二步** 🎬 设计分镜，规划镜头序列  
+**第三步** 🎨 生成角色和场景素材
+**第四步** 🎥 将静态画面转化为动态视频
+**第五步** 🎵 添加旁白和背景音乐
+
+请描述你想制作的视频，例如：
+「制作格林童话《白蛇》的短片，时长1分钟，画风吉卜力2D」`,
+      options: [
+        { id: 'example1', label: '童话故事短片', value: '制作一个1分钟的童话短片，讲述白蛇的故事，画风吉卜力2D' },
+        { id: 'example2', label: '产品宣传视频', value: '制作一个30秒的产品宣传视频，现代简约风格' },
+        { id: 'example3', label: '教育动画', value: '制作一个2分钟的科普教育动画，解释光合作用' },
+      ],
+    },
+  ]
 }
 
 export default function AgentPage() {
@@ -150,14 +185,18 @@ export default function AgentPage() {
   const [activeModule, setActiveModule] = useState<ModuleType>('elements')
   const [projectName, setProjectName] = useState('未命名项目')
   const [projectId, setProjectId] = useState<string | null>(initialAgentProjectId)
-  const [sessionId] = useState<string>(() => {
+  const [sessionId, setSessionId] = useState<string>(() => {
     // 无项目时使用的 session ID，从 localStorage 获取或创建新的
     const saved = localStorage.getItem('agent-chat-session-id')
     if (saved) return saved
-    const newId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const newId = createAgentChatSessionId()
     localStorage.setItem('agent-chat-session-id', newId)
     return newId
   })
+  const sessionIdRef = useRef(sessionId)
+  useEffect(() => {
+    sessionIdRef.current = sessionId
+  }, [sessionId])
   const generationCancelRef = useRef<null | (() => void)>(null)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [showExitDialog, setShowExitDialog] = useState(false)
@@ -232,29 +271,7 @@ export default function AgentPage() {
   const [importShotRefsSelectedUrls, setImportShotRefsSelectedUrls] = useState<Set<string>>(new Set())
   const [importingShotRefs, setImportingShotRefs] = useState(false)
 
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: '1',
-      role: 'assistant',
-      content: `你好！我是 YuanYuan AI 视频制作助手 ✨
-
-我可以帮你将创意转化为完整的视频作品。只需要告诉我你想制作什么，我会：
-
-**第一步** 📋 分析需求，制定创意简报
-**第二步** 🎬 设计分镜，规划镜头序列  
-**第三步** 🎨 生成角色和场景素材
-**第四步** 🎥 将静态画面转化为动态视频
-**第五步** 🎵 添加旁白和背景音乐
-
-请描述你想制作的视频，例如：
-「制作格林童话《白蛇》的短片，时长1分钟，画风吉卜力2D」`,
-      options: [
-        { id: 'example1', label: '童话故事短片', value: '制作一个1分钟的童话短片，讲述白蛇的故事，画风吉卜力2D' },
-        { id: 'example2', label: '产品宣传视频', value: '制作一个30秒的产品宣传视频，现代简约风格' },
-        { id: 'example3', label: '教育动画', value: '制作一个2分钟的科普教育动画，解释光合作用' }
-      ]
-    }
-  ])
+  const [messages, setMessages] = useState<ChatMessage[]>(() => buildInitialAgentMessages())
   
   // 用于中断请求的 AbortController
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -366,8 +383,10 @@ export default function AgentPage() {
   // 无项目时加载 session 聊天记录
   useEffect(() => {
     if (!urlProjectId && sessionId) {
+      const sid = sessionId
       // 尝试从 session 加载之前的聊天记录
-      getChatHistory(sessionId, 'agent', 100).then(history => {
+      getChatHistory(sid, 'agent', 100).then(history => {
+        if (sessionIdRef.current !== sid) return
         if (history && history.length > 0) {
           // 转换格式并恢复
           const restoredMessages = history.map(msg => ({
@@ -444,6 +463,12 @@ export default function AgentPage() {
     setIsScriptDoctoring(false)
     setIsCompletingAssets(false)
     setIsAudioChecking(false)
+
+    setMessages(buildInitialAgentMessages())
+    const nextSessionId = createAgentChatSessionId()
+    sessionIdRef.current = nextSessionId
+    setSessionId(nextSessionId)
+    localStorage.setItem('agent-chat-session-id', nextSessionId)
 
     if (options?.showProjectList ?? true) {
       setShowProjectList(true)
@@ -1060,7 +1085,16 @@ export default function AgentPage() {
       const nextCreativeBrief = briefChanged ? { ...creativeBrief, ...briefPatch } : creativeBrief
 
       // --- elements ---
-      const elementsRaw = pick(root, 'elements', 'Key_Elements', 'key_elements', 'keyElements')
+      const elementsRaw = pick(
+        root,
+        'elements',
+        'Key_Elements',
+        'key_elements',
+        'keyElements',
+        'character_designs',
+        'characterDesigns',
+        'Character_Designs'
+      )
       let nextElements = elements
       let elementsChanged = false
 
@@ -1071,16 +1105,41 @@ export default function AgentPage() {
           : (typeof raw.Element_Name === 'string' && raw.Element_Name.trim())
             ? raw.Element_Name.trim()
             : current?.name || id
-        const type = (typeof raw.type === 'string' && raw.type.trim())
+        const rawType = (typeof raw.type === 'string' && raw.type.trim())
           ? raw.type.trim()
           : (typeof raw.Element_Type === 'string' && raw.Element_Type.trim())
             ? raw.Element_Type.trim()
-            : current?.type || 'character'
+            : ''
+
+        const inferredType = (() => {
+          const upper = id.toUpperCase()
+          if (upper.includes('SCENE') || upper.includes('BG') || upper.includes('LOCATION')) return 'scene'
+          if (
+            upper.includes('PROP') ||
+            upper.includes('OBJECT') ||
+            upper.includes('ITEM') ||
+            upper.includes('PILLOW') ||
+            upper.includes('WEAPON') ||
+            upper.includes('TOOL') ||
+            upper.includes('VEHICLE') ||
+            upper.includes('CAR')
+          ) return 'object'
+          return 'character'
+        })()
+
+        const type = ['character', 'scene', 'object'].includes(rawType)
+          ? rawType
+          : current?.type || inferredType
+
         const description = (typeof raw.description === 'string')
           ? raw.description
           : (typeof raw.Description === 'string')
             ? raw.Description
-            : current?.description || ''
+            : (typeof raw.visual_description === 'string')
+              ? raw.visual_description
+              : (typeof raw.visualDescription === 'string')
+                ? raw.visualDescription
+                : current?.description || ''
 
         const voice_profile = (typeof raw.voice_profile === 'string' && raw.voice_profile.trim())
           ? raw.voice_profile.trim()
@@ -1131,6 +1190,19 @@ export default function AgentPage() {
         }
       }
 
+      const coreElementsRaw = briefObj ? pick(briefObj, 'core_elements', 'coreElements', 'Core_Elements') : undefined
+      if (Array.isArray(coreElementsRaw)) {
+        for (const v of coreElementsRaw) {
+          if (typeof v !== 'string' || !v.trim()) continue
+          const rawId = v.trim()
+          const id = rawId.startsWith('Element_')
+            ? rawId
+            : `Element_${rawId.replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '')}`
+          if (!id || nextElements[id]) continue
+          applyElementPatch(id, { name: id })
+        }
+      }
+
       // --- segments/shots ---
       const segmentsRaw = pick(
         root,
@@ -1159,7 +1231,106 @@ export default function AgentPage() {
           ? (segmentsRaw.segments as unknown[])
           : null
 
-      if (segmentsArray && segmentsArray.length > 0) {
+      const looksLikeShotList =
+        segmentsArray &&
+        segmentsArray.length > 0 &&
+        isRecord(segmentsArray[0]) &&
+        !Array.isArray((segmentsArray[0] as { shots?: unknown }).shots) &&
+        (
+          'shot_id' in segmentsArray[0] ||
+          'shotId' in segmentsArray[0] ||
+          'scene' in segmentsArray[0] ||
+          'image_prompt' in segmentsArray[0] ||
+          'video_prompt' in segmentsArray[0]
+        )
+
+      if (looksLikeShotList && segmentsArray) {
+        const normalizeShotId = (rawId: unknown, idx: number) => {
+          if (typeof rawId === 'string' && rawId.trim()) {
+            const rid = rawId.trim()
+            if (rid.startsWith('Shot_')) return rid
+            if (/^\d+$/.test(rid)) return `Shot_${rid}`
+            const slug = rid.replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '') || `${idx + 1}`
+            return `Shot_${slug}`
+          }
+          if (typeof rawId === 'number' && Number.isFinite(rawId)) return `Shot_${rawId}`
+          return `Shot_${idx + 1}`
+        }
+
+        const segsCopy: AgentSegment[] = segments.map(seg => ({
+          ...seg,
+          shots: seg.shots.map(shot => ({ ...shot }))
+        }))
+
+        const findShot = (shotId: string): { segIdx: number; shotIdx: number } | null => {
+          for (let segIdx = 0; segIdx < segsCopy.length; segIdx += 1) {
+            const shots = segsCopy[segIdx].shots || []
+            for (let shotIdx = 0; shotIdx < shots.length; shotIdx += 1) {
+              if (shots[shotIdx].id === shotId) return { segIdx, shotIdx }
+            }
+          }
+          return null
+        }
+
+        let targetSegIdx = segsCopy.findIndex((s) => s.id === 'Segment_1')
+        if (targetSegIdx < 0) {
+          segsCopy.push({ id: 'Segment_1', name: 'Storyboard', description: '', shots: [], created_at: now })
+          targetSegIdx = segsCopy.length - 1
+        }
+        const targetSeg = segsCopy[targetSegIdx]
+
+        let touched = false
+        for (let i = 0; i < segmentsArray.length; i += 1) {
+          const shotItem = segmentsArray[i]
+          if (!isRecord(shotItem)) continue
+
+          const shotId = normalizeShotId(pick(shotItem, 'id', 'shot_id', 'shotId'), i)
+          if (!shotId) continue
+
+          const loc = findShot(shotId)
+          const shotObj: AgentShot = loc
+            ? segsCopy[loc.segIdx].shots[loc.shotIdx]
+            : {
+                id: shotId,
+                name: shotId,
+                type: 'standard',
+                description: '',
+                prompt: '',
+                narration: '',
+                duration: 5,
+                status: 'pending',
+                created_at: now
+              }
+
+          const sName = pick(shotItem, 'name', 'shot_name', 'scene', 'title')
+          const sType = pick(shotItem, 'type', 'shot_type')
+          const sDesc = pick(shotItem, 'description', 'shot_description', 'visual_description', 'visualDescription')
+          const sPrompt = pick(shotItem, 'prompt', 'image_prompt', 'imagePrompt')
+          const sVideoPrompt = pick(shotItem, 'video_prompt', 'videoPrompt')
+          const sNarr = pick(shotItem, 'narration', 'audio', 'voiceover')
+          const sDialogue = pick(shotItem, 'dialogue_script', 'dialogueScript')
+          const sDur = parseDuration(pick(shotItem, 'duration', 'duration_seconds', 'durationSeconds'))
+
+          if (typeof sName === 'string' && sName.trim()) shotObj.name = sName.trim()
+          if (typeof sType === 'string' && sType.trim()) shotObj.type = sType.trim()
+          if (typeof sDesc === 'string') shotObj.description = sDesc
+          if (typeof sPrompt === 'string') shotObj.prompt = sPrompt
+          if (typeof sVideoPrompt === 'string') shotObj.video_prompt = sVideoPrompt
+          if (typeof sNarr === 'string') shotObj.narration = sNarr
+          if (typeof sDialogue === 'string') shotObj.dialogue_script = sDialogue
+          if (sDur != null) shotObj.duration = sDur
+
+          if (!loc) {
+            targetSeg.shots = [...targetSeg.shots, shotObj]
+          }
+          touched = true
+        }
+
+        if (touched) {
+          nextSegments = segsCopy
+          segmentsChanged = true
+        }
+      } else if (segmentsArray && segmentsArray.length > 0) {
         const segsCopy: AgentSegment[] = segments.map(seg => ({
           ...seg,
           shots: seg.shots.map(shot => ({ ...shot }))
@@ -1395,6 +1566,7 @@ export default function AgentPage() {
       const looksLikeVideoBrief =
         /时长|分钟|秒|画风|风格|2d|3d|动漫|动画|短片|视频|故事|剧情|广告|宣传|教程|科普/i.test(userMsg) ||
         /\d+(?:\.\d+)?\s*(?:min|s)\b/i.test(userMsg.trim().toLowerCase())
+      const looksLikeStoryboardRequest = /分镜|拆解|脚本|故事板|storyboard|shot/i.test(userMsg)
       const isCreationRequest =
         !hasStoryboardStructure &&
         (userMsg.includes('制作') ||
@@ -1402,7 +1574,8 @@ export default function AgentPage() {
           userMsg.includes('做一个') ||
           // “生成”太泛：仅在明确“生成一个视频/短片/动画”等场景下才当作创作请求
           (userMsg.includes('生成') && (userMsg.includes('视频') || userMsg.includes('短片') || userMsg.includes('动画'))) ||
-          looksLikeVideoBrief)
+          looksLikeVideoBrief ||
+          looksLikeStoryboardRequest)
 
       if (isCreationRequest) {
         setGenerationStage('planning')
@@ -1558,12 +1731,19 @@ ${plan.elements.map(e => `- ${e.name} (${e.type})`).join('\n')}
             segments,
             chat_history: messages.slice(-20).map((m) => ({ role: m.role, content: m.content }))
           })
-          const confirmButton =
-            result.confirmButton ||
-            (looksLikeAgentPatch(result.data)
-              ? { label: '应用到故事板', action: 'apply_agent_patch', payload: result.data }
-              : undefined)
+          const isPatch = looksLikeAgentPatch(result.data)
+          const autoApplyPatch = isPatch && !result.confirmButton
+          const confirmButton = autoApplyPatch
+            ? undefined
+            : result.confirmButton ||
+              (isPatch
+                ? { label: '应用到故事板', action: 'apply_agent_patch', payload: result.data }
+                : undefined)
           addMessage('assistant', result.content, result.data, result.options, confirmButton, result.progress)
+
+          if (autoApplyPatch) {
+            await handleConfirmClick('apply_agent_patch', result.data)
+          }
         }
       } else {
         const result = await agentChat(aiMessageContent, projectId || undefined, {
@@ -1571,12 +1751,19 @@ ${plan.elements.map(e => `- ${e.name} (${e.type})`).join('\n')}
           segments,
           chat_history: messages.slice(-20).map((m) => ({ role: m.role, content: m.content }))
         })
-        const confirmButton =
-          result.confirmButton ||
-          (looksLikeAgentPatch(result.data)
-            ? { label: '应用到故事板', action: 'apply_agent_patch', payload: result.data }
-            : undefined)
+        const isPatch = looksLikeAgentPatch(result.data)
+        const autoApplyPatch = isPatch && !result.confirmButton
+        const confirmButton = autoApplyPatch
+          ? undefined
+          : result.confirmButton ||
+            (isPatch
+              ? { label: '应用到故事板', action: 'apply_agent_patch', payload: result.data }
+              : undefined)
         addMessage('assistant', result.content, result.data, result.options, confirmButton, result.progress)
+
+        if (autoApplyPatch) {
+          await handleConfirmClick('apply_agent_patch', result.data)
+        }
       }
     } catch (error: unknown) {
       console.error('发送失败:', error)

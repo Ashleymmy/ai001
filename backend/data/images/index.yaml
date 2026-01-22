@@ -1,4 +1,79 @@
 images:
+- id: d0a3252b
+  prompt: adult black and white Siberian Husky, bright and lively eyes, playful demeanor,
+    lying on the edge of a wooden bed, no extra people, no text, Makoto Shinkai style,
+    hyper-saturated lighting, intricate detailed backgrounds, Chinese mystical 2D
+    anime style, interior of a mysterious Chinese antique shop (Yishe) in deep dark
+    tones, dream sequence with exaggerated vibrant colors, real-world scene with strong
+    warm-cold color contrast, dramatic lighting, moody and mystical atmosphere, soft
+    glowing highlights in dream segments, sharp warm-cold color contrast in reality,
+    delicate depth-enhancing shadows, 8k resolution, ultra-detailed, high-definition
+    anime, crisp clean lines, cinematic composition, professional digital painting,
+    photorealistic anime rendering
+  negative_prompt: extra people, text, watermarks, blurry, low resolution, distorted
+    facial features, dull muted colors, messy composition, unrealistic body proportions,
+    deformed limbs, overexposed, underexposed, grainy texture
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769071000655636b2bbc085fdc04ce653f47fa25fd5686336d_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260122%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260122T083651Z&X-Tos-Expires=86400&X-Tos-Signature=9db69e32291a188e74e317c5ec55290704c7344825c3ca96d25580bca44d6927&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1104985001
+  style: null
+  created_at: '2026-01-22T16:36:49.191979'
+- id: 6c76ef76
+  prompt: 'Single 20s delicate young Chinese woman, unified non-split scene: In the
+    realistic segment (inside the mysterious Chinese antique shop ''Yishe''), she
+    has a pale complexion, wears a crisp white hospital gown, with gentle downcast
+    eyes and a quiet sitting posture; the seamlessly blended dream segment features
+    her with a radiant rosy complexion, flowing white dress, warm sweet smile, soft
+    tender eyes. 2D anime style infused with Chinese mystical aesthetics, Makoto Shinkai-inspired
+    highly saturated cinematic lighting, hyper-detailed intricate backgrounds, soft
+    painterly textures. Realistic area: deep dim tones, dramatic strong warm-cold
+    color contrast, low-key ambient glow; Dream area: vibrant exaggerated colors,
+    ethereal luminous highlights, smooth vivid color gradients, dreamy serene atmosphere.
+    8K, ultra-detailed, sharp focus, cinematic composition, masterpiece, best quality,
+    professional digital art, intricate linework, smooth color transitions, hyper-realistic
+    details'
+  negative_prompt: Split screen, multiple characters, distorted anatomy, ugly facial
+    features, blurry image, low resolution, messy composition, flat lighting, dull
+    colors, unrealistic proportions, text, watermarks, extra limbs, mutated bodies,
+    harsh shadows, overexposed areas, grainy texture
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769070813781ec7c419e696e48af9ca70b0dd67f0207d57624_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260122%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260122T083350Z&X-Tos-Expires=86400&X-Tos-Signature=147187a4a5c5855580828f77baab468a3e6941f778eaec389faf772aa298300e&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1281617553
+  style: null
+  created_at: '2026-01-22T16:33:48.849223'
+- id: 0a51b668
+  prompt: '20-year-old delicate Chinese woman, two cohesive states in one non-split
+    frame: in reality (inside dim mysterious Chinese antique shop ''Yashe''), pale
+    complexion, wearing crisp white hospital gown, weak slouched posture, downcast
+    gentle eyes; in overlapping dream sequence, same woman with rosy glowing complexion,
+    sweet warm smile, soft gentle eyes, flowing white dress, vibrant exaggerated saturated
+    colors. Makoto Shinkai style, 2D Chinese mystical anime aesthetic, hyper-detailed
+    intricate backgrounds, dramatic high-saturation lighting, strong warm-cold color
+    contrast in real scene, deep dim muted tones in antique shop interior, ethereal
+    glowing dream lighting, no extra characters, unified tonal coherence, 8k resolution,
+    ultra-detailed, sharp clean anime lines, cinematic composition, soft brushstrokes,
+    photorealistic texture details, immersive mystical atmosphere'
+  negative_prompt: split screen, multiple people, cluttered backgrounds, low resolution,
+    blurry edges, distorted facial features, dull desaturated colors, unrealistic
+    body proportions, text, watermarks, messy brushwork, flat lighting, extra irrelevant
+    objects
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/02176907067696413d48c4760d2f20ff0aabc46dcd14fa891c74e_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260122%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260122T083131Z&X-Tos-Expires=86400&X-Tos-Signature=cbdc46d257969e3d248276a7f74e9bf2baceba8128aa158dfc6d7a78ec5264e6&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1764059006
+  style: null
+  created_at: '2026-01-22T16:31:29.304716'
 - id: e5edd748
   prompt: 'Burly and muscular male doctor named Chunge, short resolute spiky hair,
     stethoscope looped around his neck, crisp white lab coat stretched taut by well-defined
@@ -535,4 +610,4 @@ images:
   seed: 1545869874
   style: ''
   created_at: '2026-01-07T17:35:45.571061'
-updated_at: '2026-01-22T10:14:34.497450'
+updated_at: '2026-01-22T16:36:49.191979'

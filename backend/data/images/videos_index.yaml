@@ -1,4 +1,17 @@
 videos:
+- id: 8c8bd829
+  task_id: cgt-20260122171026-g4mwm
+  source_image: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769071921910e90bb41e29889bfd3490746bb2652e401733b8_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260122%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260122T085300Z&X-Tos-Expires=86400&X-Tos-Signature=e5006073bb2c0711c9ca57689ef80b1502b1b97d859ff4c3b65324105416521f&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  prompt: '[Element_DOCTOR] leans back against wall, exhales deeply, closes eyes,
+    body relaxes, no-text'
+  video_url: https://ark-content-generation-cn-beijing.tos-cn-beijing.volces.com/doubao-seedance-1-0-pro/02176907302728500000000000000000000ffffac19102d58e425.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260122%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260122T091134Z&X-Tos-Expires=86400&X-Tos-Signature=16ad1d12f5b442f10b03f9edee4a195f487b398073a35ff5c01799bd63d23ac0&X-Tos-SignedHeaders=host
+  status: completed
+  provider: custom_ca16b98f
+  model: doubao-seedance-1-0-pro-250528
+  duration: 6.0
+  seed: 0
+  created_at: '2026-01-22T17:10:25.058787'
+  updated_at: '2026-01-22T17:11:37.678294'
 - id: e7cec62a
   task_id: cgt-20260114163027-8ftwc
   source_image: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217683566920528a58463ef17b425f3abf24ab17dedfd62e68eb_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260114%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260114T021218Z&X-Tos-Expires=86400&X-Tos-Signature=719426f8b44843e432ac35efe36a0e85fb34ac72b89d4b938ea7a7fda403300f&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
@@ -541,4 +554,4 @@ videos:
   seed: 0
   created_at: '2026-01-02T18:16:07.655581'
   updated_at: '2026-01-02T18:18:23.918478'
-updated_at: '2026-01-14T16:30:26.704488'
+updated_at: '2026-01-22T17:10:25.058787'
