@@ -1,4 +1,16 @@
 videos:
+- id: 7779c8d8
+  task_id: cgt-20260123145651-m2cl5
+  source_image: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/02176915131861205f4998a4b036137ca52d90e5e3ca4d8d394fd_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260123%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260123T065602Z&X-Tos-Expires=86400&X-Tos-Signature=3cdf3d47070c8dcdf0ef1fa5a34f1d70e6c1309a5c87b5446fa45fc669d161d3&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  prompt: '[Element_CURATOR]手部关节僵硬扭动，强行抓起剑，表情痛苦扭曲，身体抽搐'
+  video_url: https://ark-content-generation-cn-beijing.tos-cn-beijing.volces.com/doubao-seedance-1-0-pro/02176915141331200000000000000000000ffffac18020482b785.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260123%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260123T065740Z&X-Tos-Expires=86400&X-Tos-Signature=95ba6734b88f040ab38c905b67eba0e735d8ccab9a07d776d46d07cfea69efba&X-Tos-SignedHeaders=host
+  status: completed
+  provider: custom_ca16b98f
+  model: doubao-seedance-1-0-pro-250528
+  duration: 6.0
+  seed: 0
+  created_at: '2026-01-23T14:56:49.644329'
+  updated_at: '2026-01-23T14:57:39.187701'
 - id: 8c8bd829
   task_id: cgt-20260122171026-g4mwm
   source_image: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769071921910e90bb41e29889bfd3490746bb2652e401733b8_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260122%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260122T085300Z&X-Tos-Expires=86400&X-Tos-Signature=e5006073bb2c0711c9ca57689ef80b1502b1b97d859ff4c3b65324105416521f&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
@@ -554,4 +566,4 @@ videos:
   seed: 0
   created_at: '2026-01-02T18:16:07.655581'
   updated_at: '2026-01-02T18:18:23.918478'
-updated_at: '2026-01-22T17:10:25.058787'
+updated_at: '2026-01-23T14:56:49.644329'

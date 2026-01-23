@@ -3010,9 +3010,16 @@ class AgentExecutor:
                 if "围裙" in desc or "apron" in desc.lower():
                     key_features.append("apron")
                 # 年龄相关
-                if "5岁" in desc or "幼儿" in desc:
+                ages: List[int] = []
+                for m in re.finditer(r"(?<!\d)(\d{1,3})\s*岁", desc):
+                    try:
+                        ages.append(int(m.group(1)))
+                    except Exception:
+                        continue
+
+                if 5 in ages or ("幼儿" in desc and "幼儿园" not in desc):
                     key_features.append("5-year-old child")
-                if "30岁" in desc:
+                if 30 in ages:
                     key_features.append("30-year-old woman")
                 
                 if key_features:
