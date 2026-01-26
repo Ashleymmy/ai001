@@ -976,6 +976,18 @@ export async function updateAgentProject(
   return response.data
 }
 
+export async function applyAgentOperator(
+  projectId: string,
+  request: { kind: 'actions' | 'patch'; payload: unknown; executeRegenerate?: boolean }
+): Promise<{ success: boolean; project?: AgentProject; applied?: unknown; regen_results?: unknown; ui_hints?: unknown; error?: string }> {
+  const response = await api.post(`/api/agent/projects/${projectId}/operator/apply`, {
+    kind: request.kind,
+    payload: request.payload,
+    executeRegenerate: request.executeRegenerate ?? true
+  })
+  return response.data
+}
+
 export async function deleteAgentProject(projectId: string): Promise<void> {
   await api.delete(`/api/agent/projects/${projectId}`)
 }

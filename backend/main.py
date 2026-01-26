@@ -2110,6 +2110,12 @@ class AgentAudioCheckRequest(BaseModel):
     apply: bool = False
 
 
+class AgentOperatorApplyRequest(BaseModel):
+    kind: str = Field(default="actions", description="actions | patch")
+    payload: Any
+    executeRegenerate: bool = True
+
+
 def get_agent_service() -> AgentService:
     """获取 Agent 服务"""
     global agent_service
@@ -2404,6 +2410,21 @@ async def update_agent_project(project_id: str, updates: dict):
     
     print(f"[API] 项目已更新: {project.get('name')}")
     return project
+
+
+@app.post("/api/agent/projects/{project_id}/operator/apply")
+async def apply_agent_operator(project_id: str, request: AgentOperatorApplyRequest):
+    """Apply confirmed LLM edits (actions/patch) via backend operator."""
+    service = get_agent_service()
+    project = storage.get_agent_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    executor = get_agent_executor() if request.executeRegenerate else None
+    result = await service.apply_operator(project, request.kind, request.payload, executor=executor)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Apply failed"))
+    return result
 
 
 @app.post("/api/agent/projects/{project_id}/script-doctor")

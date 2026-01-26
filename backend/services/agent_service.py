@@ -212,6 +212,51 @@ class AgentService:
             return "workflow"
         return "general_chat"
 
+    def _looks_like_operator_request(self, message: str, project: Dict[str, Any]) -> bool:
+        """Heuristic: user is asking to edit existing project fields (cards/tabs).
+
+        When true, we switch YuanYuan into a strict machine-actionable JSON mode so
+        a backend "operator/worker" can safely apply updates.
+        """
+        msg = (message or "").strip()
+        if not msg:
+            return False
+
+        # Explicit IDs -> always an edit intent.
+        if re.search(r"\b(?:Shot|Element)_[A-Za-z0-9_]+\b", msg):
+            return True
+
+        # Avoid triggering on initial planning when there is no structure yet.
+        has_structure = False
+        try:
+            has_structure = bool(project.get("segments")) or bool(project.get("elements"))
+        except Exception:
+            has_structure = False
+        if not has_structure:
+            return False
+
+        verbs = [
+            "修改", "改成", "改为", "更新", "替换", "调整", "设为", "设置", "设定",
+            "删除", "移除", "新增", "添加", "插入", "批量", "全部", "所有",
+        ]
+        nouns = [
+            "镜头", "分镜", "旁白", "对白", "台词",
+            "角色", "元素", "音色", "声音",
+            "时长", "比例", "画风", "风格",
+            "标题", "项目名", "名称",
+            "voice", "prompt",
+        ]
+
+        msg_l = msg.lower()
+        if any(v in msg for v in verbs):
+            if any((n in msg_l) if n.isascii() else (n in msg) for n in nouns):
+                return True
+
+        if re.search(r"第\s*\d+\s*(?:个)?\s*(?:镜头|分镜)", msg):
+            return True
+
+        return False
+
     def _first_shot_id(self, project: Dict[str, Any]) -> Optional[str]:
         segments = project.get("segments", []) or []
         if not isinstance(segments, list):
@@ -304,6 +349,20 @@ class AgentService:
             return common_guardrails + """当前场景：技术排障/使用指导。
 - 先复述问题与现象 → 再给最可能的 2-3 个原因 → 给最短验证步骤（日志/接口/前端控制台）。
 - 如果需要看代码/配置，明确让用户提供哪些文件或关键输出。"""
+
+        if scene == "operator":
+            return common_guardrails + """当前场景：项目操作（给后端“职工”执行）。
+- 你的输出**必须**包含且只包含一个 ```json``` 代码块；JSON 顶层必须是对象，包含：
+  - "reply": 给用户看的说明（说明你将修改哪些卡片/字段、为什么）
+  - "actions": 可执行动作数组（给职工执行）
+  - "ui_hints": （可选）建议前端聚焦位置，如 {"activeModule":"storyboard","focus":{"type":"shot","id":"Shot_03"}}
+- actions 仅允许以下 type：
+  1) update_shot: { "shot_id": "Shot_XX", "patch": { "prompt"?, "video_prompt"?, "description"?, "narration"?, "dialogue_script"?, "duration"? }, "reason"? }
+  2) update_element: { "element_id": "Element_XX", "patch": { "description"?, "voice_profile"? }, "reason"? }
+  3) update_brief: { "patch": { "title"?, "videoType"?, "narrativeDriver"?, "emotionalTone"?, "visualStyle"?, "duration"?, "aspectRatio"?, "language"?, "narratorVoiceProfile"? }, "reason"? }
+  4) regenerate_shot_frame: { "shot_id": "Shot_XX", "visualStyle"? }（仅当用户明确要求“重新生成/重出图/重做起始帧”时）
+- 必须引用项目里真实存在的 Shot_ID / Element_ID；如果用户没给 ID，请先问清楚，不要猜。
+- 默认只改一个目标（一个镜头/一个元素/brief）；除非用户明确说“全部/批量/列出多个 ID”。"""
 
         if scene == "prompt_engineering":
             return common_guardrails + """当前场景：提示词/模型参数建议。
@@ -857,6 +916,16 @@ class AgentService:
             k in msg for k in ["对白", "台词", "对话脚本", "对白脚本"]
         )
         allow_duration = any(k in msg.lower() for k in ["duration"]) or any(k in msg for k in ["时长", "秒数", "持续时间"])
+        allow_voice_profile = any(k in msg.lower() for k in ["voice", "voice_profile", "voice profile"]) or any(
+            k in msg for k in ["音色", "声音", "配音", "旁白音色", "旁白声音", "角色音色", "角色声音"]
+        )
+
+        allow_brief_title = any(k in msg for k in ["标题", "项目名", "名称"])
+        allow_brief_visual_style = any(k in msg.lower() for k in ["visual", "style"]) or any(k in msg for k in ["画风", "风格"])
+        allow_brief_duration = any(k in msg for k in ["时长", "分钟", "秒"]) or ("duration" in msg.lower())
+        allow_brief_aspect_ratio = any(k in msg for k in ["比例", "横屏", "竖屏", "16:9", "9:16"])
+        allow_brief_language = ("language" in msg.lower()) or ("语言" in msg)
+        allow_brief_voice = any(k in msg.lower() for k in ["narrator", "voice"]) or any(k in msg for k in ["旁白音色", "旁白声音", "旁白配音"])
 
         max_text_len = 8000
 
@@ -956,14 +1025,93 @@ class AgentService:
                     return None
                 if not isinstance(patch, dict):
                     return None
+                safe_patch: Dict[str, Any] = {}
                 desc = patch.get("description")
-                if not isinstance(desc, str) or not desc.strip():
+                if isinstance(desc, str) and desc.strip():
+                    ds = desc.strip()
+                    if len(ds) > max_text_len:
+                        return None
+                    safe_patch["description"] = ds
+                if allow_voice_profile:
+                    vp = patch.get("voice_profile") if "voice_profile" in patch else patch.get("voiceProfile")
+                    if isinstance(vp, str) and vp.strip():
+                        vps = vp.strip()
+                        if len(vps) > max_text_len:
+                            return None
+                        safe_patch["voice_profile"] = vps
+                if not safe_patch:
                     return None
                 targets.add(f"element:{element_id}")
                 normalized.append({
                     "type": "update_element",
                     "element_id": element_id,
-                    "patch": {"description": desc.strip()},
+                    "patch": safe_patch,
+                    "reason": a.get("reason") if isinstance(a.get("reason"), str) else None
+                })
+
+            elif t == "update_brief":
+                patch = a.get("patch")
+                if not isinstance(patch, dict):
+                    return None
+
+                safe_patch: Dict[str, Any] = {}
+
+                def take_str(val: Any) -> Optional[str]:
+                    if isinstance(val, str) and val.strip():
+                        s = val.strip()
+                        if len(s) > max_text_len:
+                            return None
+                        return s
+                    return None
+
+                title = take_str(patch.get("title"))
+                if title and allow_brief_title:
+                    safe_patch["title"] = title
+
+                video_type = take_str(patch.get("videoType") if "videoType" in patch else patch.get("video_type"))
+                if video_type:
+                    safe_patch["videoType"] = video_type
+
+                narrative_driver = take_str(
+                    patch.get("narrativeDriver") if "narrativeDriver" in patch else patch.get("narrative_driver")
+                )
+                if narrative_driver:
+                    safe_patch["narrativeDriver"] = narrative_driver
+
+                emotional_tone = take_str(patch.get("emotionalTone") if "emotionalTone" in patch else patch.get("emotional_tone"))
+                if emotional_tone:
+                    safe_patch["emotionalTone"] = emotional_tone
+
+                visual_style = take_str(patch.get("visualStyle") if "visualStyle" in patch else patch.get("visual_style"))
+                if visual_style and allow_brief_visual_style:
+                    safe_patch["visualStyle"] = visual_style
+
+                duration = take_str(patch.get("duration"))
+                if duration and allow_brief_duration:
+                    safe_patch["duration"] = duration
+
+                aspect_ratio = take_str(patch.get("aspectRatio") if "aspectRatio" in patch else patch.get("aspect_ratio"))
+                if aspect_ratio and allow_brief_aspect_ratio:
+                    safe_patch["aspectRatio"] = aspect_ratio
+
+                language = take_str(patch.get("language"))
+                if language and allow_brief_language:
+                    safe_patch["language"] = language
+
+                narrator_voice = take_str(
+                    patch.get("narratorVoiceProfile")
+                    if "narratorVoiceProfile" in patch
+                    else patch.get("narrator_voice_profile")
+                )
+                if narrator_voice and allow_brief_voice:
+                    safe_patch["narratorVoiceProfile"] = narrator_voice
+
+                if not safe_patch:
+                    return None
+                targets.add("brief")
+                normalized.append({
+                    "type": "update_brief",
+                    "patch": safe_patch,
                     "reason": a.get("reason") if isinstance(a.get("reason"), str) else None
                 })
 
@@ -978,7 +1126,7 @@ class AgentService:
             return None
 
         # 保持 deterministic：update 在前、regenerate 在后
-        order = {"update_shot": 1, "update_element": 1, "regenerate_shot_frame": 2}
+        order = {"update_shot": 1, "update_element": 1, "update_brief": 1, "regenerate_shot_frame": 2}
         normalized.sort(key=lambda x: order.get(x.get("type"), 9))
         return normalized
     
@@ -1054,6 +1202,7 @@ class AgentService:
             messages = [{"role": "system", "content": self._get_prompt("agent.system_prompt", DEFAULT_AGENT_SYSTEM_PROMPT)}]
 
             ctx = context or {}
+            project = ctx.get("project") if isinstance(ctx, dict) else None
             # Optional global “manager/supervisor” mode (floating assistant)
             if isinstance(ctx, dict):
                 mode = ctx.get("assistant_mode") or ctx.get("assistantMode") or ctx.get("mode") or ctx.get("module")
@@ -1063,10 +1212,11 @@ class AgentService:
                         "content": self._get_prompt("agent.manager_system_prompt", DEFAULT_MANAGER_SYSTEM_PROMPT)
                     })
             scene = self._detect_scene(message)
+            if isinstance(project, dict) and self._looks_like_operator_request(message, project):
+                scene = "operator"
             messages.append({"role": "system", "content": self._scene_system_prompt(scene)})
 
             # 项目事实快照（禁止模型脑补）
-            project = ctx.get("project") if isinstance(ctx, dict) else None
             if isinstance(project, dict):
                 shortcut = self._maybe_frame_generation_shortcut(message, project)
                 if shortcut:
@@ -1765,6 +1915,562 @@ class AgentService:
             return match.group(0)
         
         return re.sub(r'\[Element_(\w+)\]', replace_element, prompt)
+
+    # ==================== Operator/Worker (apply edits) ====================
+
+    def _unwrap_structured_payload(self, value: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(value, dict):
+            return None
+        obj: Dict[str, Any] = value
+        for key in ("data", "result", "plan", "patch", "updates"):
+            inner = obj.get(key)
+            if isinstance(inner, dict):
+                obj = inner
+        return obj
+
+    def _find_shot_mut(self, project: AgentProject, shot_id: str) -> Optional[Dict[str, Any]]:
+        if not isinstance(project.segments, list):
+            return None
+        for seg in project.segments:
+            if not isinstance(seg, dict):
+                continue
+            for shot in (seg.get("shots") or []):
+                if isinstance(shot, dict) and shot.get("id") == shot_id:
+                    return shot
+        return None
+
+    def _normalize_operator_actions_for_apply(
+        self,
+        actions: Any,
+        project_data: Dict[str, Any],
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Validate/sanitize actions for backend execution (post-confirm).
+
+        This is stricter than "chat-time" parsing and does NOT rely on user text.
+        """
+        if not isinstance(actions, list):
+            return None
+
+        ids = self._collect_project_ids(project_data)
+        shot_ids = ids["shot_ids"]
+        element_ids = ids["element_ids"]
+
+        max_text_len = 8000
+        normalized: List[Dict[str, Any]] = []
+
+        def take_str(val: Any) -> Optional[str]:
+            if isinstance(val, str) and val.strip():
+                s = val.strip()
+                if len(s) > max_text_len:
+                    return None
+                return s
+            return None
+
+        for a in actions:
+            if not isinstance(a, dict):
+                return None
+            t = a.get("type")
+
+            if t == "update_shot":
+                shot_id = a.get("shot_id")
+                patch = a.get("patch")
+                if not isinstance(shot_id, str) or shot_id not in shot_ids:
+                    return None
+                if not isinstance(patch, dict):
+                    return None
+
+                safe_patch: Dict[str, Any] = {}
+                for key in ("prompt", "video_prompt", "description", "narration", "dialogue_script"):
+                    val = take_str(patch.get(key))
+                    if val:
+                        safe_patch[key] = val
+
+                # allow camelCase variants
+                vp2 = take_str(patch.get("videoPrompt"))
+                if vp2 and "video_prompt" not in safe_patch:
+                    safe_patch["video_prompt"] = vp2
+                dlg2 = take_str(patch.get("dialogueScript"))
+                if dlg2 and "dialogue_script" not in safe_patch:
+                    safe_patch["dialogue_script"] = dlg2
+
+                dur = self._coerce_float(patch.get("duration"))
+                if dur is not None:
+                    if dur <= 0 or dur > 600:
+                        return None
+                    safe_patch["duration"] = dur
+
+                if not safe_patch:
+                    return None
+                normalized.append({
+                    "type": "update_shot",
+                    "shot_id": shot_id,
+                    "patch": safe_patch,
+                    "reason": a.get("reason") if isinstance(a.get("reason"), str) else None,
+                })
+
+            elif t == "regenerate_shot_frame":
+                shot_id = a.get("shot_id")
+                if not isinstance(shot_id, str) or shot_id not in shot_ids:
+                    return None
+                normalized.append({
+                    "type": "regenerate_shot_frame",
+                    "shot_id": shot_id,
+                    "visualStyle": a.get("visualStyle") if isinstance(a.get("visualStyle"), str) else None,
+                })
+
+            elif t == "update_element":
+                element_id = a.get("element_id")
+                patch = a.get("patch")
+                if not isinstance(element_id, str) or element_id not in element_ids:
+                    return None
+                if not isinstance(patch, dict):
+                    return None
+
+                safe_patch: Dict[str, Any] = {}
+                desc = take_str(patch.get("description"))
+                if desc:
+                    safe_patch["description"] = desc
+                vp = take_str(patch.get("voice_profile") if "voice_profile" in patch else patch.get("voiceProfile"))
+                if vp:
+                    safe_patch["voice_profile"] = vp
+                if not safe_patch:
+                    return None
+
+                normalized.append({
+                    "type": "update_element",
+                    "element_id": element_id,
+                    "patch": safe_patch,
+                    "reason": a.get("reason") if isinstance(a.get("reason"), str) else None,
+                })
+
+            elif t == "update_brief":
+                patch = a.get("patch")
+                if not isinstance(patch, dict):
+                    return None
+
+                safe_patch: Dict[str, Any] = {}
+                # Canonicalize into frontend-friendly camelCase keys
+                for key in (
+                    "title",
+                    "videoType",
+                    "narrativeDriver",
+                    "emotionalTone",
+                    "visualStyle",
+                    "duration",
+                    "aspectRatio",
+                    "language",
+                    "narratorVoiceProfile",
+                ):
+                    val = take_str(patch.get(key))
+                    if val:
+                        safe_patch[key] = val
+
+                # snake_case fallbacks
+                mapping = {
+                    "video_type": "videoType",
+                    "narrative_driver": "narrativeDriver",
+                    "emotional_tone": "emotionalTone",
+                    "visual_style": "visualStyle",
+                    "aspect_ratio": "aspectRatio",
+                    "narrator_voice_profile": "narratorVoiceProfile",
+                }
+                for src, dst in mapping.items():
+                    if dst in safe_patch:
+                        continue
+                    val = take_str(patch.get(src))
+                    if val:
+                        safe_patch[dst] = val
+
+                if not safe_patch:
+                    return None
+                normalized.append({
+                    "type": "update_brief",
+                    "patch": safe_patch,
+                    "reason": a.get("reason") if isinstance(a.get("reason"), str) else None,
+                })
+
+            else:
+                return None
+
+        if len(normalized) > 50:
+            return None
+
+        order = {"update_shot": 1, "update_element": 1, "update_brief": 1, "regenerate_shot_frame": 2}
+        normalized.sort(key=lambda x: order.get(x.get("type"), 9))
+        return normalized
+
+    def _apply_operator_patch_inplace(self, project: AgentProject, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Best-effort merge patch into project (used by confirm/apply)."""
+        root = self._unwrap_structured_payload(payload) or payload
+        now = datetime.utcnow().isoformat() + "Z"
+
+        def pick(obj: Dict[str, Any], *keys: str) -> Any:
+            for k in keys:
+                if k in obj:
+                    return obj.get(k)
+            return None
+
+        def take_str(val: Any) -> Optional[str]:
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+            return None
+
+        applied: Dict[str, Any] = {"kind": "patch", "updated": {"brief": False, "elements": 0, "shots": 0}}
+
+        # ---- creative brief ----
+        brief_raw = pick(root, "creative_brief", "creativeBrief", "Creative_Brief", "brief")
+        if isinstance(brief_raw, dict):
+            cb = project.creative_brief if isinstance(project.creative_brief, dict) else {}
+            mapping = {
+                "title": ("title", "Project_Name", "project_name", "name"),
+                "videoType": ("videoType", "video_type", "Video_Type"),
+                "narrativeDriver": ("narrativeDriver", "narrative_driver", "Narrative_Driver"),
+                "emotionalTone": ("emotionalTone", "emotional_tone", "Emotional_Tone", "Core_Theme"),
+                "visualStyle": ("visualStyle", "visual_style", "Visual_Style"),
+                "duration": ("duration", "total_duration", "Total_Duration"),
+                "aspectRatio": ("aspectRatio", "aspect_ratio", "Aspect_Ratio"),
+                "language": ("language", "Language"),
+                "narratorVoiceProfile": ("narratorVoiceProfile", "narrator_voice_profile", "Narrator_Voice_Profile"),
+            }
+            for dst, keys in mapping.items():
+                for k in keys:
+                    v = take_str(brief_raw.get(k))
+                    if v:
+                        cb[dst] = v
+                        applied["updated"]["brief"] = True
+                        if dst == "title":
+                            project.name = v
+                        break
+            project.creative_brief = cb
+
+        # ---- elements ----
+        elements_raw = pick(
+            root,
+            "elements",
+            "Key_Elements",
+            "key_elements",
+            "keyElements",
+            "character_designs",
+            "characterDesigns",
+            "Character_Designs",
+        )
+        if isinstance(elements_raw, list):
+            items = [x for x in elements_raw if isinstance(x, dict)]
+            for item in items:
+                eid = take_str(item.get("id"))
+                if not eid:
+                    continue
+                cur = project.elements.get(eid) if isinstance(project.elements, dict) else None
+                cur = cur if isinstance(cur, dict) else {"id": eid, "created_at": now}
+                for key in ("name", "Element_Name"):
+                    v = take_str(item.get(key))
+                    if v:
+                        cur["name"] = v
+                        break
+                for key in ("type", "Element_Type"):
+                    v = take_str(item.get(key))
+                    if v:
+                        cur["type"] = v
+                        break
+                for key in ("description", "Description", "visual_description", "visualDescription"):
+                    v = take_str(item.get(key))
+                    if v is not None:
+                        cur["description"] = v
+                        break
+                vp = take_str(item.get("voice_profile") if "voice_profile" in item else item.get("voiceProfile"))
+                if vp:
+                    cur["voice_profile"] = vp
+                project.elements[eid] = cur
+                applied["updated"]["elements"] += 1
+        elif isinstance(elements_raw, dict):
+            for k, v in elements_raw.items():
+                if not isinstance(v, dict):
+                    continue
+                eid = take_str(v.get("id")) or (k if isinstance(k, str) and k else None)
+                if not eid:
+                    continue
+                cur = project.elements.get(eid) if isinstance(project.elements, dict) else None
+                cur = cur if isinstance(cur, dict) else {"id": eid, "created_at": now}
+                name = take_str(v.get("name") or v.get("Element_Name"))
+                if name:
+                    cur["name"] = name
+                typ = take_str(v.get("type") or v.get("Element_Type"))
+                if typ:
+                    cur["type"] = typ
+                desc = take_str(v.get("description") or v.get("Description") or v.get("visual_description") or v.get("visualDescription"))
+                if desc is not None:
+                    cur["description"] = desc
+                vp = take_str(v.get("voice_profile") if "voice_profile" in v else v.get("voiceProfile"))
+                if vp:
+                    cur["voice_profile"] = vp
+                project.elements[eid] = cur
+                applied["updated"]["elements"] += 1
+
+        # ---- segments/shots (update existing, add if missing) ----
+        segments_raw = pick(root, "segments", "Storyboard_With_Prompts", "storyboard_with_prompts", "storyboard", "Storyboard")
+        segments_array: Optional[List[Any]] = None
+        if isinstance(segments_raw, list):
+            segments_array = segments_raw
+        elif isinstance(segments_raw, dict) and isinstance(segments_raw.get("segments"), list):
+            segments_array = segments_raw.get("segments")  # type: ignore[assignment]
+
+        if isinstance(segments_array, list):
+            def normalize_shot_id(raw_id: Any, idx: int) -> str:
+                if isinstance(raw_id, str) and raw_id.strip():
+                    rid = raw_id.strip()
+                    if rid.startswith("Shot_"):
+                        return rid
+                    if rid.isdigit():
+                        return f"Shot_{rid}"
+                    slug = re.sub(r"[^A-Za-z0-9_]+", "_", rid).strip("_") or str(idx + 1)
+                    return f"Shot_{slug}"
+                if isinstance(raw_id, (int, float)):
+                    return f"Shot_{int(raw_id)}"
+                return f"Shot_{idx + 1}"
+
+            # segment list format
+            first = segments_array[0] if segments_array else None
+            is_segment_list = isinstance(first, dict) and isinstance(first.get("shots"), list)
+
+            if is_segment_list:
+                # Merge by Segment ID; create if not exists.
+                if not isinstance(project.segments, list):
+                    project.segments = []
+                seg_map = {s.get("id"): s for s in project.segments if isinstance(s, dict) and isinstance(s.get("id"), str)}
+
+                for seg_item in segments_array:
+                    if not isinstance(seg_item, dict):
+                        continue
+                    seg_id = take_str(seg_item.get("id")) or None
+                    if not seg_id:
+                        continue
+                    seg_obj = seg_map.get(seg_id)
+                    if not isinstance(seg_obj, dict):
+                        seg_obj = {"id": seg_id, "name": seg_id, "description": "", "shots": [], "created_at": now}
+                        project.segments.append(seg_obj)
+                        seg_map[seg_id] = seg_obj
+
+                    sname = take_str(seg_item.get("name"))
+                    if sname:
+                        seg_obj["name"] = sname
+                    sdesc = take_str(seg_item.get("description"))
+                    if sdesc is not None:
+                        seg_obj["description"] = sdesc
+
+                    shots_patch = seg_item.get("shots") or []
+                    if not isinstance(shots_patch, list):
+                        continue
+                    shot_map = {s.get("id"): s for s in (seg_obj.get("shots") or []) if isinstance(s, dict) and isinstance(s.get("id"), str)}
+                    for idx, sp in enumerate(shots_patch):
+                        if not isinstance(sp, dict):
+                            continue
+                        sid = take_str(sp.get("id")) or normalize_shot_id(sp.get("shot_id") or sp.get("shotId"), idx)
+                        if not sid:
+                            continue
+                        shot_obj = shot_map.get(sid)
+                        if not isinstance(shot_obj, dict):
+                            shot_obj = {
+                                "id": sid,
+                                "name": sid,
+                                "type": "standard",
+                                "description": "",
+                                "prompt": "",
+                                "narration": "",
+                                "duration": 5,
+                                "status": "pending",
+                                "created_at": now,
+                            }
+                            seg_obj["shots"] = list(seg_obj.get("shots") or []) + [shot_obj]
+                            shot_map[sid] = shot_obj
+
+                        for key, dst in (
+                            ("name", "name"),
+                            ("type", "type"),
+                            ("description", "description"),
+                            ("prompt", "prompt"),
+                            ("video_prompt", "video_prompt"),
+                            ("videoPrompt", "video_prompt"),
+                            ("narration", "narration"),
+                            ("dialogue_script", "dialogue_script"),
+                            ("dialogueScript", "dialogue_script"),
+                        ):
+                            v = take_str(sp.get(key))
+                            if v is not None and v != "":
+                                shot_obj[dst] = v
+                        dur = self._coerce_float(sp.get("duration") or sp.get("duration_seconds") or sp.get("durationSeconds"))
+                        if dur is not None and dur > 0:
+                            shot_obj["duration"] = dur
+                        applied["updated"]["shots"] += 1
+            else:
+                # flat shot list format -> merge into Segment_1
+                if not isinstance(project.segments, list):
+                    project.segments = []
+                target_seg = next((s for s in project.segments if isinstance(s, dict) and s.get("id") == "Segment_1"), None)
+                if not isinstance(target_seg, dict):
+                    target_seg = {"id": "Segment_1", "name": "Storyboard", "description": "", "shots": [], "created_at": now}
+                    project.segments.append(target_seg)
+                shots = target_seg.get("shots") or []
+                if not isinstance(shots, list):
+                    shots = []
+                shot_map = {s.get("id"): s for s in shots if isinstance(s, dict) and isinstance(s.get("id"), str)}
+                for idx, sp in enumerate(segments_array):
+                    if not isinstance(sp, dict):
+                        continue
+                    sid = normalize_shot_id(sp.get("id") or sp.get("shot_id") or sp.get("shotId"), idx)
+                    shot_obj = shot_map.get(sid)
+                    if not isinstance(shot_obj, dict):
+                        shot_obj = {"id": sid, "name": sid, "type": "standard", "description": "", "prompt": "", "narration": "", "duration": 5, "status": "pending", "created_at": now}
+                        shots.append(shot_obj)
+                        shot_map[sid] = shot_obj
+
+                    for key, dst in (
+                        ("name", "name"),
+                        ("type", "type"),
+                        ("description", "description"),
+                        ("prompt", "prompt"),
+                        ("image_prompt", "prompt"),
+                        ("video_prompt", "video_prompt"),
+                        ("videoPrompt", "video_prompt"),
+                        ("narration", "narration"),
+                        ("dialogue_script", "dialogue_script"),
+                        ("dialogueScript", "dialogue_script"),
+                    ):
+                        v = take_str(sp.get(key))
+                        if v is not None and v != "":
+                            shot_obj[dst] = v
+                    dur = self._coerce_float(sp.get("duration") or sp.get("duration_seconds") or sp.get("durationSeconds"))
+                    if dur is not None and dur > 0:
+                        shot_obj["duration"] = dur
+                    applied["updated"]["shots"] += 1
+                target_seg["shots"] = shots
+
+        return applied
+
+    async def apply_operator(
+        self,
+        project_data: Dict[str, Any],
+        kind: str,
+        payload: Any,
+        executor: Any = None,
+    ) -> Dict[str, Any]:
+        """Apply a confirmed LLM patch/actions to the project (backend operator)."""
+        if not isinstance(project_data, dict):
+            return {"success": False, "error": "project_data must be a dict"}
+
+        k = (kind or "").strip().lower()
+        project = AgentProject.from_dict(project_data)
+
+        try:
+            if k == "actions":
+                normalized = self._normalize_operator_actions_for_apply(payload, project_data)
+                if not normalized:
+                    return {"success": False, "error": "Invalid actions payload"}
+
+                updated_shots: List[str] = []
+                updated_elements: List[str] = []
+                brief_changed = False
+                regen_actions: List[Dict[str, Any]] = []
+
+                for a in normalized:
+                    t = a.get("type")
+                    if t == "regenerate_shot_frame":
+                        regen_actions.append(a)
+                        continue
+
+                    if t == "update_shot":
+                        sid = a.get("shot_id")
+                        if not isinstance(sid, str):
+                            continue
+                        shot = self._find_shot_mut(project, sid)
+                        if not isinstance(shot, dict):
+                            continue
+                        patch_d = a.get("patch") if isinstance(a.get("patch"), dict) else {}
+                        for key in ("prompt", "video_prompt", "description", "narration", "dialogue_script"):
+                            v = patch_d.get(key)
+                            if isinstance(v, str):
+                                shot[key] = v
+                        if "duration" in patch_d:
+                            dur = self._coerce_float(patch_d.get("duration"))
+                            if dur is not None and dur > 0:
+                                shot["duration"] = dur
+                        updated_shots.append(sid)
+
+                    if t == "update_element":
+                        eid = a.get("element_id")
+                        if not isinstance(eid, str):
+                            continue
+                        elem = project.elements.get(eid) if isinstance(project.elements, dict) else None
+                        if not isinstance(elem, dict):
+                            continue
+                        patch_d = a.get("patch") if isinstance(a.get("patch"), dict) else {}
+                        for key in ("description", "voice_profile"):
+                            v = patch_d.get(key)
+                            if isinstance(v, str):
+                                elem[key] = v
+                        project.elements[eid] = elem
+                        updated_elements.append(eid)
+
+                    if t == "update_brief":
+                        patch_d = a.get("patch") if isinstance(a.get("patch"), dict) else {}
+                        cb = project.creative_brief if isinstance(project.creative_brief, dict) else {}
+                        for key, val in patch_d.items():
+                            if isinstance(val, str) and val.strip():
+                                cb[key] = val.strip()
+                                if key == "title":
+                                    project.name = val.strip()
+                        project.creative_brief = cb
+                        brief_changed = True
+
+                regen_results: List[Dict[str, Any]] = []
+                if executor and regen_actions:
+                    default_style = None
+                    if isinstance(project.creative_brief, dict):
+                        default_style = project.creative_brief.get("visualStyle") or project.creative_brief.get("visual_style")
+                    for a in regen_actions:
+                        sid = a.get("shot_id")
+                        if not isinstance(sid, str):
+                            continue
+                        style = a.get("visualStyle") if isinstance(a.get("visualStyle"), str) and a.get("visualStyle") else default_style
+                        try:
+                            res = await executor.regenerate_single_frame(project, sid, visual_style=style or "cinematic")
+                        except Exception as e:
+                            res = {"success": False, "shot_id": sid, "error": str(e)}
+                        regen_results.append(res)
+
+                self.storage.save_agent_project(project.to_dict())
+
+                ui_hints: Dict[str, Any] = {}
+                if updated_shots or regen_actions:
+                    ui_hints = {"activeModule": "storyboard", "focus": {"type": "shot", "id": (updated_shots or [regen_actions[0]["shot_id"]])[0]}}
+                elif updated_elements:
+                    ui_hints = {"activeModule": "elements", "focus": {"type": "element", "id": updated_elements[0]}}
+                elif brief_changed:
+                    ui_hints = {"expandCards": ["brief"]}
+
+                return {
+                    "success": True,
+                    "project": project.to_dict(),
+                    "applied": {
+                        "kind": "actions",
+                        "updated_shots": list(dict.fromkeys(updated_shots)),
+                        "updated_elements": list(dict.fromkeys(updated_elements)),
+                        "brief_changed": brief_changed,
+                        "regenerated": len(regen_results),
+                    },
+                    "regen_results": regen_results,
+                    "ui_hints": ui_hints,
+                }
+
+            if k == "patch":
+                if not isinstance(payload, dict):
+                    return {"success": False, "error": "Patch payload must be an object"}
+                applied = self._apply_operator_patch_inplace(project, payload)
+                self.storage.save_agent_project(project.to_dict())
+                return {"success": True, "project": project.to_dict(), "applied": applied, "ui_hints": {"expandCards": ["brief", "storyboard"]}}
+
+            return {"success": False, "error": f"Unsupported kind: {kind}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
 
 

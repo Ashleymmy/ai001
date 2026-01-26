@@ -11,6 +11,7 @@ import {
 import {
   agentChat, agentPlanProject, agentGenerateElementPrompt,
   createAgentProject, getAgentProject, updateAgentProject, listAgentProjects,
+  applyAgentOperator,
   scriptDoctorAgentProject, completeAssetsAgentProject, audioCheckAgentProject,
   generateImage, generateVideo, checkVideoTaskStatus,
   generateProjectElementsStream,
@@ -871,6 +872,36 @@ export default function AgentPage() {
         return
       }
 
+      // 优先走后端“职工”执行（统一校验+落盘），前端只做适配与 UI 更新
+      try {
+        const res = await applyAgentOperator(projectId, { kind: 'actions', payload: actions, executeRegenerate: true })
+        if (!res.success) {
+          addMessage('assistant', `❌ 应用修改失败：${(res as { error?: string }).error || '未知错误'}`)
+          return
+        }
+
+        if (res.project) {
+          setProjectName(res.project.name)
+          setElements(res.project.elements || {})
+          setSegments(res.project.segments || [])
+          setCreativeBrief((res.project.creative_brief || {}) as CreativeBrief)
+          setHasUnsavedChanges(false)
+        } else {
+          await loadProject(projectId)
+        }
+
+        const ui = (res.ui_hints as { activeModule?: string } | undefined) || undefined
+        if (ui?.activeModule) setActiveModule(ui.activeModule as ModuleType)
+
+        addMessage('assistant', '✅ 已应用修改')
+        return
+      } catch (err) {
+        console.error('[AgentPage] apply_agent_actions operator apply failed:', err)
+        addMessage('assistant', `❌ 应用修改失败：${err instanceof Error ? err.message : '未知错误'}`)
+        return
+      }
+
+      /* Legacy: moved to backend operator
       type AgentAction =
         | {
             type: 'update_shot'
@@ -1042,7 +1073,43 @@ export default function AgentPage() {
           }
         }
       }
+      */
     } else if (action === 'apply_agent_patch') {
+      if (!projectId) {
+        addMessage('assistant', '⚠️ 请先保存 Agent 项目后再应用修改')
+        return
+      }
+
+      // 优先走后端“职工”执行（统一校验+落盘），前端只做适配与 UI 更新
+      try {
+        const res = await applyAgentOperator(projectId, { kind: 'patch', payload })
+        if (!res.success) {
+          addMessage('assistant', `❌ 应用修改失败：${(res as { error?: string }).error || '未知错误'}`)
+          return
+        }
+
+        if (res.project) {
+          setProjectName(res.project.name)
+          setElements(res.project.elements || {})
+          setSegments(res.project.segments || [])
+          setCreativeBrief((res.project.creative_brief || {}) as CreativeBrief)
+          setHasUnsavedChanges(false)
+        } else {
+          await loadProject(projectId)
+        }
+
+        const ui = (res.ui_hints as { activeModule?: string } | undefined) || undefined
+        if (ui?.activeModule) setActiveModule(ui.activeModule as ModuleType)
+
+        addMessage('assistant', '✅ 已应用修改')
+        return
+      } catch (err) {
+        console.error('[AgentPage] apply_agent_patch operator apply failed:', err)
+        addMessage('assistant', `❌ 应用修改失败：${err instanceof Error ? err.message : '未知错误'}`)
+        return
+      }
+
+      /* Legacy: moved to backend operator
       const root = unwrapStructuredPayload(payload)
       if (!root) {
         addMessage('assistant', '❌ 无法解析要应用的内容（payload 不是对象）')
@@ -1453,6 +1520,7 @@ export default function AgentPage() {
       } else {
         addMessage('assistant', '✅ 已应用到故事板（未保存项目），可点击左下角保存')
       }
+      */
     } else if (action === 'view_storyboard') {
       // 切换到分镜面板并展开所有相关卡片
       setActiveModule('storyboard')
