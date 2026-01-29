@@ -1,4 +1,271 @@
 images:
+- id: 5dc61dce
+  prompt: 现代日式动漫风格，赛璐璐上色，画面包含一个大型主动漫背景场景插画和该场景的前、侧、后三视图，整齐排列在横向白色画布上，比例16:9。无人物、无角色、空场景。主场景展现警察局审讯室：狭小无窗的房间里摆放着一张桌子和两把椅子，桌上台灯投射出集中光线，墙面是冰冷灰色，整体氛围严肃压抑、冰冷紧张。风格细节：昏暗集中光搭配冷灰色调，柔和漫射阴影，体积光突出场景层次，色调以暗沉灰色与冷白色为主，光滑赛璐璐动画质感，微妙渐变阴影，轻微电影颗粒，构图层次分明，视觉风格参考《葬送的芙莉莲》，保持压抑紧张的氛围。,
+    imageRatio:16:9
+  negative_prompt: blurry, low quality, distorted, deformed, ugly
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217696675839894a1893a7016da6ddb77c20742a6044e9df87b7_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260129%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260129T062002Z&X-Tos-Expires=86400&X-Tos-Signature=675df037bd05397a38302550cc019831e3b2adc2fb2343a9f00b5a7f083df893&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 2560
+  height: 1440
+  steps: 25
+  seed: 491861322
+  style: null
+  created_at: '2026-01-29T14:20:00.243544'
+- id: ca20ee53
+  prompt: 现代日式动漫风格，赛璐璐上色，画面包含一个大型主动漫背景场景插画和该场景的前、侧、后三视图，整齐排列在横向白色画布上，比例16:9。无人物、无角色、空场景。主场景展现出版社会议室：明亮房间里摆放着会议桌，桌上有文档资料，墙面挂着装饰画，窗户透进充足自然光，整体氛围明亮专业、轻松融洽。风格细节：柔和自然光搭配暖金色高光，柔和漫射阴影，体积光突出场景层次，色调以干净白色与柔和中性色为主，光滑赛璐璐动画质感，微妙渐变阴影，轻微电影颗粒，构图层次分明，视觉风格参考《灵能百分百》的专业日常氛围，保持明亮轻松的感觉。,
+    imageRatio:16:9
+  negative_prompt: blurry, low quality, distorted, deformed, ugly
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769667583988b4352c6bd7f3c350e703a707efabdbceda1368_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260129%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260129T062000Z&X-Tos-Expires=86400&X-Tos-Signature=597bae6349199f4b1b9e6e93284db532554fe6234d940a2acdc6ac9d71b30e9c&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 2560
+  height: 1440
+  steps: 25
+  seed: 997017663
+  style: null
+  created_at: '2026-01-29T14:19:57.591907'
+- id: f6a0d391
+  prompt: 现代日式动漫风格，赛璐璐上色，画面包含一个大型主动漫背景场景插画和该场景的前、侧、后三视图，整齐排列在横向白色画布上，比例16:9。无人物、无角色、空场景。主场景展现哑舍古董店内部：柜台后摆放着各类古旧古董，多宝阁陈列着铜镜、玉器等器物，夜明珠与昏暗油灯散发着微光，地面是古朴木质地板，墙上挂着古老字画，整体氛围古旧神秘、静谧幽深。风格细节：昏暗环境光搭配暖金色高光，柔和漫射阴影，体积光突出场景层次，色调以暗沉深棕与暖金色为主，光滑赛璐璐动画质感，微妙渐变阴影，轻微电影颗粒，构图层次分明，视觉风格参考《葬送的芙莉莲》，保持神秘静谧的氛围。,
+    imageRatio:16:9
+  negative_prompt: blurry, low quality, distorted, deformed, ugly
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769667583987e53a20c38311f885877349a08650994a4b30e7_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260129%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260129T061959Z&X-Tos-Expires=86400&X-Tos-Signature=aefe8b04f5b116e375cccf6fcfa5103681c3054682c5c10840de0b094987ecb0&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 2560
+  height: 1440
+  steps: 25
+  seed: 60666004
+  style: null
+  created_at: '2026-01-29T14:19:57.414392'
+- id: 7b7ef12f
+  prompt: 现代日式动漫风格，赛璐璐上色，画面包含一个大型主动漫背景场景插画和该场景的前、侧、后三视图，整齐排列在横向白色画布上，比例16:9。无人物、无角色、空场景。主场景展现KTV前台大厅：明亮霓虹招牌闪烁，前台柜台摆放收银设备，背景是包厢指引牌，地面铺着光洁地砖，周围灯光绚烂，营造出热闹嘈杂的营业氛围。风格细节：明亮环境光搭配暖金色高光，柔和漫射阴影，体积光突出场景层次，色调以鲜艳霓虹色与暖金色为主，光滑赛璐璐动画质感，微妙渐变阴影，轻微电影颗粒，构图层次分明，视觉风格参考《葬送的芙莉莲》，保持热闹绚烂的氛围。,
+    imageRatio:16:9
+  negative_prompt: blurry, low quality, distorted, deformed, ugly
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769667583979ae767af4c69fa8400a91dada77a1314d7f3fca_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260129%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260129T061959Z&X-Tos-Expires=86400&X-Tos-Signature=64d0a5adfd6d11ae2ed936b75a43efdc236ac295c3648117cac05d65639750c0&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 2560
+  height: 1440
+  steps: 25
+  seed: 981423107
+  style: null
+  created_at: '2026-01-29T14:19:57.319590'
+- id: addfcd44
+  prompt: 现代日式动漫风格，赛璐璐上色，画面包含一个大型主动漫背景场景插画和该场景的前、侧、后三视图，整齐排列在横向白色画布上，比例16:9。无人物、无角色、空场景。主场景展现夜晚的KTV外僻静小巷：狭窄巷道两侧是斑驳墙壁，地面散落杂物，微弱路灯光线昏暗，巷口隐约可见KTV霓虹招牌，空气中弥漫潮湿气息，营造出孤寂危险的氛围。风格细节：昏暗环境光搭配暖金色高光，柔和漫射阴影，体积光突出场景层次，色调以暗沉灰色与微弱暖光为主，光滑赛璐璐动画质感，微妙渐变阴影，轻微电影颗粒，构图层次分明，视觉风格参考《葬送的芙莉莲》，保持阴暗孤寂的氛围。,
+    imageRatio:16:9
+  negative_prompt: blurry, low quality, distorted, deformed, ugly
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/02176966758398724cd8c2b443d441736f36bc6f7cec06089e211_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260129%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260129T061959Z&X-Tos-Expires=86400&X-Tos-Signature=394b01d292ac15e7e0c6ab6149f510a4bdaedea7bc69ca45a5a81d2a99699b41&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 2560
+  height: 1440
+  steps: 25
+  seed: 732946129
+  style: null
+  created_at: '2026-01-29T14:19:56.774975'
+- id: 51ffeefa
+  prompt: 现代日式动漫风格，赛璐璐上色，画面包含一个大型主动漫背景场景插画和该场景的前、侧、后三视图，整齐排列在横向白色画布上，比例16:9。无人物、无角色、空场景。主场景展现五星级酒店套房：宽敞客厅摆放着柔软沙发、茶几，落地窗外是城市景观，桌上摆放矿泉水瓶，墙面装饰精致，整体氛围奢华精致、暗藏紧张。风格细节：明亮自然光搭配暖金色高光，柔和漫射阴影，体积光突出场景层次，色调以干净白色与暖金色为主，光滑赛璐璐动画质感，微妙渐变阴影，轻微电影颗粒，构图层次分明，视觉风格参考《灵能百分百》的日常奢华感，保持精致暗藏紧张的氛围。,
+    imageRatio:16:9
+  negative_prompt: blurry, low quality, distorted, deformed, ugly
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217696675839848a58463ef17b425f3abf24ab17dedfd66920e9_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260129%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260129T061958Z&X-Tos-Expires=86400&X-Tos-Signature=95fd6fc1e96af93b978c72034d9322bf9db233aa0b1370b9374d733e931602ae&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 2560
+  height: 1440
+  steps: 25
+  seed: 1732739637
+  style: null
+  created_at: '2026-01-29T14:19:56.281861'
+- id: ce47af3d
+  prompt: 现代日式动漫风格，赛璐璐上色，画面包含一个大型主动漫背景场景插画和该场景的前、侧、后三视图，整齐排列在横向白色画布上，比例16:9。无人物、无角色、空场景。主场景展现夜晚的KTV凶杀案包厢：旋转的镭射灯投射出斑驳诡异的光影，深红色地毯上残留着未干涸的血迹，黑色大理石桌面，角落的音响正播放着音乐，隔音墙的反光玻璃映出灯光残影，天花板灯光营造出昏暗压抑的氛围。风格细节：昏暗环境光搭配暖金色高光，柔和漫射阴影，体积光突出场景层次，色调以暗沉灰色与血红色为主，光滑赛璐璐动画质感，微妙渐变阴影，轻微电影颗粒，构图层次分明，视觉风格参考《葬送的芙莉莲》，保持阴沉压抑的氛围。,
+    imageRatio:16:9
+  negative_prompt: blurry, low quality, distorted, deformed, ugly
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769667583977b371c5c903a7cee68730303be71dfd5f508dcb_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260129%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260129T061956Z&X-Tos-Expires=86400&X-Tos-Signature=6d7b6fc851dc3a8e0ddc9eeb7694b2d998e0e15af270e51e9ccecb138781181c&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 2560
+  height: 1440
+  steps: 25
+  seed: 1860013009
+  style: null
+  created_at: '2026-01-29T14:19:54.115725'
+- id: e637beaa
+  prompt: 现代日式动漫风格，赛璐璐上色，画面包含一个大型主动漫背景场景插画和该场景的前、侧、后三视图，整齐排列在横向白色画布上，比例16:9。无人物、无角色、空场景。主场景展现火葬场对面的马路旁：马路边的行道树，对面火葬场的烟囱飘着灰烟，地面是沥青路面，周围空气笼罩着沉重气息，营造出肃穆孤寂、沉重悲伤的氛围。风格细节：柔和自然光搭配冷灰色调，柔和漫射阴影，体积光突出场景层次，色调以暗沉灰色与微弱暖光为主，光滑赛璐璐动画质感，微妙渐变阴影，轻微电影颗粒，构图层次分明，视觉风格参考《葬送的芙莉莲》，保持沉重肃穆的氛围。,
+    imageRatio:16:9
+  negative_prompt: blurry, low quality, distorted, deformed, ugly
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217696675839890e0b6737cb852249c6c63a5fec54055686c277_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260129%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260129T061956Z&X-Tos-Expires=86400&X-Tos-Signature=f83801ca1feb232c33a5c752449fd1b4afccf19ffb41e91297f28a42f98e6926&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 2560
+  height: 1440
+  steps: 25
+  seed: 254296196
+  style: null
+  created_at: '2026-01-29T14:19:53.662589'
+- id: b6bc909a
+  prompt: 现代日式动漫风格，赛璐璐上色，画面包含一个大型主动漫背景场景插画和该场景的前、侧、后三视图，整齐排列在横向白色画布上，比例16:9。无人物、无角色、空场景。主场景展现医生的家中：简洁客厅里摆放着躺椅、吊瓶架，桌上有急救箱等医疗用品，窗户透进柔和自然光，墙面整洁，整体氛围温馨日常、简洁舒适。风格细节：柔和自然光搭配暖金色高光，柔和漫射阴影，体积光突出场景层次，色调以干净白色与柔和中性色为主，光滑赛璐璐动画质感，微妙渐变阴影，轻微电影颗粒，构图层次分明，视觉风格参考《灵能百分百》的日常氛围，保持温馨简洁的感觉。,
+    imageRatio:16:9
+  negative_prompt: blurry, low quality, distorted, deformed, ugly
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769667583976af079c8b3daea2503bdca6879dc89b1f52e685_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260129%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260129T061955Z&X-Tos-Expires=86400&X-Tos-Signature=4334973cdfcf4a9dff417de93d14ccee89a489ab4c3ce386aadfa938ca75310d&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 2560
+  height: 1440
+  steps: 25
+  seed: 1191002847
+  style: null
+  created_at: '2026-01-29T14:19:52.632786'
+- id: 4dd1bbfa
+  prompt: '三十岁左右的温和男性，戴着细框眼镜，面容清俊，眼神专注温暖，身形偏瘦，常穿干净白大褂，手指灵活修长，气质亲切随和，日系动漫风格下线条柔和，透着治愈系亲和力，与哑舍的神秘氛围形成鲜明对比。{"style_config":{"style_base":["Japanese
+    anime style","Post-apocalyptic isekai narrative aesthetic","soft painterly cel-shading","official
+    animation screenshot","high-production key animation frame","consistent visual
+    tone across all elements"],"lighting":["muted ambient light with warm golden highlights","soft
+    diffused shadows","volumetric lighting to emphasize character-background contrast","color
+    palette: muted grays/blood reds for background, clean whites/soft neutrals for
+    character"],"texture":["smooth cel animation texture","subtle gradient shading","minimal
+    film grain","consistent color harmony between character and environment"],"composition":["dynamic
+    contrast between relaxed foreground character and chaotic blurred post-apocalyptic
+    background","shallow depth of field","layered visual hierarchy to highlight protagonist"],"style_references":["in
+    the visual style of Frieren: Beyond Journey''s End","relaxed character aesthetic
+    inspired by Mob Psycho 100","professional anime production quality"],"consistency_controls":["stable
+    character design proportions","no facial deformation","uniform shading style across
+    all elements","maintained color palette consistency","preserved clean ''everyday''
+    vibe of protagonist against grim setting"]}}Modern Japanese anime style, cel-shaded.
+    The layout features a large full-body main illustration and three-view orthographic
+    references (Front, Side, Back) neatly arranged on a single horizontal white canvas,
+    high quality, detailed, anime style, character design, character remains standing,
+    no any background, no scenery, focus on character, imageRatio:16:9'
+  negative_prompt: blurry, low quality, distorted, deformed, ugly
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217696675426894a1893a7016da6ddb77c20742a6044e9508175_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260129%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260129T061921Z&X-Tos-Expires=86400&X-Tos-Signature=286bd2600eaf7384470084029a0d603018b2a48d575050a3605d1922341348e2&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 2560
+  height: 1440
+  steps: 25
+  seed: 67097717
+  style: null
+  created_at: '2026-01-29T14:19:19.309954'
+- id: 03c19048
+  prompt: '原本是二十岁左右的娇小女生，圆脸蛋透着软萌可爱，眉眼灵动清澈，留着清爽齐肩短发，日常偏爱白色荷叶边衬衫这类少女感服饰；附身后成为二十岁出头的俊逸男性，身形挺拔修长，皮肤白皙细腻，眉眼儒雅俊秀，睫毛纤长，发型利落清爽，常身着黑色长风衣、佩戴墨镜遮掩情绪，手指修长骨节分明，胸前始终挂着水苍玉基督像吊坠，整体在青涩少女感与沉稳男性感间交织，符合日系动漫跨灵魂角色的细腻刻画。{"style_config":{"style_base":["Japanese
+    anime style","Post-apocalyptic isekai narrative aesthetic","soft painterly cel-shading","official
+    animation screenshot","high-production key animation frame","consistent visual
+    tone across all elements"],"lighting":["muted ambient light with warm golden highlights","soft
+    diffused shadows","volumetric lighting to emphasize character-background contrast","color
+    palette: muted grays/blood reds for background, clean whites/soft neutrals for
+    character"],"texture":["smooth cel animation texture","subtle gradient shading","minimal
+    film grain","consistent color harmony between character and environment"],"composition":["dynamic
+    contrast between relaxed foreground character and chaotic blurred post-apocalyptic
+    background","shallow depth of field","layered visual hierarchy to highlight protagonist"],"style_references":["in
+    the visual style of Frieren: Beyond Journey''s End","relaxed character aesthetic
+    inspired by Mob Psycho 100","professional anime production quality"],"consistency_controls":["stable
+    character design proportions","no facial deformation","uniform shading style across
+    all elements","maintained color palette consistency","preserved clean ''everyday''
+    vibe of protagonist against grim setting"]}}Modern Japanese anime style, cel-shaded.
+    The layout features a large full-body main illustration and three-view orthographic
+    references (Front, Side, Back) neatly arranged on a single horizontal white canvas,
+    high quality, detailed, anime style, character design, character remains standing,
+    no any background, no scenery, focus on character, imageRatio:16:9'
+  negative_prompt: blurry, low quality, distorted, deformed, ugly
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769667542681a84d6d461ce08db402646c54f49c535166d74f_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260129%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260129T061921Z&X-Tos-Expires=86400&X-Tos-Signature=cc8ca83c3a6f3b42e6b76669f55b3705e4dc3393e31dfb082b75f602a9f464fe&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 2560
+  height: 1440
+  steps: 25
+  seed: 1337916138
+  style: null
+  created_at: '2026-01-29T14:19:19.208448'
+- id: e36f8a94
+  prompt: '二十岁左右的元气女孩，长相清秀灵动，眼神明亮有神，留着清爽高马尾，日常穿休闲时尚的运动风服饰，气质活泼开朗，日系动漫风格下线条明快充满元气感，露出严肃神情时，眉眼透着推理爱好者的敏锐。{"style_config":{"style_base":["Japanese
+    anime style","Post-apocalyptic isekai narrative aesthetic","soft painterly cel-shading","official
+    animation screenshot","high-production key animation frame","consistent visual
+    tone across all elements"],"lighting":["muted ambient light with warm golden highlights","soft
+    diffused shadows","volumetric lighting to emphasize character-background contrast","color
+    palette: muted grays/blood reds for background, clean whites/soft neutrals for
+    character"],"texture":["smooth cel animation texture","subtle gradient shading","minimal
+    film grain","consistent color harmony between character and environment"],"composition":["dynamic
+    contrast between relaxed foreground character and chaotic blurred post-apocalyptic
+    background","shallow depth of field","layered visual hierarchy to highlight protagonist"],"style_references":["in
+    the visual style of Frieren: Beyond Journey''s End","relaxed character aesthetic
+    inspired by Mob Psycho 100","professional anime production quality"],"consistency_controls":["stable
+    character design proportions","no facial deformation","uniform shading style across
+    all elements","maintained color palette consistency","preserved clean ''everyday''
+    vibe of protagonist against grim setting"]}}Modern Japanese anime style, cel-shaded.
+    The layout features a large full-body main illustration and three-view orthographic
+    references (Front, Side, Back) neatly arranged on a single horizontal white canvas,
+    high quality, detailed, anime style, character design, character remains standing,
+    no any background, no scenery, focus on character, imageRatio:16:9'
+  negative_prompt: blurry, low quality, distorted, deformed, ugly
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217696675426893f971518a0c9d7974f8da0b075e934d3134f68_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260129%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260129T061920Z&X-Tos-Expires=86400&X-Tos-Signature=7b467a5a6b3e374a62dd5c7b33878d6c741bf616bd5eacf533348dcedb22087e&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 2560
+  height: 1440
+  steps: 25
+  seed: 704443527
+  style: null
+  created_at: '2026-01-29T14:19:17.603759'
+- id: db20e44e
+  prompt: '二十多岁的清冷男子，身着绣有栩栩如生赤龙的黑色中山装，丹凤眼锐利深邃，面容俊朗立体，气质沉稳神秘，手指修长纤细，常把玩古董器物，周身萦绕古旧沉静气息，日系动漫风格下线条流畅，眉眼带疏离感，契合后异世界审美中神秘智者的形象。{"style_config":{"style_base":["Japanese
+    anime style","Post-apocalyptic isekai narrative aesthetic","soft painterly cel-shading","official
+    animation screenshot","high-production key animation frame","consistent visual
+    tone across all elements"],"lighting":["muted ambient light with warm golden highlights","soft
+    diffused shadows","volumetric lighting to emphasize character-background contrast","color
+    palette: muted grays/blood reds for background, clean whites/soft neutrals for
+    character"],"texture":["smooth cel animation texture","subtle gradient shading","minimal
+    film grain","consistent color harmony between character and environment"],"composition":["dynamic
+    contrast between relaxed foreground character and chaotic blurred post-apocalyptic
+    background","shallow depth of field","layered visual hierarchy to highlight protagonist"],"style_references":["in
+    the visual style of Frieren: Beyond Journey''s End","relaxed character aesthetic
+    inspired by Mob Psycho 100","professional anime production quality"],"consistency_controls":["stable
+    character design proportions","no facial deformation","uniform shading style across
+    all elements","maintained color palette consistency","preserved clean ''everyday''
+    vibe of protagonist against grim setting"]}}Modern Japanese anime style, cel-shaded.
+    The layout features a large full-body main illustration and three-view orthographic
+    references (Front, Side, Back) neatly arranged on a single horizontal white canvas,
+    high quality, detailed, anime style, character design, character remains standing,
+    no any background, no scenery, focus on character, imageRatio:16:9'
+  negative_prompt: blurry, low quality, distorted, deformed, ugly
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217696675426678a58463ef17b425f3abf24ab17dedfd633bffb_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260129%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260129T061919Z&X-Tos-Expires=86400&X-Tos-Signature=93fe163eb636e2998783b704db78c1d8758c11b58696089b340f37c7d23fc757&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 2560
+  height: 1440
+  steps: 25
+  seed: 692504256
+  style: null
+  created_at: '2026-01-29T14:19:16.893523'
+- id: c86806a2
+  prompt: '二十岁出头的俊逸男性，眉眼明亮有神，笑容张扬灿烂，身形挺拔匀称，日常穿简约休闲装或深色风衣，胸前佩戴水苍玉雕刻的基督像吊坠，玉石温润、基督神态栩栩如生；灵魂状态为半透明同形态虚影，仅能在反射介质中显现，眉眼间偶尔流露落寞，笑容依旧洒脱，符合日系动漫灵体角色的空灵刻画。{"style_config":{"style_base":["Japanese
+    anime style","Post-apocalyptic isekai narrative aesthetic","soft painterly cel-shading","official
+    animation screenshot","high-production key animation frame","consistent visual
+    tone across all elements"],"lighting":["muted ambient light with warm golden highlights","soft
+    diffused shadows","volumetric lighting to emphasize character-background contrast","color
+    palette: muted grays/blood reds for background, clean whites/soft neutrals for
+    character"],"texture":["smooth cel animation texture","subtle gradient shading","minimal
+    film grain","consistent color harmony between character and environment"],"composition":["dynamic
+    contrast between relaxed foreground character and chaotic blurred post-apocalyptic
+    background","shallow depth of field","layered visual hierarchy to highlight protagonist"],"style_references":["in
+    the visual style of Frieren: Beyond Journey''s End","relaxed character aesthetic
+    inspired by Mob Psycho 100","professional anime production quality"],"consistency_controls":["stable
+    character design proportions","no facial deformation","uniform shading style across
+    all elements","maintained color palette consistency","preserved clean ''everyday''
+    vibe of protagonist against grim setting"]}}Modern Japanese anime style, cel-shaded.
+    The layout features a large full-body main illustration and three-view orthographic
+    references (Front, Side, Back) neatly arranged on a single horizontal white canvas,
+    high quality, detailed, anime style, character design, character remains standing,
+    no any background, no scenery, focus on character, imageRatio:16:9'
+  negative_prompt: blurry, low quality, distorted, deformed, ugly
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769667542681a84d6d461ce08db402646c54f49c53518b52e8_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260129%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260129T061919Z&X-Tos-Expires=86400&X-Tos-Signature=b8ae076c6ffd449deedc2d09f94ed265522be1a0a52e50b163d14a3d77a48537&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 2560
+  height: 1440
+  steps: 25
+  seed: 1923074406
+  style: null
+  created_at: '2026-01-29T14:19:16.739008'
 - id: d3163f91
   prompt: 8-year-old rural Chinese boy, round face, short black hair, wearing faded
     blue cotton short-sleeved shirt, barefoot or in cheap plastic sandals, agile eyes
@@ -719,4 +986,4 @@ images:
   seed: 1545869874
   style: ''
   created_at: '2026-01-07T17:35:45.571061'
-updated_at: '2026-01-26T17:00:57.494904'
+updated_at: '2026-01-29T14:20:00.243544'
