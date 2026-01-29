@@ -108,6 +108,12 @@ start "🎨 AI Storyboarder - 前端服务" cmd /k "cd /d "%PROJECT_DIR%" && col
 echo [等待] 等待前端服务启动...
 timeout /t 5 /nobreak >nul
 
+if "%HUOBAO_ENABLED%"=="1" (
+    echo.
+    echo [同步] 预加载主项目 API 配置到 demo（默认禁用，可在 demo 的 AI配置 页面启用）...
+    python "scripts\\sync_huobao_ai_config.py" --main http://localhost:8000 --demo http://localhost:5678
+)
+
 echo.
 echo ══════════════════════════════════════════════════════════════
 echo  ✅ 服务已启动！

@@ -258,6 +258,15 @@ if ($backendReady -and $frontendReady -and (-not $huobaoEnabled -or $huobaoReady
     if ($huobaoEnabled) {
         Write-ColorText "  📌 demo Go:  http://localhost:5678" "Cyan"
     }
+    if ($huobaoEnabled) {
+        Write-Host ""
+        Write-ColorText "[同步] 预加载主项目 API 配置到 demo（默认禁用，可在 demo 的 AI配置 页面启用）..." "Yellow"
+        try {
+            python scripts/sync_huobao_ai_config.py --main http://localhost:8000 --demo http://localhost:5678
+        } catch {
+            Write-ColorText "  ⚠️ 同步失败：$($_.Exception.Message)" "Yellow"
+        }
+    }
     Write-Host ""
     Write-ColorText "  💡 提示:" "Yellow"
     Write-ColorText "     - 后端窗口 (蓝色) 显示 API 请求日志" "Gray"

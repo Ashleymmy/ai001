@@ -381,6 +381,15 @@ class ChatRequest(BaseModel):
     context: Optional[str] = None
 
 
+class BridgeGenerateTextRequest(BaseModel):
+    prompt: str
+    systemPrompt: Optional[str] = ""
+    temperature: float = 0.7
+    maxTokens: Optional[int] = None
+    model: Optional[str] = None
+    topP: Optional[float] = None
+
+
 class VideoRequest(BaseModel):
     imageUrl: str
     prompt: str = ""
@@ -393,6 +402,11 @@ class VideoRequest(BaseModel):
     cameraFixed: bool = False  # 是否固定镜头
     watermark: bool = False  # 是否添加水印
     generateAudio: bool = True  # 是否生成音频
+    # demo bridge 扩展：参考帧模式
+    referenceMode: Optional[str] = None  # single, first_last, multiple, none
+    firstFrameUrl: Optional[str] = None
+    lastFrameUrl: Optional[str] = None
+    referenceImageUrls: Optional[List[str]] = None
 
 
 class VideoTaskStatusRequest(BaseModel):
@@ -1159,6 +1173,26 @@ async def chat_with_ai(request: ChatRequest):
         return {"reply": f"抱歉，出现错误: {str(e)}"}
 
 
+@app.post("/api/bridge/generate-text")
+async def bridge_generate_text(request: BridgeGenerateTextRequest):
+    """提供给 demo 的通用文本生成 bridge（使用主项目 llm 配置）。"""
+    service = get_llm_service()
+
+    try:
+        text = await service.generate_text(
+            prompt=request.prompt,
+            system_prompt=request.systemPrompt or "",
+            temperature=request.temperature if request.temperature is not None else 0.7,
+            max_tokens=request.maxTokens,
+            model=request.model,
+            top_p=request.topP,
+        )
+        return {"text": text}
+    except Exception as e:
+        print(f"[Bridge] text generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"text generation failed: {e}")
+
+
 @app.post("/api/upload-reference")
 async def upload_reference(file: UploadFile = File(...)):
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -1386,6 +1420,8 @@ class GenerateImageRequest(BaseModel):
     steps: int = 25
     seed: Optional[int] = None
     style: Optional[str] = None
+    referenceImage: Optional[str] = None
+    referenceImages: Optional[List[str]] = None
 
 
 # 风格预设
@@ -1420,6 +1456,9 @@ async def generate_single_image(request: GenerateImageRequest):
     try:
         result = await image_service.generate(
             prompt=final_prompt,
+            reference_image=request.referenceImage,
+            reference_images=request.referenceImages,
+            style=request.style or "cinematic",
             negative_prompt=request.negativePrompt or "",
             width=request.width,
             height=request.height,
@@ -1484,12 +1523,16 @@ async def generate_video(request: VideoRequest):
             ratio=request.ratio,
             camera_fixed=request.cameraFixed,
             watermark=request.watermark,
-            generate_audio=request.generateAudio
+            generate_audio=request.generateAudio,
+            reference_mode=request.referenceMode or "single",
+            first_frame_url=request.firstFrameUrl,
+            last_frame_url=request.lastFrameUrl,
+            reference_images=request.referenceImageUrls,
         )
         
         # 保存到历史记录
         storage.save_generated_video(
-            source_image=request.imageUrl,
+            source_image=(request.imageUrl or request.firstFrameUrl or (request.referenceImageUrls[0] if request.referenceImageUrls else "")),
             prompt=request.prompt,
             video_url=result.get("video_url"),
             task_id=result.get("task_id"),

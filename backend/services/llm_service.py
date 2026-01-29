@@ -1,7 +1,7 @@
 """LLM 服务 - 支持多种大模型提供商"""
 import os
 import re
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from openai import AsyncOpenAI
 
 # 预设的提供商配置
@@ -169,6 +169,37 @@ class LLMService:
         except Exception as e:
             print(f"[Chat] 调用失败: {e}")
             return f"调用 {self.provider} API 失败: {str(e)}\n\n请检查 API Key 和网络连接。"
+
+    async def generate_text(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        model: Optional[str] = None,
+        top_p: Optional[float] = None,
+    ) -> str:
+        """通用文本生成（支持自定义 system prompt），用于 bridge 调用。"""
+        if not self.client:
+            return self._simple_chat(prompt)
+
+        messages: List[Dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        kwargs: Dict[str, Any] = {
+            "model": model or self.model,
+            "messages": messages,
+            "temperature": float(temperature),
+        }
+        if max_tokens is not None:
+            kwargs["max_tokens"] = int(max_tokens)
+        if top_p is not None:
+            kwargs["top_p"] = float(top_p)
+
+        response = await self.client.chat.completions.create(**kwargs)
+        return response.choices[0].message.content or ""
 
     def _get_style_description(self, style: str) -> str:
         styles = {

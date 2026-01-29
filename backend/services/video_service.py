@@ -44,7 +44,11 @@ class VideoService:
         ratio: str = "16:9",
         camera_fixed: bool = False,
         watermark: bool = False,
-        generate_audio: bool = True
+        generate_audio: bool = True,
+        reference_mode: str = "single",
+        first_frame_url: Optional[str] = None,
+        last_frame_url: Optional[str] = None,
+        reference_images: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         从图片生成视频
@@ -72,6 +76,23 @@ class VideoService:
                 "seed": int
             }
         """
+        # 参考帧模式处理（phase1：尽量支持 first/last；不支持的 provider 会自动降级为首帧）
+        ref_mode = (reference_mode or "single").strip().lower()
+        extra_images: List[str] = []
+        if isinstance(reference_images, list):
+            extra_images = [u.strip() for u in reference_images if isinstance(u, str) and u.strip()]
+
+        if ref_mode == "first_last":
+            if isinstance(first_frame_url, str) and first_frame_url.strip():
+                image_url = first_frame_url.strip()
+            if isinstance(last_frame_url, str) and last_frame_url.strip():
+                extra_images.insert(0, last_frame_url.strip())
+
+        if ref_mode == "multiple" and (not isinstance(image_url, str) or not image_url.strip()):
+            if extra_images:
+                image_url = extra_images[0]
+                extra_images = extra_images[1:]
+
         # 检查是否配置了 API
         if self.provider == "none" or not self.api_key:
             raise Exception("视频服务未配置，请在设置中配置视频生成 API")
@@ -82,7 +103,8 @@ class VideoService:
                 image_url, prompt, duration, seed,
                 resolution=resolution, ratio=ratio,
                 camera_fixed=camera_fixed, watermark=watermark,
-                generate_audio=generate_audio
+                generate_audio=generate_audio,
+                reference_images=extra_images,
             )
         
         if self.provider == "kling":
@@ -99,6 +121,15 @@ class VideoService:
             # 检查是否是阿里云 dashscope API
             if self.base_url and "dashscope" in self.base_url:
                 return await self._generate_dashscope_video(image_url, prompt, duration, seed)
+            # 火山引擎（Ark）支持多图输入：尽量携带参考帧（如首/尾帧）
+            if self.base_url and ("volces.com" in self.base_url or "ark.cn" in self.base_url):
+                return await self._generate_volcengine_video(
+                    image_url, prompt, duration, seed,
+                    resolution=resolution, ratio=ratio,
+                    camera_fixed=camera_fixed, watermark=watermark,
+                    generate_audio=generate_audio,
+                    reference_images=extra_images,
+                )
             return await self._generate_custom(image_url, prompt, duration, seed)
         else:
             raise Exception(f"不支持的视频服务提供商: {self.provider}")
@@ -136,7 +167,8 @@ class VideoService:
         ratio: str = "16:9",
         camera_fixed: bool = False,
         watermark: bool = False,
-        generate_audio: bool = True
+        generate_audio: bool = True,
+        reference_images: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """调用自定义配置的视频生成 API - 自动检测 API 格式"""
         if not self.api_key or not self.base_url:
@@ -154,7 +186,8 @@ class VideoService:
                 image_url, prompt, duration, seed,
                 resolution=resolution, ratio=ratio,
                 camera_fixed=camera_fixed, watermark=watermark,
-                generate_audio=generate_audio
+                generate_audio=generate_audio,
+                reference_images=reference_images,
             )
         
         # 默认尝试通用自定义格式
@@ -170,27 +203,57 @@ class VideoService:
         ratio: str = "16:9",
         camera_fixed: bool = False,
         watermark: bool = False,
-        generate_audio: bool = True
+        generate_audio: bool = True,
+        reference_images: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """调用火山引擎视频生成 API（Ark /contents/generations/tasks）
 
         说明：这里改为 HTTP 直连，避免 SDK 在部分 Python 版本上兼容性问题。
         """
         
-        # 处理图片：火山引擎需要公网可访问的 URL 或 base64
-        # 如果是 localhost URL，需要转换为 base64
-        if image_url.startswith("http://localhost") or image_url.startswith("http://127.0.0.1"):
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(image_url) as resp:
-                        if resp.status == 200:
-                            content = await resp.read()
-                            b64 = base64.b64encode(content).decode("utf-8")
-                            content_type = resp.headers.get("Content-Type", "image/jpeg")
-                            image_url = f"data:{content_type};base64,{b64}"
-                            print(f"[VideoService] 已将本地图片转换为 base64")
-            except Exception as e:
-                print(f"[VideoService] 转换本地图片失败: {e}")
+        # 处理图片：火山引擎需要公网可访问的 URL 或 base64（支持多图参考）
+        async def normalize_image_url(url: str) -> str:
+            url = (url or "").strip()
+            if not url:
+                return ""
+            if url.startswith("http://localhost") or url.startswith("http://127.0.0.1"):
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(url) as resp:
+                            if resp.status == 200:
+                                content = await resp.read()
+                                b64 = base64.b64encode(content).decode("utf-8")
+                                content_type = resp.headers.get("Content-Type", "image/jpeg")
+                                print(f"[VideoService] 已将本地图片转换为 base64")
+                                return f"data:{content_type};base64,{b64}"
+                except Exception as e:
+                    print(f"[VideoService] 转换本地图片失败: {e}")
+            return url
+
+        raw_images: List[str] = []
+        if isinstance(image_url, str) and image_url.strip():
+            raw_images.append(image_url.strip())
+        if isinstance(reference_images, list):
+            raw_images.extend([u.strip() for u in reference_images if isinstance(u, str) and u.strip()])
+
+        seen = set()
+        uniq_images: List[str] = []
+        for u in raw_images:
+            if u in seen:
+                continue
+            seen.add(u)
+            uniq_images.append(u)
+            if len(uniq_images) >= 8:
+                break
+
+        image_urls: List[str] = []
+        for u in uniq_images:
+            normalized = await normalize_image_url(u)
+            if normalized:
+                image_urls.append(normalized)
+
+        if not image_urls:
+            raise Exception("缺少图像输入")
         
         model = self.model or "doubao-seaweed-241128"
         base_url = (self.base_url or "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
@@ -207,23 +270,18 @@ class VideoService:
         params += f" --camerafixed {'true' if camera_fixed else 'false'}"
         params += f" --watermark {'true' if watermark else 'false'}"
         
-        # 构建 content
-        content = [
-            {
-                "type": "text",
-                "text": f"{prompt or '让图片动起来，生成自然流畅的视频'} {params}"
-            },
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": image_url
-                }
-            }
-        ]
+        # 构建 content（多图：首图 + 参考帧，如首/尾帧）
+        content_text = {
+            "type": "text",
+            "text": f"{prompt or '让图片动起来，生成自然流畅的视频'} {params}",
+        }
+        content_images = [{"type": "image_url", "image_url": {"url": u}} for u in image_urls]
+        content = [content_text, *content_images]
+        content_single = [content_text, content_images[0]]
         
         print(f"[VideoService] 火山引擎 HTTP 调用: model={model}")
         print(f"[VideoService] 参数: duration={supported_duration} (原始: {duration}), resolution={resolution}, ratio={ratio}, camera_fixed={camera_fixed}, watermark={watermark}")
-        print(f"[VideoService] 图片格式: {'base64' if image_url.startswith('data:') else 'URL'}")
+        print(f"[VideoService] 图片数量: {len(image_urls)}，首图格式: {'base64' if image_urls[0].startswith('data:') else 'URL'}")
         
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -266,6 +324,20 @@ class VideoService:
                     payload_no_audio = {"model": model, "content": content}
                     resp = await client.post(f"{base_url}/contents/generations/tasks", headers=headers, json=payload_no_audio)
                     audio_disabled = True
+
+                # 兼容：部分模型/接口不支持多图输入，自动降级为单图
+                if resp.status_code >= 400 and len(image_urls) > 1:
+                    print("[VideoService] 多图输入失败，自动降级为单图重试")
+                    payload_retry = {"model": model, "content": content_single}
+                    if generate_audio and not audio_disabled:
+                        payload_retry["generate_audio"] = True
+                    resp = await client.post(f"{base_url}/contents/generations/tasks", headers=headers, json=payload_retry)
+
+                    if resp.status_code >= 400 and generate_audio and _is_generate_audio_invalid(resp):
+                        print("[VideoService] 单图重试不支持 generate_audio，降级为无音频生成")
+                        payload_retry_no_audio = {"model": model, "content": content_single}
+                        resp = await client.post(f"{base_url}/contents/generations/tasks", headers=headers, json=payload_retry_no_audio)
+                        audio_disabled = True
 
                 if resp.status_code >= 400:
                     raise Exception(f"HTTP {resp.status_code}: {(resp.text or '')[:2000]}")
