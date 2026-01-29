@@ -1,4 +1,113 @@
 images:
+- id: d3163f91
+  prompt: 8-year-old rural Chinese boy, round face, short black hair, wearing faded
+    blue cotton short-sleeved shirt, barefoot or in cheap plastic sandals, agile eyes
+    with naive rustic simplicity, eyes mixed with curiosity and slight fear in night
+    scenes; photorealistic rural style, nostalgic retro aesthetic, warm dim yellow
+    tones for real night settings, cool white or bright warm tones for memory flashback
+    scenes, filled with earthly smoke and strong sense of era; warm low-key lighting
+    with oil lamp glow and firefly glimmers for night scenes, soft diffused lighting
+    for memory scenes, cozy nostalgic atmosphere; ultra-detailed, 8K resolution, sharp
+    focus, natural skin texture, realistic fabric texture, subtle film grain, professional
+    documentary photography quality
+  negative_prompt: cartoon, anime, illustration, distorted facial features, modern
+    fashion, urban background, bright neon lights, over-saturated colors, blurry details,
+    low resolution, unrealistic body proportions, messy composition, plastic-looking
+    skin, artificial harsh lighting, non-rural elements
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/02176941804347705f4998a4b036137ca52d90e5e3ca4d85e90ef_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260126%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260126T090058Z&X-Tos-Expires=86400&X-Tos-Signature=4e9216cdd10eb1c10f7e9c9e1e36c73345a14da31bd2c0ae8619231f49f18061&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 570533864
+  style: null
+  created_at: '2026-01-26T17:00:57.494904'
+- id: a8c12e93
+  prompt: 8-year-old rural Chinese boy, round face, short black hair, faded blue cotton
+    short-sleeved shirt, barefoot or wearing worn plastic sandals, bright agile eyes
+    with rural child's inherent simplicity, at night eyes carry a mix of curiosity
+    and slight fear, photorealistic rural style, nostalgic retro aesthetic, warm yellow
+    dim tones for real night scenes, cold white/bright warm tones for memory flashbacks,
+    full of earthly fireworks and vintage era vibe, realistic lighting - warm candlelight
+    or kerosene lamp glow for night scenes, soft diffused light for memory scenes,
+    cozy yet slightly eerie night atmosphere, warm nostalgic ambiance for memories,
+    8k, ultra-detailed, high resolution, sharp focus, film grain, cinematic texture,
+    lifelike natural skin texture, authentic rural scene background
+  negative_prompt: cartoon, anime, illustration, unrealistic proportions, modern urban
+    clothing, brand-new clean garments, city background, distorted anatomy, blurry
+    details, low resolution, over-saturated colors, artificial harsh lighting, mutated
+    features, ugly, deformed limbs, bad hands, text, watermarks, smooth plastic-like
+    skin
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217694178889414db6a13687dd28312818ff47c869db0a2983e9_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260126%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260126T085823Z&X-Tos-Expires=86400&X-Tos-Signature=5072f8d5bb214681d0a87433be8d9f0dc58f2be199938d78a191d2429d373f1c&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 980309596
+  style: null
+  created_at: '2026-01-26T16:58:22.042900'
+- id: 9de25ec5
+  prompt: 2D anime middle-aged woman (Auntie Zhang), kind and amiable facial features,
+    gentle and dotting eyes, wearing light-colored cotton loungewear, natural and
+    casual posture, full of daily life details, healing Japanese anime style, warm
+    cozy vibe, warm yellow soft lighting, soft diffused shadows, warm intimate atmosphere,
+    soft delicate texture, highly detailed, sharp focus, 8K resolution, ultra-detailed,
+    cinematic soft focus, professional digital painting, lifelike daily scene
+  negative_prompt: young woman, harsh bright lighting, cold color tones, distorted
+    facial features, rigid unnatural posture, messy cluttered background, low resolution,
+    blurry, pixelated, grainy, exaggerated cartoonish features, dark gloomy atmosphere,
+    lack of life details
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769416426643b1540e0519088842060f281dec849b042a0612_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260126%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260126T083358Z&X-Tos-Expires=86400&X-Tos-Signature=f4eab9c70499e8d755ac59fd7755adef359455b3cf9e44f335da96faee651831&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 467820105
+  style: null
+  created_at: '2026-01-26T16:33:57.457987'
+- id: dac71df8
+  prompt: 2D anime style, small round white porcelain cat bowl with rounded edges,
+    filled with a small amount of light brown cat food, placed on the floor next to
+    a dining table, warm healing Japanese anime aesthetic, full of cozy daily life
+    vibes, delicate smooth porcelain texture, soft warm yellow ambient lighting, gentle
+    diffused shadows, tranquil and homely atmosphere, highly detailed, sharp focus,
+    8K resolution, ultra-detailed, clean smooth anime lines, minimalist yet warm composition,
+    subtle life-related details in the background
+  negative_prompt: blurry, low resolution, distorted object shapes, harsh contrast
+    shadows, overexposed lighting, underexposed areas, unrealistic color tones, rough
+    textures, cluttered messy background, deformed outlines, grainy noise, ugly, rough
+    hand-drawn lines, non-anime style elements
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217694163808752811cc565cd59e977023febe5c684c8723f683_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260126%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260126T083323Z&X-Tos-Expires=86400&X-Tos-Signature=aac3dd894de39375310b0dc231dc7af61f27ea98089a933a30df3ae36a805c48&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1782551676
+  style: null
+  created_at: '2026-01-26T16:33:21.875712'
+- id: 561024e7
+  prompt: small round white porcelain cat bowl with smooth rounded edges, containing
+    a small portion of light brown cat kibble, placed on the floor adjacent to a warm-toned
+    wooden dining table, healing Japanese aesthetic, warm soft yellow color palette,
+    brimming with cozy everyday life vibes, delicate porcelain texture, soft diffused
+    warm lighting, gentle soft shadows, warm ambient glow, ultra-detailed, 8k resolution,
+    sharp focus, photorealistic, high-quality texture rendering, cinematic still composition
+  negative_prompt: blurry, out-of-focus, dirty objects, dark dull tones, harsh direct
+    lighting, overexposed areas, distorted object proportions, cluttered messy background,
+    text, watermarks, low resolution, unrealistic shapes, grainy, noisy
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769416030925ff0e10ef3dc4fa8284497cad29aae4031c49ce_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260126%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260126T082722Z&X-Tos-Expires=86400&X-Tos-Signature=8356026179a880f999c33fe2e4a9119156dbc21620aac43663ff420d9c1c33bb&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 2126564191
+  style: null
+  created_at: '2026-01-26T16:27:20.969862'
 - id: d0a3252b
   prompt: adult black and white Siberian Husky, bright and lively eyes, playful demeanor,
     lying on the edge of a wooden bed, no extra people, no text, Makoto Shinkai style,
@@ -610,4 +719,4 @@ images:
   seed: 1545869874
   style: ''
   created_at: '2026-01-07T17:35:45.571061'
-updated_at: '2026-01-22T16:36:49.191979'
+updated_at: '2026-01-26T17:00:57.494904'

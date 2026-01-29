@@ -335,10 +335,10 @@ export default function ProjectPage() {
                   </div>
                   <div className="flex-1">
                     <div className="flex items-center gap-2 mb-0.5">
-                      <h3 className="font-medium">Canvas 画布</h3>
-                      <span className="text-xs bg-blue-500/30 text-blue-300 px-1.5 py-0.5 rounded">节点</span>
+                      <h3 className="font-medium">短剧工作台</h3>
+                      <span className="text-xs bg-blue-500/30 text-blue-300 px-1.5 py-0.5 rounded">Demo</span>
                     </div>
-                    <p className="text-xs text-gray-500">可视化节点编排</p>
+                    <p className="text-xs text-gray-500">短剧制作工作流</p>
                   </div>
                   <ChevronRight size={18} className="text-gray-500 group-hover:text-white group-hover:translate-x-1 transition-all" />
                 </div>

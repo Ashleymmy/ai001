@@ -179,10 +179,10 @@ export default function HomePage() {
                 </div>
                 <div>
                   <div className="flex items-center gap-3 mb-1">
-                    <h3 className="text-xl font-semibold">Canvas 画布</h3>
-                    <span className="text-xs bg-gradient-to-r from-cyan-500 to-blue-500 px-2.5 py-1 rounded-full text-white font-medium">节点式</span>
+                    <h3 className="text-xl font-semibold">短剧工作台</h3>
+                    <span className="text-xs bg-gradient-to-r from-cyan-500 to-blue-500 px-2.5 py-1 rounded-full text-white font-medium">Demo</span>
                   </div>
-                  <p className="text-gray-400 text-sm">自由连接节点，可视化创作流程</p>
+                  <p className="text-gray-400 text-sm">短剧制作工作流（剧本→角色→分镜→视频）</p>
                 </div>
               </div>
               <ArrowRight size={24} className="text-gray-500 group-hover:text-white group-hover:translate-x-2 transition-apple" />

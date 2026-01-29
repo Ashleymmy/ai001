@@ -60,6 +60,9 @@ image:
 # 一键启动（Windows）
 npm run start
 
+# 说明：会额外尝试启动 demo/huobao-drama 的 Go 服务（端口 5678），用于 Canvas 页面嵌入 Huobao Demo。
+# 若未安装 Go，会跳过该服务。
+
 # 或者：手动分别启动
 # 终端 1 - 启动后端
 cd backend
