@@ -3,7 +3,21 @@
     "allow": [
       "Bash(find:*)",
       "Bash(powershell -Command:*)",
-      "Bash(taskkill:*)"
+      "Bash(taskkill:*)",
+      "Bash(git submodule:*)",
+      "Bash(tree:*)",
+      "Bash(test:*)",
+      "Bash(git ls-tree:*)",
+      "Bash(netstat:*)",
+      "Bash(findstr:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git -C \"d:\\\\MIN\\\\test1\\\\test1\\\\ai001\" submodule status)",
+      "Bash(git push:*)",
+      "Bash(git remote remove:*)",
+      "Bash(git remote rename:*)",
+      "Bash(git config:*)",
+      "Bash(ls:*)"
     ]
   }
 }

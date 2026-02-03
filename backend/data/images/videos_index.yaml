@@ -1,4 +1,135 @@
 videos:
+- id: 632ee265
+  task_id: cgt-20260203085804-25dmv
+  source_image: /api/images/video_src_632ee265.jpg
+  prompt: 'Action: 宁琪琪（萧寂身体）缓缓转动眼球，从天花板的镭射灯开始，扫视整个包厢环境，眼神逐渐聚焦. Camera movement: 摇镜.
+    Shot type: 全景. Camera angle: 仰视. Scene: KTV案件包厢·同前，地面的深红色地毯上有未干涸的污渍, 深夜23:01·镭射灯继续旋转，光束扫过墙面的反光镜，折射出零散的光斑.
+    Atmosphere: 昏暗迷幻色调·灯光快速交替，歌声节奏舒缓却透着诡异，氛围紧张悬疑疑惑. Result: 旋转的镭射灯、昏暗的包厢角落、散落的酒瓶映入眼帘，耳边的《Listen》歌声逐渐清晰.
+    BGM: 《Listen》旋律逐渐清晰，节奏缓慢. Sound effects: 镭射灯转动的嗡嗡声、歌声.'
+  video_url: null
+  status: processing
+  provider: custom_ca16b98f
+  model: doubao-seedance-1-5-pro-251215
+  duration: 9.0
+  seed: 0
+  created_at: '2026-02-03T08:58:02.385723'
+  updated_at: '2026-02-03T08:58:02.385723'
+- id: 8ce490c5
+  task_id: cgt-20260203085117-qxgmm
+  source_image: /api/images/video_src_8ce490c5.jpg
+  prompt: 'Action: 宁琪琪（萧寂身体）缓缓转动眼球，从天花板的镭射灯开始，扫视整个包厢环境，眼神逐渐聚焦. Camera movement: 摇镜.
+    Shot type: 全景. Camera angle: 仰视. Scene: KTV案件包厢·同前，地面的深红色地毯上有未干涸的污渍, 深夜23:01·镭射灯继续旋转，光束扫过墙面的反光镜，折射出零散的光斑.
+    Atmosphere: 昏暗迷幻色调·灯光快速交替，歌声节奏舒缓却透着诡异，氛围紧张悬疑疑惑. Result: 旋转的镭射灯、昏暗的包厢角落、散落的酒瓶映入眼帘，耳边的《Listen》歌声逐渐清晰.
+    BGM: 《Listen》旋律逐渐清晰，节奏缓慢. Sound effects: 镭射灯转动的嗡嗡声、歌声. Style: {"style_config":{"style_base":["Japanese
+    anime style","Post-apocalyptic isekai narrative aesthetic","soft painterly cel-shading","official
+    animation screenshot","high-production key animation frame","consistent visual
+    tone across all elements"],"lighting":["muted ambient light with warm golden highlights","soft
+    diffused shadows","volumetric lighting to emphasize character-background contrast","color
+    palette: muted grays/blood reds for background, clean whites/soft neutrals for
+    character"],"texture":["smooth cel animation texture","subtle gradient shading","minimal
+    film grain","consistent color harmony between character and environment"],"composition":["dynamic
+    contrast between relaxed foreground character and chaotic blurred post-apocalyptic
+    background","shallow depth of field","layered visual hierarchy to highlight protagonist"],"style_references":["in
+    the visual style of Frieren: Beyond Journey''s End","relaxed character aesthetic
+    inspired by Mob Psycho 100","professional anime production quality"],"consistency_controls":["stable
+    character design proportions","no facial deformation","uniform shading style across
+    all elements","maintained color palette consistency","preserved clean ''everyday''
+    vibe of protagonist against grim setting"]}}. =VideoRatio: 16:9'
+  video_url: null
+  status: processing
+  provider: custom_ca16b98f
+  model: doubao-seedance-1-5-pro-251215
+  duration: 9.0
+  seed: 0
+  created_at: '2026-02-03T08:51:15.125709'
+  updated_at: '2026-02-03T08:51:15.125709'
+- id: d70657cf
+  task_id: cgt-20260130161058-c7jlm
+  source_image: /api/images/video_src_d70657cf.jpg
+  prompt: 'Action: 宁琪琪（萧寂身体）缓缓转动眼球，从天花板的镭射灯开始，扫视整个包厢环境，眼神逐渐聚焦. Camera movement: 摇镜.
+    Shot type: 全景. Camera angle: 仰视. Scene: KTV案件包厢·同前，地面的深红色地毯上有未干涸的污渍, 深夜23:01·镭射灯继续旋转，光束扫过墙面的反光镜，折射出零散的光斑.
+    Atmosphere: 昏暗迷幻色调·灯光快速交替，歌声节奏舒缓却透着诡异，氛围紧张悬疑疑惑. Mood: 疑惑↑↑（落点：悬置）. Result: 旋转的镭射灯、昏暗的包厢角落、散落的酒瓶映入眼帘，耳边的《Listen》歌声逐渐清晰.
+    BGM: 《Listen》旋律逐渐清晰，节奏缓慢. Sound effects: 镭射灯转动的嗡嗡声、歌声.'
+  video_url: null
+  status: processing
+  provider: custom_ca16b98f
+  model: doubao-seedance-1-5-pro-251215
+  duration: 9.0
+  seed: 0
+  created_at: '2026-01-30T16:10:55.732825'
+  updated_at: '2026-01-30T16:10:55.732825'
+- id: a706a4ee
+  task_id: cgt-20260130153247-cs6fw
+  source_image: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217697561414373f971518a0c9d7974f8da0b075e934d34d2ebd_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260130%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260130T065554Z&X-Tos-Expires=86400&X-Tos-Signature=12222b119c7305423de2d3328922f57526bea1e29e52afd98e023cf518731567&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  prompt: 镜头从乡村土路的村民交头接耳摇向[Element_BROKEN_CAVE_DWELLING]→窑洞内王秃子的尸体特写，脸色青黑，嘴角开裂→镜头聚焦王秃子的手，紧紧攥着半块黑面皮→村民的惊呼声传来，有人指着尸体的嘴角议论，保持画面惊恐，凸显债主惨死的诡异，对白同步：村民甲：这不是王秃子吗？欠老陈家钱跑路三年了！村民乙：你看他的嘴！裂到耳根了！还有手里的黑面皮，像是老陈家的黑豆面！，no-text
+  video_url: null
+  status: processing
+  provider: custom_ca16b98f
+  model: doubao-seedance-1-5-pro-251215
+  duration: 12.0
+  seed: 0
+  created_at: '2026-01-30T15:32:44.917872'
+  updated_at: '2026-01-30T15:32:44.917872'
+- id: cd34b1b1
+  task_id: cgt-20260130153026-4d9jl
+  source_image: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217697561414373f971518a0c9d7974f8da0b075e934d34d2ebd_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260130%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260130T065554Z&X-Tos-Expires=86400&X-Tos-Signature=12222b119c7305423de2d3328922f57526bea1e29e52afd98e023cf518731567&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  prompt: 镜头从乡村土路的村民交头接耳摇向[Element_BROKEN_CAVE_DWELLING]→窑洞内王秃子的尸体特写，脸色青黑，嘴角开裂→镜头聚焦王秃子的手，紧紧攥着半块黑面皮→村民的惊呼声传来，有人指着尸体的嘴角议论，保持画面惊恐，凸显债主惨死的诡异，对白同步：村民甲：这不是王秃子吗？欠老陈家钱跑路三年了！村民乙：你看他的嘴！裂到耳根了！还有手里的黑面皮，像是老陈家的黑豆面！，no-text
+  video_url: null
+  status: processing
+  provider: custom_ca16b98f
+  model: doubao-seedance-1-5-pro-251215
+  duration: 12.0
+  seed: 0
+  created_at: '2026-01-30T15:30:23.791678'
+  updated_at: '2026-01-30T15:30:23.791678'
+- id: df75d0b0
+  task_id: cgt-20260130152625-4x2r8
+  source_image: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217697561414373f971518a0c9d7974f8da0b075e934d34d2ebd_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260130%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260130T065554Z&X-Tos-Expires=86400&X-Tos-Signature=12222b119c7305423de2d3328922f57526bea1e29e52afd98e023cf518731567&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  prompt: 镜头从乡村土路的村民交头接耳摇向[Element_BROKEN_CAVE_DWELLING]→窑洞内王秃子的尸体特写，脸色青黑，嘴角开裂→镜头聚焦王秃子的手，紧紧攥着半块黑面皮→村民的惊呼声传来，有人指着尸体的嘴角议论，保持画面惊恐，凸显债主惨死的诡异，对白同步：村民甲：这不是王秃子吗？欠老陈家钱跑路三年了！村民乙：你看他的嘴！裂到耳根了！还有手里的黑面皮，像是老陈家的黑豆面！，no-text
+  video_url: null
+  status: processing
+  provider: custom_ca16b98f
+  model: doubao-seedance-1-5-pro-251215
+  duration: 12.0
+  seed: 0
+  created_at: '2026-01-30T15:26:22.776694'
+  updated_at: '2026-01-30T15:26:22.776694'
+- id: 0be6f0fb
+  task_id: cgt-20260130152516-dtxlp
+  source_image: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769755927001649f4507e5505b181d56acee99f33e5a6b9463_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260130%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260130T065319Z&X-Tos-Expires=86400&X-Tos-Signature=40996ff03da6365375ec5dd8af0024a02fad2d79bd42a6cdd084f79662f6d275&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  prompt: 镜头聚焦[Element_XIAOMING]的嘴，咬下[Element_BLACK_DUMPLING]，咀嚼后眉头皱起，眼神疑惑→[Element_GRANDMA]突然低头，肩膀晃动开始诡笑→[Element_GRANDMA]嘴角慢慢裂开，越裂越大直到耳根→黑洞洞的口腔对着[Element_XIAOMING]，枯手抬起指向他，背景中爸妈的抽气声隐约可闻，保持画面惊悚，凸显奶奶的诡异变化，对白同步：奶奶：乖孙，好样的。这第七个，是给那边的人吃的。他去年就该来，迟到了整整一年，明年，该来接人了，no-text
+  video_url: https://ark-content-generation-cn-beijing.tos-cn-beijing.volces.com/doubao-seedance-1-5-pro/02176975791763300000000000000000000ffffac15af9c1c090e.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260130%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260130T072602Z&X-Tos-Expires=86400&X-Tos-Signature=16d724c696b3d4691424a790addde68de7464abcd0e0aa4b2b3facc788b48ada&X-Tos-SignedHeaders=host
+  status: completed
+  provider: custom_ca16b98f
+  model: doubao-seedance-1-5-pro-251215
+  duration: 12.0
+  seed: 0
+  created_at: '2026-01-30T15:25:13.650933'
+  updated_at: '2026-01-30T15:26:03.692955'
+- id: d2dc3885
+  task_id: cgt-20260130152356-6qzvz
+  source_image: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769755659421586ec96c526882919017714fdd6e6a27e09ff3_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260130%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260130T064858Z&X-Tos-Expires=86400&X-Tos-Signature=bccd2b3f95aceed768527e6bbe04deefa079d6a8a3b3940c12ddc87b5c870108&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  prompt: 镜头从[Element_GRANDMA]的脸移向[Element_PARENTS]，聚焦妈妈发抖的手→爸爸猛吸一口旱烟，烟圈缓缓飘起→烟圈散开，露出爸爸紧绷的下颌线，两人全程沉默，空气凝滞，no-text
+  video_url: https://ark-content-generation-cn-beijing.tos-cn-beijing.volces.com/doubao-seedance-1-5-pro/02176975783821500000000000000000000ffffac15af9c7b065b.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260130%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260130T072445Z&X-Tos-Expires=86400&X-Tos-Signature=aaad73ee68524a408474663bdbc4aa02db80d9efc6b1ab5a14e16b01a83e1f36&X-Tos-SignedHeaders=host
+  status: completed
+  provider: custom_ca16b98f
+  model: doubao-seedance-1-5-pro-251215
+  duration: 8.0
+  seed: 0
+  created_at: '2026-01-30T15:23:54.072345'
+  updated_at: '2026-01-30T15:24:43.569491'
+- id: '54620429'
+  task_id: cgt-20260130152241-tmk8t
+  source_image: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021769755927001649f4507e5505b181d56acee99f33e5a6b9463_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260130%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260130T065319Z&X-Tos-Expires=86400&X-Tos-Signature=40996ff03da6365375ec5dd8af0024a02fad2d79bd42a6cdd084f79662f6d275&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  prompt: 镜头聚焦[Element_XIAOMING]的嘴，咬下[Element_BLACK_DUMPLING]，咀嚼后眉头皱起，眼神疑惑→[Element_GRANDMA]突然低头，肩膀晃动开始诡笑→[Element_GRANDMA]嘴角慢慢裂开，越裂越大直到耳根→黑洞洞的口腔对着[Element_XIAOMING]，枯手抬起指向他，背景中爸妈的抽气声隐约可闻，保持画面惊悚，凸显奶奶的诡异变化，对白同步：奶奶：乖孙，好样的。这第七个，是给那边的人吃的。他去年就该来，迟到了整整一年，明年，该来接人了，no-text
+  video_url: null
+  status: processing
+  provider: custom_ca16b98f
+  model: doubao-seedance-1-5-pro-251215
+  duration: 12.0
+  seed: 0
+  created_at: '2026-01-30T15:22:38.803459'
+  updated_at: '2026-01-30T15:22:38.803459'
 - id: b095f851
   task_id: b6942ed3-024a-4074-8d7f-ee2c6aa4e486
   source_image: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/02176958215467420e33ae3714a969f29832d54235fd2ccdc7c25_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260128%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260128T063633Z&X-Tos-Expires=86400&X-Tos-Signature=c88a790b7363a5f472ff0920f3caf72e5636826eea81f1dab7b154fba1c1673e&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
@@ -782,4 +913,4 @@ videos:
   seed: 0
   created_at: '2026-01-02T18:16:07.655581'
   updated_at: '2026-01-02T18:18:23.918478'
-updated_at: '2026-01-28T15:47:04.302885'
+updated_at: '2026-02-03T08:58:02.385723'

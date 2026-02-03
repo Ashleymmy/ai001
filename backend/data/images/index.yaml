@@ -1,4 +1,71 @@
 images:
+- id: edc11e11
+  prompt: 2D anime style, Chinese classical aesthetics, black leather hardcover diary
+    with rusted lock, worn and peeling cover, dented deformed corners, yellowed inner
+    pages, some pages with faint red cinnabar stains, neat small regular script (grandfather's
+    handwriting), Chinese antique object, no English text, fine lines, combination
+    of realism and freehand brushwork, cool color palette, gloomy and oppressive atmosphere,
+    dim low-key lighting, highly detailed, sharp focus, intricate details, cinematic
+    lighting, 8k, ultra-detailed, professional illustration
+  negative_prompt: English text, bright vibrant colors, cheerful uplifting atmosphere,
+    modern elements, smooth unblemished leather cover, clean white inner pages, messy
+    handwriting, 3D rendering, cartoonish exaggeration, blurry focus, low resolution,
+    distorted proportions, western antique style
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217701010310679936a5f6e8f40fdc06126b5fc1504deb7333c9_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260203%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260203T064402Z&X-Tos-Expires=86400&X-Tos-Signature=274266d182b327b381dcaeed6f71a2e20864aacf0c218bc89c3393ef8307b6a3&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1392511102
+  style: null
+  created_at: '2026-02-03T14:44:02.207755'
+- id: 4bef7ef8
+  prompt: torn notebook paper strip with frayed edges, stiff and scribbled Chinese
+    characters that semi-resemble Lin Xia's handwriting, faded light ink, content
+    is warning or prophetic text, 2D anime style, Chinese classical aesthetics, combination
+    of realism and freehand brushwork, delicate line art, cool color palette, dim
+    low-key lighting, eerie and oppressive gloomy atmosphere, highly detailed, sharp
+    precise lines, cinematic lighting, 8k resolution, ultra-detailed professional
+    digital painting
+  negative_prompt: bright warm tones, clean smooth edges, neat and regular handwriting,
+    modern elements, blurry details, low resolution, distorted characters, cheerful
+    mood, cartoonish exaggeration, non-Chinese text, vibrant dark ink, lively atmosphere
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021770100794694943be5294e080788be4ca008f262f4f399cbee_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260203%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260203T064006Z&X-Tos-Expires=86400&X-Tos-Signature=112b2e8ae21e6923ff64d819b7581a470bf85a415fb791b4edd673d73c9a06b1&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1102243303
+  style: null
+  created_at: '2026-02-03T14:40:06.358409'
+- id: '24235381'
+  prompt: '全景仰视下，夜晚KTV案件包厢内，宁琪琪（萧寂身份）静止注视天花板镭射灯，面露疑惑，背景是散落酒瓶的昏暗混乱环境，日式动漫风格: 日式动漫风格，后异世界叙事美学，柔和手绘赛璐璐着色，官方动画截图质感，高制作水准关键动画帧，16:9比例，全景仰视镜头，夜晚的KTV案件包厢场景，前景为宁琪琪（以萧寂身份生活），她处于动作发生前的完全静止状态，眼球未转动，视线正停留在天花板的镭射灯上，面部流露强烈的疑惑神情，姿态放松却透着茫然；背景是昏暗混乱的包厢环境，散落的酒瓶堆积在角落，包厢深处笼罩在柔和漫射阴影中，采用柔和环境光搭配暖金色高光，体积光突出前景角色与灰暗背景的对比，背景色调以低饱和度灰色和污渍红色为主，角色使用干净白色与柔和中性色，平滑赛璐璐动画纹理，微妙渐变阴影，轻微胶片颗粒，浅景深效果让背景的混乱场景呈现模糊感，分层视觉层次突出主角，整体风格参考《葬送的芙莉莲》，角色放松美学参考《灵能百分百》，保持稳定的角色设计比例，无面部变形，统一着色风格贯穿所有元素，维持配色一致性，在阴森的案件场景中保留主角日常感，氛围紧张悬疑疑惑，情绪处于悬置状态
+
+
+    夜晚KTV案件包厢全景（仰视摇镜），宁琪琪（萧寂身体）转眼球从镭射灯扫视包厢，眼神渐聚焦，满脸悬置的疑惑，背景有旋转镭射灯、散落酒瓶与昏暗角落，日式动漫风格:
+    日式动漫风格，后异世界叙事美学，柔和手绘赛璐璐着色，官方动画截图，高制作关键动画帧，参考《葬送的芙莉莲》视觉风格与《灵能百分百》的日常放松角色美学，专业动漫制作质量，16:9画幅，夜晚的KTV案件包厢全景，仰视角度，摇镜捕捉动作高潮瞬间，昏暗迷幻色调，灯光快速交替，背景以低饱和灰调与污渍红色交织，散落的空酒瓶、昏暗的包厢角落在动态模糊中呈现，天花板的旋转镭射灯发出冷冽光束，暖金色高光点缀环境细节；角色为宁琪琪（以萧寂身份生活），身着干净白色与柔和中性色的日常服饰，身体姿态放松，缓缓转动眼球，从天花板的镭射灯开始扫视整个包厢环境，眼神从涣散逐渐聚焦，面部充满强烈的悬置式疑惑情绪，体积光强化角色与混乱紧张悬疑背景的对比，浅景深效果突出主角，分层视觉层级清晰，稳定的角色比例无面部变形，统一的着色风格，色彩和谐统一，主角的日常感与阴森场景形成强烈反差，带有轻微动态模糊体现摇镜运镜效果，柔和漫射阴影，
+    minimal电影颗粒感，干净的动画质感
+
+
+    夜晚KTV案件包厢全景仰视摇镜，宁琪琪（萧寂身体）从天花板镭射灯开始扫视包厢，眼神逐渐聚焦，满是疑惑，背景是旋转镭射灯、散落酒瓶的昏暗诡异环境，日式动漫风格:
+    日式动漫风格，后末日异世界叙事美学，柔和手绘cel-shading，官方动画截图，高制作水平关键动画帧，16:9比例，夜晚KTV案件包厢全景仰视镜头，带有摇镜的动态模糊效果，宁琪琪（以萧寂身份生活，使用萧寂的身体）位于画面中心，缓缓转动眼球，从天花板旋转的镭射灯开始扫视整个包厢环境，眼神从涣散状态逐渐清晰聚焦，脸上流露着极度疑惑的悬置情绪；背景是昏暗迷幻的KTV包厢，角落散落着废弃酒瓶，昏暗的包厢角落笼罩在深邃阴影中，旋转的镭射灯投射出快速交替的斑驳光线；采用柔和的环境光搭配暖金色高光，柔化扩散的阴影，体积光强调角色与混乱背景的对比，背景色调为压抑的灰调与暗污渍红色，角色使用干净的白色与柔和中性色；平滑的cel动画纹理，微妙渐变阴影，轻微胶片颗粒，保持角色与环境的色彩和谐；运用浅景深效果，分层视觉突出主角，参考《葬送的芙莉莲》的视觉风格与《灵能百分百》的角色日常感，达到专业动漫制作质量，角色比例稳定无面部变形，统一的
+    shading 风格贯穿所有元素，主角的日常感与紧张悬疑诡异的背景形成强烈反差，营造出舒缓却诡异的《Listen》歌声氛围
+
+
+    仰视全景，夜晚KTV案件包厢内，以萧寂身体存在的宁琪琪扫视完环境后眼神聚焦，面露疑惑悬置感，周围是旋转镭射灯、昏暗角落与散落酒瓶，日式动漫风格: 日式动漫风格，官方动画截图，高质量关键动画帧，16:9比例，仰视全景镜头，夜晚的KTV案件包厢场景，宁琪琪（以萧寂的身体生活）完成眼球扫视动作后的静态状态：她身处包厢中，眼神已完全聚焦，面部带着强烈的、悬置感的疑惑表情，瞳孔清晰注视着前方；背景呈现旋转的镭射灯、昏暗的包厢角落、散落的酒瓶，环境笼罩在昏暗迷幻的色调中，氛围紧张悬疑疑惑；采用柔和手绘赛璐璐着色，低饱和度环境光搭配暖金色高光，软扩散阴影，体积光突出前景角色与混乱背景的对比，背景色调为低饱和度灰与污渍红色系，角色使用干净白色与柔和中性色系，浅景深效果让前景角色清晰、背景稍显模糊，参考《葬送的芙莉莲》的视觉风格、《灵能百分百》的日常感角色美学，保持稳定的角色设计比例，无面部变形，统一的着色风格，日常感的主角与残酷背景形成强烈对比，画面整体呈现专业动画制作质量,
+    imageRatio:16:9'
+  negative_prompt: blurry, low quality, distorted, deformed, ugly
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/02176976059211413d48c4760d2f20ff0aabc46dcd14fa89d974e_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260130%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260130T081011Z&X-Tos-Expires=86400&X-Tos-Signature=da3bb5d05a95523650481c01f74e7560b920f55b68b3c759aef2f1b353c3eb7b&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xNTU%3D%2Cx_136%2Cy_136
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 512779650
+  style: null
+  created_at: '2026-01-30T16:10:08.120732'
 - id: 5dc61dce
   prompt: 现代日式动漫风格，赛璐璐上色，画面包含一个大型主动漫背景场景插画和该场景的前、侧、后三视图，整齐排列在横向白色画布上，比例16:9。无人物、无角色、空场景。主场景展现警察局审讯室：狭小无窗的房间里摆放着一张桌子和两把椅子，桌上台灯投射出集中光线，墙面是冰冷灰色，整体氛围严肃压抑、冰冷紧张。风格细节：昏暗集中光搭配冷灰色调，柔和漫射阴影，体积光突出场景层次，色调以暗沉灰色与冷白色为主，光滑赛璐璐动画质感，微妙渐变阴影，轻微电影颗粒，构图层次分明，视觉风格参考《葬送的芙莉莲》，保持压抑紧张的氛围。,
     imageRatio:16:9
@@ -986,4 +1053,4 @@ images:
   seed: 1545869874
   style: ''
   created_at: '2026-01-07T17:35:45.571061'
-updated_at: '2026-01-29T14:20:00.243544'
+updated_at: '2026-02-03T14:44:02.207755'

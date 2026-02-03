@@ -41,6 +41,8 @@ backend/outputs/
 # Temp files
 ~$*
 *.tmp
+.gocache/
+*.go.*
 
 # demo/huobao-drama (embedded Canvas demo)
 demo/huobao-drama/.git/
