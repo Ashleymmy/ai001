@@ -4,14 +4,14 @@
 
 Git Submodule 允许你将一个 Git 仓库作为另一个 Git 仓库的子目录。这样可以：
 - 保持 huobao-drama 的独立版本管理
-- 方便更新到官方最新版本
+- 方便进行二次开发和版本控制
 - 避免代码重复和冲突
 
 ## 🎯 当前配置
 
 - **Submodule 路径**: `demo/huobao-drama`
-- **官方仓库**: https://github.com/chatfire-AI/huobao-drama.git
-- **当前版本**: v1.0.4+
+- **仓库地址**: https://github.com/Ashleymmy/Drama.git
+- **上游仓库**: https://github.com/chatfire-AI/huobao-drama.git (原版参考)
 
 ## 🚀 常用操作
 
@@ -27,7 +27,7 @@ cd ai001
 git submodule update --init --recursive
 ```
 
-### 2. 更新 Huobao Drama 到最新版本
+### 2. 更新到最新版本
 
 ```bash
 # 进入 submodule 目录
@@ -35,8 +35,8 @@ cd demo/huobao-drama
 
 # 拉取最新代码
 git fetch origin
-git checkout main
-git pull origin main
+git checkout master
+git pull origin master
 
 # 返回主项目目录
 cd ../..
@@ -56,39 +56,47 @@ git submodule status
 git submodule summary
 ```
 
-### 4. 切换到特定版本
+### 4. 在 Submodule 中进行开发
 
 ```bash
 cd demo/huobao-drama
 
-# 查看可用的版本标签
-git tag -l
-
-# 切换到特定版本（例如 v1.0.4）
-git checkout v1.0.4
-
-cd ../..
-git add demo/huobao-drama
-git commit -m "切换 huobao-drama 到 v1.0.4"
-```
-
-### 5. 在 Submodule 中进行本地修改
-
-```bash
-cd demo/huobao-drama
-
-# 创建本地分支
-git checkout -b my-custom-changes
+# 确保在 master 分支
+git checkout master
 
 # 进行修改...
-# 提交修改
 git add .
-git commit -m "我的自定义修改"
+git commit -m "你的修改说明"
 
-# 返回主项目
+# 推送到远程仓库
+git push origin master
+
+# 返回主项目，更新 submodule 引用
 cd ../..
 git add demo/huobao-drama
-git commit -m "使用自定义的 huobao-drama 版本"
+git commit -m "更新 huobao-drama"
+```
+
+### 5. 同步上游更新（可选）
+
+如需合并官方仓库的更新：
+
+```bash
+cd demo/huobao-drama
+
+# 添加上游仓库（首次）
+git remote add upstream https://github.com/chatfire-AI/huobao-drama.git
+
+# 拉取上游更新
+git fetch upstream
+git merge upstream/master
+
+# 解决冲突后推送
+git push origin master
+
+cd ../..
+git add demo/huobao-drama
+git commit -m "合并上游更新"
 ```
 
 ## ⚙️ 配置管理
@@ -150,10 +158,10 @@ git submodule update --force
 ```bash
 cd demo/huobao-drama
 git fetch origin
-git reset --hard origin/main
+git reset --hard origin/master
 cd ../..
 git add demo/huobao-drama
-git commit -m "重置 huobao-drama 到官方最新版本"
+git commit -m "重置 huobao-drama 到最新版本"
 ```
 
 ### 问题 4: 想要移除 Submodule
@@ -177,7 +185,7 @@ git commit -m "移除 huobao-drama submodule"
 
 ## 📚 更多资源
 
-- [Huobao Drama 官方文档](https://github.com/chatfire-AI/huobao-drama)
+- [Huobao Drama 上游仓库](https://github.com/chatfire-AI/huobao-drama)
 - [Git Submodule 官方文档](https://git-scm.com/book/zh/v2/Git-%E5%B7%A5%E5%85%B7-%E5%AD%90%E6%A8%A1%E5%9D%97)
 
 ## 🔗 集成说明
@@ -192,7 +200,7 @@ git commit -m "移除 huobao-drama submodule"
 
 ## ⚠️ 注意事项
 
-1. **不要直接在 submodule 中提交到官方仓库**，除非你有权限
+1. **修改后记得推送到远程仓库**，否则其他人无法获取你的更新
 2. **本地配置和数据不会被 Git 跟踪**，迁移时需要手动备份
 3. **更新 submodule 后记得在主项目中提交**，否则其他人拉取代码时会使用旧版本
 4. **团队协作时确保所有人都初始化了 submodule**
