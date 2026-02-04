@@ -13,12 +13,14 @@ export default function ShotListEditor({
   onSelectShot,
   onSetDuration,
   onPlayShot,
+  durationLocked = false,
 }: {
   segments: AudioTimelineSegment[]
   selectedShotId: string | null
   onSelectShot: (shotId: string) => void
   onSetDuration: (shotId: string, duration: number) => void
   onPlayShot: (shotId: string) => void
+  durationLocked?: boolean
 }) {
   const rows = (segments || []).flatMap((seg) =>
     (seg.shots || []).map((s) => ({
@@ -77,6 +79,7 @@ export default function ShotListEditor({
                       step={0.5}
                       min={2}
                       value={dur}
+                      disabled={durationLocked}
                       onChange={(e) => {
                         const v = Number(e.target.value)
                         onSetDuration(s.shot_id, v)
@@ -84,7 +87,7 @@ export default function ShotListEditor({
                       className={`w-20 glass-dark rounded-lg px-2 py-1 text-xs text-gray-200 border focus:outline-none ${
                         tooShort ? 'border-yellow-400/60' : tooLong ? 'border-purple-400/40' : 'border-white/10'
                       }`}
-                      title={tooLong ? '>10s 可能降低 AI 视频质量，建议拆分' : '步进 0.5s，最小 2s'}
+                      title={durationLocked ? '视频已生成：镜头时长已锁定' : tooLong ? '>10s 可能降低 AI 视频质量，建议拆分' : '步进 0.5s，最小 2s'}
                       onClick={(e) => e.stopPropagation()}
                     />
                     <span className="ml-1 text-gray-500">s</span>
@@ -119,4 +122,3 @@ export default function ShotListEditor({
     </div>
   )
 }
-

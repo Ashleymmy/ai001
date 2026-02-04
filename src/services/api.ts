@@ -902,6 +902,7 @@ export interface AudioTimeline {
   confirmed: boolean
   updated_at?: string
   master_audio_url?: string
+  master_mix_audio_url?: string
   total_duration: number
   segments: AudioTimelineSegment[]
 }
@@ -935,7 +936,7 @@ export async function agentPlanProject(
     userRequest,
     style
   }, {
-    timeout: 300000 // 5分钟超时，规划可能需要较长时间
+    timeout: 900000 // 15分钟超时，规划可能需要较长时间
   })
   return response.data
 }
@@ -1544,12 +1545,33 @@ export async function saveAgentAudioTimeline(
 
 export async function generateAudioTimelineMasterAudio(
   projectId: string,
-  shotDurations: Record<string, number>
-): Promise<{ success: boolean; master_audio_url: string; duration_ms: number }> {
+  shotDurations: Record<string, number>,
+  modes?: Array<'narration' | 'mix'>
+): Promise<{ success: boolean; master_audio_url: string; master_mix_audio_url?: string; duration_ms: number }> {
   const response = await api.post(`/api/agent/projects/${projectId}/audio-timeline/master-audio`, {
-    shotDurations
+    shotDurations,
+    modes
   }, {
-    timeout: 300000
+    timeout: 900000
+  })
+  return response.data
+}
+
+export async function extractAudioFromVideos(
+  projectId: string,
+  options?: { shotIds?: string[]; overwrite?: boolean }
+): Promise<{
+  success: boolean
+  updated_shots: string[]
+  skipped_no_audio_stream: string[]
+  failed: Array<{ shot_id: string; error: string }>
+  project: AgentProject
+}> {
+  const response = await api.post(`/api/agent/projects/${projectId}/audio/extract-from-videos`, {
+    shotIds: options?.shotIds,
+    overwrite: options?.overwrite ?? false
+  }, {
+    timeout: 900000
   })
   return response.data
 }

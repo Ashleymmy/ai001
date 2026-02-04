@@ -102,12 +102,23 @@ class ExportService:
             frame_count = 0
             video_count = 0
             audio_count = 0
+            shot_global_index = 0
+            shot_index_map: List[Dict[str, str]] = []
             for seg in segments:
                 for shot in seg.get('shots', []):
+                    shot_global_index += 1
                     shot_name = shot.get('name', shot.get('id', 'unknown'))
                     safe_shot_name = sanitize_filename(shot_name, fallback=str(shot.get('id', 'unknown')))
                     shot_id = str(shot.get('id') or "")
                     unique_suffix = f"_{shot_id}" if shot_id and shot_id not in safe_shot_name else ""
+                    prefix = f"{shot_global_index:03d}_"
+
+                    shot_index_map.append({
+                        "index": f"{shot_global_index:03d}",
+                        "shot_id": shot_id,
+                        "shot_name": str(shot.get("name") or "").strip() or str(shot_id or "unknown"),
+                        "segment_name": str(seg.get("name") or "").strip() or "Unnamed",
+                    })
                     
                     # 起始帧
                     start_frame_url = (
@@ -116,7 +127,7 @@ class ExportService:
                         or shot.get("start_frame_url")
                     )
                     if start_frame_url:
-                        filename = f"{safe_shot_name}{unique_suffix}_frame{infer_ext(start_frame_url, '.png')}"
+                        filename = f"{prefix}{safe_shot_name}{unique_suffix}_frame{infer_ext(start_frame_url, '.png')}"
                         filepath = os.path.join(frames_dir, filename)
                         try:
                             await self._download_file(start_frame_url, filepath)
@@ -134,7 +145,7 @@ class ExportService:
                     
                     # 视频
                     if shot.get('video_url'):
-                        filename = f"{safe_shot_name}{unique_suffix}{infer_ext(shot['video_url'], '.mp4')}"
+                        filename = f"{prefix}{safe_shot_name}{unique_suffix}{infer_ext(shot['video_url'], '.mp4')}"
                         filepath = os.path.join(videos_dir, filename)
                         try:
                             await self._download_file(shot['video_url'], filepath)
@@ -153,7 +164,7 @@ class ExportService:
                     # 旁白/对白音频（独立 TTS 生成的人声轨）
                     voice_audio_url = shot.get("voice_audio_url")
                     if voice_audio_url:
-                        filename = f"{safe_shot_name}{unique_suffix}_voice{infer_ext(voice_audio_url, '.mp3')}"
+                        filename = f"{prefix}{safe_shot_name}{unique_suffix}_voice{infer_ext(voice_audio_url, '.mp3')}"
                         filepath = os.path.join(audio_dir, filename)
                         try:
                             await self._download_file(voice_audio_url, filepath)
@@ -180,6 +191,12 @@ class ExportService:
                 f.write(f"视频片段: {video_count} 个\n")
                 f.write(f"旁白/对白音频: {audio_count} 个\n")
                 f.write(f"下载失败: {failed_count} 个\n")
+
+                f.write(f"\n=== 镜头序号对照(导出文件名前缀) ===\n")
+                f.write("序号\tshot_id\t镜头名\t段落\n")
+                for rec in shot_index_map:
+                    f.write(f"{rec.get('index')}\t{rec.get('shot_id') or '-'}\t{rec.get('shot_name')}\t{rec.get('segment_name')}\n")
+
                 f.write(f"\n=== 分镜列表 ===\n")
                 for i, seg in enumerate(segments, 1):
                     f.write(f"\n段落 {i}: {seg.get('name', 'Unnamed')}\n")

@@ -2214,6 +2214,19 @@ def _sanitize_tts_text(text: Any) -> str:
     return s
 
 
+def _is_speakable_text(text: Any) -> bool:
+    """Return True if the text likely contains pronounceable content.
+
+    Some TTS providers reject inputs that are only punctuation/whitespace (e.g. "。").
+    """
+    if not isinstance(text, str):
+        return False
+    s = re.sub(r"\s+", "", text).strip()
+    if not s:
+        return False
+    return bool(re.search(r"[\u4e00-\u9fffA-Za-z0-9]", s))
+
+
 def _sanitize_speaker_name(name: Any) -> str:
     if not isinstance(name, str):
         return ""
@@ -2965,6 +2978,13 @@ class SaveAudioTimelineRequest(BaseModel):
 
 class AudioTimelineMasterAudioRequest(BaseModel):
     shotDurations: Dict[str, float] = Field(default_factory=dict)
+    # optional: ["narration", "mix"]; when omitted, generate both
+    modes: Optional[List[str]] = None
+
+
+class ExtractVideoAudioRequest(BaseModel):
+    shotIds: Optional[List[str]] = None
+    overwrite: bool = False
 
 
 def get_agent_executor() -> AgentExecutor:
@@ -3452,6 +3472,21 @@ async def generate_project_audio(project_id: str, request: GenerateAgentAudioReq
     # and request.speedRatio is not provided, estimate speech length and pick a reasonable speedRatio.
     brief = project.creative_brief if isinstance(project.creative_brief, dict) else {}
 
+    # Audio workflow mode (tts_all vs video_dialogue).
+    workflow = str(brief.get("audioWorkflowResolved") or "").strip().lower()
+    if workflow not in {"tts_all", "video_dialogue"}:
+        try:
+            workflow = get_agent_executor().resolve_audio_workflow(project)
+        except Exception:
+            workflow = "tts_all"
+
+    fields_set = getattr(request, "model_fields_set", set()) or set()
+    include_narration = bool(request.includeNarration)
+    include_dialogue = bool(request.includeDialogue)
+    # In "video_dialogue" mode, default to narration-only unless client explicitly sets includeDialogue.
+    if workflow == "video_dialogue" and "includeDialogue" not in fields_set:
+        include_dialogue = False
+
     def coerce_positive_float(val: Any) -> Optional[float]:
         try:
             v = float(val)
@@ -3486,9 +3521,9 @@ async def generate_project_audio(project_id: str, request: GenerateAgentAudioReq
                         continue
                     narration = shot.get("narration") or ""
                     dialogue_script = shot.get("dialogue_script") or shot.get("dialogueScript") or shot.get("dialogue") or ""
-                    if request.includeNarration and isinstance(narration, str) and narration.strip():
+                    if include_narration and isinstance(narration, str) and narration.strip():
                         parts.append(_sanitize_tts_text(narration.strip()))
-                    if request.includeDialogue and isinstance(dialogue_script, str) and dialogue_script.strip():
+                    if include_dialogue and isinstance(dialogue_script, str) and dialogue_script.strip():
                         parts.append(_sanitize_tts_text(_extract_dialogue_text(dialogue_script)))
         text = " ".join([p for p in parts if p]).strip()
         est = _estimate_speech_seconds(text, speed=1.0) if text else 0.0
@@ -3828,10 +3863,10 @@ async def generate_project_audio(project_id: str, request: GenerateAgentAudioReq
 
             segments_to_say: List[Dict[str, str]] = []
 
-            if request.includeNarration and narration:
+            if include_narration and narration and _is_speakable_text(narration):
                 segments_to_say.append({"role": "narration", "voice_type": narrator_voice or auto_narrator_voice, "text": narration})
 
-            if request.includeDialogue and dialogue_script:
+            if include_dialogue and dialogue_script:
                 for raw_line in dialogue_script.splitlines():
                     line = raw_line.strip()
                     if not line:
@@ -3847,14 +3882,14 @@ async def generate_project_audio(project_id: str, request: GenerateAgentAudioReq
                         line = re.sub(r"^[^:：]{1,40}\\s*[（(]\\s*(?:character|object|scene)\\s*[)）]\\s*", "", line, flags=re.IGNORECASE)
                         line = re.sub(r"^\\[Element_[A-Za-z0-9_\\-]+\\]\\s*", "", line)
                         spoken = _sanitize_tts_text(line)
-                        if spoken:
+                        if spoken and _is_speakable_text(spoken):
                             segments_to_say.append({"role": "dialogue", "voice_type": fallback_voice, "text": spoken})
                         continue
 
                     speaker = _sanitize_speaker_name(m.group(1).strip())
                     speaker = speaker.strip(" \t【】[]（）()")
                     content = _sanitize_tts_text(m.group(2))
-                    if not content:
+                    if not content or not _is_speakable_text(content):
                         continue
 
                     voice_type = ""
@@ -3923,7 +3958,7 @@ async def generate_project_audio(project_id: str, request: GenerateAgentAudioReq
 
             if not segments_to_say:
                 skipped += 1
-                results.append({"shot_id": shot_id, "status": "skipped", "message": "无旁白/对白文本"})
+                results.append({"shot_id": shot_id, "status": "skipped", "message": "无有效旁白/对白文本"})
                 continue
 
             use_pcm_concat = (not ffmpeg_ok) and (len(segments_to_say) > 1)
@@ -4413,89 +4448,361 @@ async def generate_audio_timeline_master_audio(project_id: str, request: AudioTi
 
     timeline = executor.build_audio_timeline_from_project(project, shot_durations_override=request.shotDurations)
 
-    # 收集输入音频（按镜头顺序）
-    audio_dir = (Path(UPLOAD_DIR) / "audio").resolve()
-    inputs: List[str] = []
-    durations: List[float] = []
-    missing: List[str] = []
+    modes_raw = request.modes if isinstance(request.modes, list) else []
+    modes = {str(m).strip().lower() for m in modes_raw if isinstance(m, str) and str(m).strip()}
+    if not modes:
+        modes = {"narration", "mix"}
 
+    want_narration = "narration" in modes
+    want_mix = "mix" in modes
+
+    # Collect per-shot inputs (paths may be None -> silence).
+    audio_dir = (Path(UPLOAD_DIR) / "audio").resolve()
+    audio_dir.mkdir(parents=True, exist_ok=True)
+
+    def _local_audio_path(url: Any) -> Optional[Path]:
+        if not isinstance(url, str) or not url.startswith("/api/uploads/audio/"):
+            return None
+        filename = url[len("/api/uploads/audio/") :].strip().replace("/", "")
+        if not filename:
+            return None
+        fp = (audio_dir / filename).resolve()
+        if audio_dir not in fp.parents or not fp.exists() or not fp.is_file():
+            return None
+        return fp
+
+    shots: List[Dict[str, Any]] = []
+    total_sec = 0.0
     for seg in (timeline.get("segments") or []):
         if not isinstance(seg, dict):
             continue
         for s in (seg.get("shots") or []):
             if not isinstance(s, dict):
                 continue
-            sid = str(s.get("shot_id") or "").strip()
-            url = str(s.get("voice_audio_url") or "").strip()
             dur = float(s.get("duration") or 0.0)
-            if not sid:
-                continue
-            if not url.startswith("/api/uploads/audio/"):
-                missing.append(sid)
-                continue
-            filename = url[len("/api/uploads/audio/") :].strip().replace("/", "")
-            if not filename:
-                missing.append(sid)
-                continue
-            fp = (audio_dir / filename).resolve()
-            if audio_dir not in fp.parents or not fp.exists() or not fp.is_file():
-                missing.append(sid)
-                continue
-            inputs.append(str(fp))
-            durations.append(max(0.0, dur))
+            dur_s = max(0.0, float(dur))
+            total_sec += dur_s
 
-    if missing:
-        raise HTTPException(status_code=400, detail=f"缺少本地旁白/对白音频文件：{', '.join(missing[:20])}{'...' if len(missing) > 20 else ''}")
+            # narration: prefer narration_audio_url; fallback to voice_audio_url for older projects.
+            narr_url = str(s.get("narration_audio_url") or "").strip() or str(s.get("voice_audio_url") or "").strip()
+            narr_path = _local_audio_path(narr_url)
 
-    if not inputs:
-        raise HTTPException(status_code=400, detail="没有可用的人声轨，无法生成 master 音频")
+            base_url = str(s.get("dialogue_audio_url") or "").strip()
+            base_path = _local_audio_path(base_url)
 
-    out_name = f"timeline_master_{project_id}_{uuid.uuid4().hex[:8]}.mp3"
-    out_path = (audio_dir / out_name).resolve()
+            shots.append({"duration": dur_s, "narration": narr_path, "base": base_path})
 
-    # Build filter_complex for concat with padding/trimming.
-    parts = []
-    concat_inputs = []
-    for i, dur in enumerate(durations):
-        dur_s = max(0.0, float(dur))
-        parts.append(
-            f"[{i}:a]aresample=24000,aformat=channel_layouts=mono,apad,atrim=0:{dur_s:.3f},asetpts=N/SR/TB[a{i}]"
-        )
-        concat_inputs.append(f"[a{i}]")
-    parts.append("".join(concat_inputs) + f"concat=n={len(durations)}:v=0:a=1[outa]")
-    filter_complex = ";".join(parts)
-
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
-    for fp in inputs:
-        cmd.extend(["-i", fp])
-    cmd.extend([
-        "-filter_complex",
-        filter_complex,
-        "-map",
-        "[outa]",
-        "-c:a",
-        "libmp3lame",
-        "-b:a",
-        "192k",
-        str(out_path),
-    ])
+    if not shots or total_sec <= 0.01:
+        raise HTTPException(status_code=400, detail="时间轴为空，无法生成 master 音频")
 
     def _run(cmd_args: List[str]) -> subprocess.CompletedProcess:
-        return subprocess.run(cmd_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            return subprocess.run(cmd_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15 * 60)
+        except subprocess.TimeoutExpired as e:
+            raise HTTPException(status_code=500, detail="ffmpeg 超时：建议缩短项目或仅生成旁白 master") from e
 
-    p = _run(cmd)
-    if p.returncode != 0:
-        # fallback: some ffmpeg builds don't have libmp3lame
-        cmd2 = list(cmd)
-        for j, v in enumerate(cmd2):
-            if v == "libmp3lame":
-                cmd2[j] = "mp3"
-        p = _run(cmd2)
+    def _render(kind: str) -> str:
+        # Deduplicate file inputs.
+        input_index: Dict[Path, int] = {}
+        input_files: List[Path] = []
+        for item in shots:
+            for k in ("narration", "base"):
+                p = item.get(k)
+                if isinstance(p, Path) and p not in input_index:
+                    input_index[p] = len(input_files)
+                    input_files.append(p)
+
+        # One silence input for missing tracks.
+        silence_index = len(input_files)
+
+        parts: List[str] = []
+        concat_inputs: List[str] = []
+        for i, item in enumerate(shots):
+            dur_s = max(0.0, float(item.get("duration") or 0.0))
+            if kind == "narration":
+                src_path = item.get("narration")
+                src_idx = input_index.get(src_path) if isinstance(src_path, Path) else None
+                if src_idx is None:
+                    src_idx = silence_index
+                parts.append(
+                    f"[{src_idx}:a]aresample=24000,aformat=channel_layouts=mono,apad,atrim=0:{dur_s:.3f},asetpts=N/SR/TB[a{i}]"
+                )
+                concat_inputs.append(f"[a{i}]")
+            else:
+                base_path = item.get("base")
+                narr_path = item.get("narration")
+                base_idx = input_index.get(base_path) if isinstance(base_path, Path) else None
+                narr_idx = input_index.get(narr_path) if isinstance(narr_path, Path) else None
+                if base_idx is None:
+                    base_idx = silence_index
+                if narr_idx is None:
+                    narr_idx = silence_index
+                parts.append(
+                    f"[{base_idx}:a]aresample=24000,aformat=channel_layouts=mono,apad,atrim=0:{dur_s:.3f},asetpts=N/SR/TB[b{i}]"
+                )
+                parts.append(
+                    f"[{narr_idx}:a]aresample=24000,aformat=channel_layouts=mono,apad,atrim=0:{dur_s:.3f},asetpts=N/SR/TB[n{i}]"
+                )
+                parts.append(f"[b{i}][n{i}]amix=inputs=2:duration=longest:dropout_transition=0[m{i}]")
+                concat_inputs.append(f"[m{i}]")
+
+        parts.append("".join(concat_inputs) + f"concat=n={len(shots)}:v=0:a=1[outa]")
+        filter_complex = ";".join(parts)
+
+        suffix = "mix" if kind == "mix" else "narration"
+        out_name = f"timeline_master_{suffix}_{project_id}_{uuid.uuid4().hex[:8]}.mp3"
+        out_path = (audio_dir / out_name).resolve()
+
+        cmd = ["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error"]
+        for fp in input_files:
+            cmd.extend(["-i", str(fp)])
+        cmd.extend(["-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=24000"])
+        cmd.extend([
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[outa]",
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "192k",
+            str(out_path),
+        ])
+
+        p = _run(cmd)
         if p.returncode != 0:
-            raise HTTPException(status_code=500, detail=p.stderr.decode("utf-8", errors="ignore")[:2000] or "ffmpeg failed")
+            cmd2 = list(cmd)
+            for j, v in enumerate(cmd2):
+                if v == "libmp3lame":
+                    cmd2[j] = "mp3"
+            p2 = _run(cmd2)
+            if p2.returncode != 0:
+                raise HTTPException(status_code=500, detail=(p2.stderr or p.stderr).decode("utf-8", errors="ignore")[:2000] or "ffmpeg failed")
 
-    total_ms = int(round(sum(durations) * 1000.0))
-    return {"success": True, "master_audio_url": f"/api/uploads/audio/{out_name}", "duration_ms": total_ms}
+        return f"/api/uploads/audio/{out_name}"
+
+    has_any_base_audio = any(isinstance(item.get("base"), Path) for item in shots)
+
+    out: Dict[str, Any] = {"success": True, "duration_ms": int(round(total_sec * 1000.0))}
+
+    narration_master_url: Optional[str] = None
+    if want_narration or (want_mix and not has_any_base_audio):
+        narration_master_url = _render("narration")
+        if want_narration:
+            out["master_audio_url"] = narration_master_url
+
+    if want_mix:
+        # When there's no base (video) audio at all, "mix" degenerates to narration-only.
+        # Reuse the narration master to avoid redundant ffmpeg work and volume changes.
+        if not has_any_base_audio and narration_master_url:
+            out["master_mix_audio_url"] = narration_master_url
+        else:
+            out["master_mix_audio_url"] = _render("mix")
+    # Back-compat: keep master_audio_url when only mix is requested.
+    if "master_audio_url" not in out and "master_mix_audio_url" in out:
+        out["master_audio_url"] = out["master_mix_audio_url"]
+    return out
+
+
+@app.post("/api/agent/projects/{project_id}/audio/extract-from-videos")
+async def extract_audio_from_project_videos(project_id: str, request: ExtractVideoAudioRequest):
+    """Extract audio tracks from generated videos and write into shot.dialogue_audio_url.
+
+    This is used for the "video_dialogue" workflow, where video outputs dialogue/music audio,
+    and TTS only generates narration.
+    """
+    import subprocess
+    from pathlib import Path
+
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    project = AgentProject.from_dict(project_data)
+    executor = get_agent_executor()
+
+    mode = executor.resolve_audio_workflow(project)
+    if mode != "video_dialogue":
+        raise HTTPException(status_code=400, detail=f"当前项目 audioWorkflowResolved={mode}，仅音画同出模式可抽取视频音轨")
+
+    def _tool_ok(name: str) -> bool:
+        try:
+            p = subprocess.run([name, "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+            return p.returncode == 0
+        except Exception:
+            return False
+
+    if not _tool_ok("ffmpeg") or not _tool_ok("ffprobe"):
+        raise HTTPException(status_code=400, detail="未检测到 ffmpeg/ffprobe：无法从视频抽取音轨（请先安装 ffmpeg）")
+
+    selected: Optional[set[str]] = None
+    if isinstance(request.shotIds, list) and request.shotIds:
+        selected = {str(s).strip() for s in request.shotIds if isinstance(s, str) and str(s).strip()}
+        if not selected:
+            selected = None
+
+    upload_video_dir = (Path(UPLOAD_DIR) / "video").resolve()
+    upload_audio_dir = (Path(UPLOAD_DIR) / "audio").resolve()
+    upload_audio_dir.mkdir(parents=True, exist_ok=True)
+
+    def _resolve_video_path(video_url: str) -> Optional[Path]:
+        url = (video_url or "").strip()
+        if not url:
+            return None
+        if url.startswith("/api/uploads/video/"):
+            fn = url[len("/api/uploads/video/") :].strip().replace("/", "")
+            if not fn:
+                return None
+            fp = (upload_video_dir / fn).resolve()
+            if upload_video_dir not in fp.parents or not fp.exists() or not fp.is_file():
+                return None
+            return fp
+        return None
+
+    def _has_audio_stream(video_path: Path) -> bool:
+        try:
+            p = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "a:0",
+                    "-show_entries",
+                    "stream=index",
+                    "-of",
+                    "csv=p=0",
+                    str(video_path),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=20,
+            )
+            return p.returncode == 0 and bool((p.stdout or b"").strip())
+        except Exception:
+            return False
+
+    def _probe_duration_ms(audio_path: Path) -> int:
+        try:
+            p = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=nw=1:nk=1",
+                    str(audio_path),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=20,
+            )
+            if p.returncode != 0:
+                return 0
+            s = (p.stdout or b"").decode("utf-8", errors="ignore").strip()
+            v = float(s) if s else 0.0
+            if not math.isfinite(v) or v <= 0:
+                return 0
+            return int(round(v * 1000.0))
+        except Exception:
+            return 0
+
+    updated: List[str] = []
+    skipped_no_audio: List[str] = []
+    failed: List[Dict[str, str]] = []
+
+    # Iterate shots in order.
+    for seg in project.segments or []:
+        if not isinstance(seg, dict):
+            continue
+        for shot in (seg.get("shots") or []):
+            if not isinstance(shot, dict):
+                continue
+            sid = str(shot.get("id") or "").strip()
+            if not sid:
+                continue
+            if selected is not None and sid not in selected:
+                continue
+
+            if not request.overwrite:
+                existing = str(shot.get("dialogue_audio_url") or "").strip()
+                if existing.startswith("/api/uploads/audio/"):
+                    continue
+
+            video_url = (
+                str(shot.get("cached_video_url") or "").strip()
+                or str(shot.get("video_url") or "").strip()
+                or str(shot.get("video_source_url") or "").strip()
+            )
+            if not video_url:
+                continue
+
+            try:
+                local_url = video_url
+                if video_url.startswith("http"):
+                    cached = await executor._cache_remote_to_uploads(video_url, "video", ".mp4")
+                    if isinstance(cached, str) and cached.startswith("/api/uploads/video/"):
+                        local_url = cached
+
+                vp = _resolve_video_path(local_url)
+                if not vp:
+                    raise ValueError("无法解析本地视频路径（请先确保视频已缓存到 /api/uploads/video/）")
+
+                if not _has_audio_stream(vp):
+                    skipped_no_audio.append(sid)
+                    continue
+
+                out_name = f"video_audio_{project_id}_{sid}_{uuid.uuid4().hex[:8]}.mp3"
+                out_path = (upload_audio_dir / out_name).resolve()
+
+                cmd = [
+                    "ffmpeg",
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    str(vp),
+                    "-vn",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "24000",
+                    "-c:a",
+                    "libmp3lame",
+                    "-b:a",
+                    "192k",
+                    str(out_path),
+                ]
+                p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+                if p.returncode != 0 or not out_path.exists():
+                    # fallback codec name
+                    cmd2 = list(cmd)
+                    for j, v in enumerate(cmd2):
+                        if v == "libmp3lame":
+                            cmd2[j] = "mp3"
+                    p2 = subprocess.run(cmd2, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+                    if p2.returncode != 0 or not out_path.exists():
+                        msg = (p2.stderr or p.stderr).decode("utf-8", errors="ignore")[:2000] or "ffmpeg failed"
+                        raise RuntimeError(msg)
+
+                dur_ms = _probe_duration_ms(out_path)
+                shot["dialogue_audio_url"] = f"/api/uploads/audio/{out_name}"
+                shot["dialogue_audio_duration_ms"] = int(dur_ms or 0)
+                updated.append(sid)
+            except Exception as e:
+                failed.append({"shot_id": sid, "error": str(e)})
+
+    saved = storage.save_agent_project(project.to_dict())
+    return {
+        "success": True,
+        "updated_shots": updated,
+        "skipped_no_audio_stream": skipped_no_audio,
+        "failed": failed,
+        "project": saved,
+    }
 
 
 @app.get("/api/agent/projects/{project_id}/generate-videos-stream")
@@ -4563,6 +4870,11 @@ async def generate_project_videos_stream(project_id: str, resolution: str = "720
                     duration=shot.get("duration", 5),
                     resolution=resolution
                 )
+
+                audio_disabled = video_result.get("audio_disabled") if isinstance(video_result, dict) else None
+                if isinstance(audio_disabled, bool):
+                    shot["video_audio_disabled"] = bool(audio_disabled)
+                    executor.record_video_audio_support(project, audio_disabled=bool(audio_disabled))
 
                 task_id = video_result.get("task_id")
                 status = video_result.get("status")

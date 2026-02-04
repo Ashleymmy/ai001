@@ -9,6 +9,11 @@ type MediaInfo = {
   status?: string
 }
 
+type SpeakableInfo = {
+  narration: boolean
+  dialogue: boolean
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value))
 }
@@ -24,6 +29,8 @@ export default function MultiTrackTimeline({
   currentTime,
   selectedShotId,
   mediaByShotId,
+  workflowMode = 'tts_all',
+  speakableByShotId,
   onSelectShot,
   onSeek,
   resolveMediaUrl,
@@ -33,6 +40,8 @@ export default function MultiTrackTimeline({
   currentTime: number
   selectedShotId: string | null
   mediaByShotId?: Record<string, MediaInfo>
+  workflowMode?: 'tts_all' | 'video_dialogue'
+  speakableByShotId?: Record<string, SpeakableInfo>
   onSelectShot: (shotId: string) => void
   onSeek: (seconds: number) => void
   resolveMediaUrl: (url?: string | null) => string
@@ -115,7 +124,7 @@ export default function MultiTrackTimeline({
             旁白
           </div>
           <div style={{ height: laneHeights.audio }} className="flex items-center">
-            对白
+            {workflowMode === 'video_dialogue' ? '视频音轨（对白/音乐）' : '对白'}
           </div>
           <div style={{ height: laneHeights.audio }} className="flex items-center">
             音效
@@ -199,13 +208,18 @@ export default function MultiTrackTimeline({
             {/* narration lane */}
             <div style={{ height: laneHeights.audio }} className="relative border-b border-white/10">
               {shots.map((s) => {
-                const url = resolveMediaUrl(s.narration_audio_url || '')
-                if (!url) return null
+                const url = resolveMediaUrl(s.narration_audio_url || s.voice_audio_url || '')
                 const durMs = Number(s.narration_duration_ms) || 0
                 const dur = durMs > 0 ? durMs / 1000 : 0
                 const left = (Number(s.timecode_start) || 0) * pxPerSec
-                const width = Math.max(10, Math.min(Number(s.duration) || 0, dur || Number(s.duration) || 0) * pxPerSec)
+                const fallbackDur = Number(s.duration) || 0
+                const width = Math.max(10, Math.min(fallbackDur, dur || fallbackDur) * pxPerSec)
                 const selected = selectedShotId === s.shot_id
+
+                const speakable = speakableByShotId?.[s.shot_id]
+                const needPlaceholder = !url && Boolean(speakable?.narration)
+
+                if (!url && !needPlaceholder) return null
                 return (
                   <div
                     key={s.shot_id}
@@ -217,7 +231,13 @@ export default function MultiTrackTimeline({
                     }}
                     title={`旁白 · ${s.shot_name}`}
                   >
-                    <MiniWaveform url={url} className="w-full h-full" color="rgba(147,197,253,0.75)" height={laneHeights.audio - 8} />
+                    {url ? (
+                      <MiniWaveform url={url} className="w-full h-full" color="rgba(147,197,253,0.75)" height={laneHeights.audio - 8} />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-[10px] text-gray-600 border border-dashed border-white/15 rounded-md">
+                        待生成
+                      </div>
+                    )}
                   </div>
                 )
               })}
@@ -227,12 +247,17 @@ export default function MultiTrackTimeline({
             <div style={{ height: laneHeights.audio }} className="relative border-b border-white/10">
               {shots.map((s) => {
                 const url = resolveMediaUrl(s.dialogue_audio_url || '')
-                if (!url) return null
                 const durMs = Number(s.dialogue_duration_ms) || 0
                 const dur = durMs > 0 ? durMs / 1000 : 0
                 const left = (Number(s.timecode_start) || 0) * pxPerSec
-                const width = Math.max(10, Math.min(Number(s.duration) || 0, dur || Number(s.duration) || 0) * pxPerSec)
+                const fallbackDur = Number(s.duration) || 0
+                const width = Math.max(10, Math.min(fallbackDur, dur || fallbackDur) * pxPerSec)
                 const selected = selectedShotId === s.shot_id
+
+                const showPlaceholder = workflowMode === 'video_dialogue' && !url
+                if (!url && !showPlaceholder) return null
+                const m = getShotMedia(mediaByShotId, s.shot_id)
+                const hasVideo = Boolean((m?.video_url || '').trim())
                 return (
                   <div
                     key={s.shot_id}
@@ -242,9 +267,15 @@ export default function MultiTrackTimeline({
                       e.stopPropagation()
                       onSelectShot(s.shot_id)
                     }}
-                    title={`对白 · ${s.shot_name}`}
+                    title={`${workflowMode === 'video_dialogue' ? '视频音轨（对白/音乐）' : '对白'} · ${s.shot_name}`}
                   >
-                    <MiniWaveform url={url} className="w-full h-full" color="rgba(34,197,94,0.7)" height={laneHeights.audio - 8} />
+                    {url ? (
+                      <MiniWaveform url={url} className="w-full h-full" color="rgba(34,197,94,0.7)" height={laneHeights.audio - 8} />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-[10px] text-gray-600 border border-dashed border-white/15 rounded-md">
+                        {hasVideo ? '待抽取' : '待生成'}
+                      </div>
+                    )}
                   </div>
                 )
               })}

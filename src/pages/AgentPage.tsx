@@ -228,6 +228,9 @@ export default function AgentPage() {
     const raw = localStorage.getItem('agent_audio_gen_include_dialogue')
     return raw !== '0'
   })
+  const audioWorkflowResolved: 'tts_all' | 'video_dialogue' =
+    String(creativeBrief.audioWorkflowResolved || '').trim().toLowerCase() === 'video_dialogue' ? 'video_dialogue' : 'tts_all'
+  const effectiveAudioGenIncludeDialogue = audioWorkflowResolved === 'video_dialogue' ? false : audioGenIncludeDialogue
   const [isScriptDoctoring, setIsScriptDoctoring] = useState(false)
   const [isCompletingAssets, setIsCompletingAssets] = useState(false)
   const [isAudioChecking, setIsAudioChecking] = useState(false)
@@ -249,6 +252,12 @@ export default function AgentPage() {
   useEffect(() => {
     localStorage.setItem('agent_audio_gen_include_dialogue', audioGenIncludeDialogue ? '1' : '0')
   }, [audioGenIncludeDialogue])
+
+  useEffect(() => {
+    if (audioWorkflowResolved === 'video_dialogue' && audioGenIncludeDialogue) {
+      setAudioGenIncludeDialogue(false)
+    }
+  }, [audioGenIncludeDialogue, audioWorkflowResolved])
 
   // 任务卡片展开状态
   const [expandedCards, setExpandedCards] = useState<Set<TaskCardType>>(new Set(['brief']))
@@ -835,20 +844,32 @@ export default function AgentPage() {
       }
 
       const includeNarration = audioGenIncludeNarration
-      const includeDialogue = audioGenIncludeDialogue
+      const includeDialogue = effectiveAudioGenIncludeDialogue
       if (!includeNarration && !includeDialogue) {
-        addMessage('assistant', '⚠️ 请至少选择一个：旁白 或 对白')
+        addMessage('assistant', audioWorkflowResolved === 'video_dialogue' ? '⚠️ 音画同出模式下音频模块只生成旁白：请先开启「旁白：开」' : '⚠️ 请至少选择一个：旁白 或 对白')
         return
       }
 
-      const parts = [includeNarration ? '旁白' : null, includeDialogue ? '对白' : null].filter(Boolean).join(' + ')
-      const ok = window.confirm(`将为所有镜头生成：${parts}（独立 TTS），并在导出视频时叠加到原视频环境音上。\n\n确认开始？`)
+      const parts =
+        audioWorkflowResolved === 'video_dialogue'
+          ? '旁白'
+          : [includeNarration ? '旁白' : null, includeDialogue ? '对白' : null].filter(Boolean).join(' + ')
+      const ok = window.confirm(
+        audioWorkflowResolved === 'video_dialogue'
+          ? '将为所有镜头生成：旁白（独立 TTS）。\n\n对白+音乐将由视频生成（音画同出），最终会与旁白混音预览并导出。\n\n确认开始？'
+          : `将为所有镜头生成：${parts}（独立 TTS），并在导出视频时叠加到原视频环境音上。\n\n确认开始？`
+      )
       if (!ok) return
 
       setGenerationStage('audio')
       setGenerationProgress({ current: 0, total: 0, percent: 0, phase: 'submit', stage: '生成音频' })
 
-      addMessage('assistant', `🎵 **开始生成音频（${parts}）**\n\n我会逐镜头生成人声轨，并在导出时与视频环境音混合。`)
+      addMessage(
+        'assistant',
+        audioWorkflowResolved === 'video_dialogue'
+          ? `🎵 **开始生成旁白（${parts}）**\n\n我会逐镜头生成旁白人声轨；对白/音乐由视频生成，后续在音频工作台可生成「最终混音」预览。`
+          : `🎵 **开始生成音频（${parts}）**\n\n我会逐镜头生成人声轨，并在导出时与视频环境音混合。`
+      )
 
       try {
         const result = await generateAgentAudio(projectId, { overwrite: true, includeNarration, includeDialogue })
@@ -2873,14 +2894,18 @@ ${result.success
     }
 
     const includeNarration = audioGenIncludeNarration
-    const includeDialogue = audioGenIncludeDialogue
+    const includeDialogue = effectiveAudioGenIncludeDialogue
     if (!includeNarration && !includeDialogue) {
-      addMessage('assistant', '⚠️ 请至少选择一个：旁白 或 对白')
+      addMessage('assistant', audioWorkflowResolved === 'video_dialogue' ? '⚠️ 音画同出模式下音频模块只生成旁白：请先开启「旁白：开」' : '⚠️ 请至少选择一个：旁白 或 对白')
       return
     }
     const parts = [includeNarration ? '旁白' : null, includeDialogue ? '对白' : null].filter(Boolean).join(' + ')
 
-    const ok = window.confirm(`将仅为该镜头重新生成：${parts}（独立 TTS）。\n\n确认开始？`)
+    const ok = window.confirm(
+      audioWorkflowResolved === 'video_dialogue'
+        ? `将仅为该镜头重新生成：旁白（独立 TTS）。\n\n提示：对白/音乐由视频生成。\n\n确认开始？`
+        : `将仅为该镜头重新生成：${parts}（独立 TTS）。\n\n确认开始？`
+    )
     if (!ok) return
 
     setRegeneratingAudioShotId(shotId)
@@ -3013,7 +3038,7 @@ ${result.success
     try {
       const result = await audioCheckAgentProject(projectId, {
         includeNarration: audioGenIncludeNarration,
-        includeDialogue: audioGenIncludeDialogue,
+        includeDialogue: effectiveAudioGenIncludeDialogue,
         speed: 1.0,
         apply
       })
@@ -4185,7 +4210,7 @@ ${result.success
               <AudioWorkbench
                 projectId={projectId}
                 includeNarration={audioGenIncludeNarration}
-                includeDialogue={audioGenIncludeDialogue}
+                includeDialogue={effectiveAudioGenIncludeDialogue}
                 onExitToStoryboard={() => setActiveModule('storyboard')}
                 onReloadProject={async (id) => { await loadProject(id) }}
               />
@@ -4551,17 +4576,27 @@ ${result.success
                     onClick={() => handleConfirmClick('generate_audio')}
                     disabled={generationStage !== 'idle' || !projectId || segments.length === 0}
                     className="w-full glass p-2 rounded-lg text-left hover:bg-white/5 transition-apple disabled:opacity-50"
-                    title={!projectId ? '请先保存/加载项目后再生成音频' : '为所有镜头生成旁白/对白人声轨（导出时自动叠加）'}
+                    title={
+                      !projectId
+                        ? '请先保存/加载项目后再生成音频'
+                        : audioWorkflowResolved === 'video_dialogue'
+                          ? '为所有镜头生成旁白（对白/音乐由视频生成），并在导出/混音时叠加'
+                          : '为所有镜头生成旁白/对白人声轨（导出时自动叠加）'
+                    }
                   >
                     <div className="flex items-center gap-2 mb-1">
                       <span className="w-5 h-5 rounded-full bg-cyan-500/20 text-cyan-300 flex items-center justify-center text-[10px]">4</span>
-                      <span className="font-medium">旁白/对白音频</span>
+                      <span className="font-medium">{audioWorkflowResolved === 'video_dialogue' ? '旁白音频' : '旁白/对白音频'}</span>
                       {generationStage === 'audio' && <Loader2 size={12} className="animate-spin text-cyan-300 ml-auto" />}
                       {segments.flatMap(s => s.shots).some(s => Boolean((s as { voice_audio_url?: string }).voice_audio_url)) && generationStage !== 'audio' && (
                         <CheckCircle size={12} className="text-green-400 ml-auto" />
                       )}
                     </div>
-                    <p className="text-[10px] text-gray-400 ml-7">OpenSpeech TTS - 生成独立人声轨（旁白/对白）</p>
+                    <p className="text-[10px] text-gray-400 ml-7">
+                      {audioWorkflowResolved === 'video_dialogue'
+                        ? 'OpenSpeech TTS - 生成旁白（将与视频音轨混音预览并导出）'
+                        : 'OpenSpeech TTS - 生成独立人声轨（旁白/对白）'}
+                    </p>
                   </button>
                   <div className="ml-7 -mt-1 flex items-center gap-2 text-[10px]">
                     <span className="text-gray-500">生成：</span>
@@ -4576,12 +4611,15 @@ ${result.success
                     <button
                       type="button"
                       onClick={() => setAudioGenIncludeDialogue(v => !v)}
-                      className={`px-2 py-1 rounded-full glass-button transition-apple ${audioGenIncludeDialogue ? 'text-cyan-300' : 'text-gray-500'}`}
-                      title="开关：对白"
+                      disabled={audioWorkflowResolved === 'video_dialogue'}
+                      className={`px-2 py-1 rounded-full glass-button transition-apple disabled:opacity-50 ${
+                        effectiveAudioGenIncludeDialogue ? 'text-cyan-300' : 'text-gray-500'
+                      }`}
+                      title={audioWorkflowResolved === 'video_dialogue' ? '音画同出：对白/音乐由视频生成' : '开关：对白'}
                     >
-                      {audioGenIncludeDialogue ? '对白：开' : '对白：关'}
+                      {audioWorkflowResolved === 'video_dialogue' ? '对白：视频' : effectiveAudioGenIncludeDialogue ? '对白：开' : '对白：关'}
                     </button>
-                    {!audioGenIncludeNarration && audioGenIncludeDialogue && (
+                    {audioWorkflowResolved !== 'video_dialogue' && !audioGenIncludeNarration && effectiveAudioGenIncludeDialogue && (
                       <span className="text-gray-500">(仅对白调试)</span>
                     )}
                     <button

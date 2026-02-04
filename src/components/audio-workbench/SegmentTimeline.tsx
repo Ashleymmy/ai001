@@ -15,11 +15,13 @@ export default function SegmentTimeline({
   selectedShotId,
   onSelectShot,
   onSetDuration,
+  durationLocked = false,
 }: {
   segments: AudioTimelineSegment[]
   selectedShotId: string | null
   onSelectShot: (shotId: string) => void
   onSetDuration: (shotId: string, duration: number) => void
+  durationLocked?: boolean
 }) {
   const flat = useMemo(() => {
     const out: Array<{
@@ -50,11 +52,12 @@ export default function SegmentTimeline({
   }, [segments])
 
   const dragRef = useRef<null | { shotId: string; startX: number; startDuration: number }>(null)
+  const canEdit = !durationLocked
 
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-medium text-gray-200">时间轴（拖拽右侧边调整时长）</h3>
+        <h3 className="text-sm font-medium text-gray-200">{canEdit ? '时间轴（拖拽右侧边调整时长）' : '时间轴（视频已生成：时长已锁定）'}</h3>
         <span className="text-[11px] text-gray-500">比例：{PX_PER_SEC}px / 秒</span>
       </div>
 
@@ -86,34 +89,36 @@ export default function SegmentTimeline({
                 </div>
 
                 {/* drag handle */}
-                <div
-                  className="absolute top-1 bottom-1 right-0 w-2 cursor-ew-resize rounded-r-xl hover:bg-primary/40"
-                  onPointerDown={(e) => {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-                    dragRef.current = { shotId: s.shot_id, startX: e.clientX, startDuration: s.duration }
-                  }}
-                  onPointerMove={(e) => {
-                    const st = dragRef.current
-                    if (!st) return
-                    if (st.shotId !== s.shot_id) return
-                    const deltaPx = e.clientX - st.startX
-                    const deltaSec = deltaPx / PX_PER_SEC
-                    onSetDuration(s.shot_id, st.startDuration + deltaSec)
-                  }}
-                  onPointerUp={(e) => {
-                    try {
-                      ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
-                    } catch {
-                      // ignore
-                    }
-                    dragRef.current = null
-                  }}
-                  onPointerCancel={() => {
-                    dragRef.current = null
-                  }}
-                />
+                {canEdit && (
+                  <div
+                    className="absolute top-1 bottom-1 right-0 w-2 cursor-ew-resize rounded-r-xl hover:bg-primary/40"
+                    onPointerDown={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+                      dragRef.current = { shotId: s.shot_id, startX: e.clientX, startDuration: s.duration }
+                    }}
+                    onPointerMove={(e) => {
+                      const st = dragRef.current
+                      if (!st) return
+                      if (st.shotId !== s.shot_id) return
+                      const deltaPx = e.clientX - st.startX
+                      const deltaSec = deltaPx / PX_PER_SEC
+                      onSetDuration(s.shot_id, st.startDuration + deltaSec)
+                    }}
+                    onPointerUp={(e) => {
+                      try {
+                        ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+                      } catch {
+                        // ignore
+                      }
+                      dragRef.current = null
+                    }}
+                    onPointerCancel={() => {
+                      dragRef.current = null
+                    }}
+                  />
+                )}
               </div>
             )
           })}
@@ -122,4 +127,3 @@ export default function SegmentTimeline({
     </div>
   )
 }
-
