@@ -864,10 +864,36 @@ export interface AgentProject {
   segments: AgentSegment[]
   visual_assets: Array<{ id: string; url: string; duration?: string }>
   audio_assets: Array<{ id: string; url: string; type: string }>
+  audio_timeline?: AudioTimeline
   timeline: Array<{ id: string; type: string; start: number; duration: number }>
   messages: AgentChatMessage[]
   created_at: string
   updated_at: string
+}
+
+export interface AudioTimelineShot {
+  shot_id: string
+  shot_name: string
+  timecode_start: number
+  timecode_end: number
+  duration: number
+  voice_audio_url?: string
+  voice_duration_ms?: number
+}
+
+export interface AudioTimelineSegment {
+  segment_id: string
+  segment_name: string
+  shots: AudioTimelineShot[]
+}
+
+export interface AudioTimeline {
+  version: string
+  confirmed: boolean
+  updated_at?: string
+  master_audio_url?: string
+  total_duration: number
+  segments: AudioTimelineSegment[]
 }
 
 export interface ShotType {
@@ -1467,6 +1493,53 @@ export async function executeProjectPipeline(
     resolution
   }, {
     timeout: 3600000 // 1小时超时，完整流程
+  })
+  return response.data
+}
+
+// 执行完整流程（音频先行约束版；后端会自动退化为旧行为）
+export async function executeProjectPipelineV2(
+  projectId: string,
+  visualStyle: string = '吉卜力动画风格',
+  resolution: string = '720p',
+  options?: { forceRegenerateVideos?: boolean }
+): Promise<PipelineResult> {
+  const response = await api.post(`/api/agent/projects/${projectId}/execute-pipeline-v2`, {
+    visualStyle,
+    resolution,
+    forceRegenerateVideos: options?.forceRegenerateVideos ?? false
+  }, {
+    timeout: 3600000 // 1小时超时，完整流程
+  })
+  return response.data
+}
+
+export async function getAgentAudioTimeline(projectId: string): Promise<{ success: boolean; audio_timeline: AudioTimeline }> {
+  const response = await api.get(`/api/agent/projects/${projectId}/audio-timeline`)
+  return response.data
+}
+
+export async function saveAgentAudioTimeline(
+  projectId: string,
+  audioTimeline: AudioTimeline,
+  options?: { applyToProject?: boolean; resetVideos?: boolean }
+): Promise<{ success: boolean; project: AgentProject; audio_timeline: AudioTimeline }> {
+  const response = await api.post(`/api/agent/projects/${projectId}/audio-timeline`, {
+    audioTimeline,
+    applyToProject: options?.applyToProject ?? true,
+    resetVideos: options?.resetVideos ?? true,
+  })
+  return response.data
+}
+
+export async function generateAudioTimelineMasterAudio(
+  projectId: string,
+  shotDurations: Record<string, number>
+): Promise<{ success: boolean; master_audio_url: string; duration_ms: number }> {
+  const response = await api.post(`/api/agent/projects/${projectId}/audio-timeline/master-audio`, {
+    shotDurations
+  }, {
+    timeout: 300000
   })
   return response.data
 }

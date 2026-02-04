@@ -14,6 +14,7 @@ class AgentProject:
         self.segments: List[Dict] = []
         self.visual_assets: List[Dict] = []
         self.audio_assets: List[Dict] = []
+        self.audio_timeline: Dict = {}
         self.timeline: List[Dict] = []
         self.messages: List[Dict] = []  # 聊天记录
         # 仅供 Agent 自己回溯上下文使用的“记忆”，避免被前端保存 messages 覆盖/冲突
@@ -97,6 +98,7 @@ class AgentProject:
             "segments": self.segments,
             "visual_assets": self.visual_assets,
             "audio_assets": self.audio_assets,
+            "audio_timeline": self.audio_timeline,
             "timeline": self.timeline,
             "messages": self.messages,
             "agent_memory": self.agent_memory,
@@ -121,6 +123,7 @@ class AgentProject:
 
         project.visual_assets = data.get("visual_assets") if isinstance(data.get("visual_assets"), list) else []
         project.audio_assets = data.get("audio_assets") if isinstance(data.get("audio_assets"), list) else []
+        project.audio_timeline = data.get("audio_timeline") if isinstance(data.get("audio_timeline"), dict) else {}
         project.timeline = data.get("timeline") if isinstance(data.get("timeline"), list) else []
 
         project.messages = data.get("messages") if isinstance(data.get("messages"), list) else []

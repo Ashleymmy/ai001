@@ -13,6 +13,7 @@ import uuid
 import re
 import asyncio
 import hashlib
+import math
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any, Callable
 from urllib.parse import urlparse, parse_qs
@@ -47,6 +48,32 @@ def _as_text(value: Any) -> str:
 
 def _ensure_list(value: Any) -> List[Any]:
     return value if isinstance(value, list) else []
+
+
+def _estimate_speech_seconds(text: str, speed: float = 1.0) -> float:
+    """Heuristic voice duration estimate for narration/dialogue (seconds).
+
+    This is used as a fallback when `voice_audio_duration_ms` is not available.
+    """
+    if not isinstance(text, str):
+        return 0.0
+    s = re.sub(r"\s+", " ", text).strip()
+    if not s:
+        return 0.0
+
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", s))
+    words = len(re.findall(r"[A-Za-z0-9']+", s))
+
+    cps = 4.0  # Chinese chars/sec
+    wps = 2.7  # English words/sec
+
+    base = (cjk / cps) if cjk >= max(8, words * 2) else (words / wps if words else (len(s) / 10.0))
+    punct = len(re.findall(r"[，,。\.！!？?；;：:、]", s))
+    pauses = punct * 0.18 + s.count("…") * 0.25 + s.count("—") * 0.12
+    lead = 0.25
+
+    spd = speed if isinstance(speed, (int, float)) and speed > 0 else 1.0
+    return max(0.0, (base + pauses + lead) / float(spd))
 
 # 元素生成提示词模板
 ELEMENT_PROMPT_TEMPLATE = """请为以下角色/元素生成详细的图像生成提示词：
@@ -2501,6 +2528,211 @@ class AgentExecutor:
         """取消执行"""
         self._cancelled = True
 
+    def _ceil_to_half(self, seconds: Any) -> float:
+        """Round up to 0.5s (used for voice-safe durations)."""
+        try:
+            s = float(seconds)
+        except Exception:
+            return 0.0
+        if not math.isfinite(s) or s < 0:
+            return 0.0
+        return float(math.ceil(s * 2.0) / 2.0)
+
+    def build_audio_timeline_from_project(
+        self,
+        project: AgentProject,
+        shot_durations_override: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build a draft audio_timeline from current project segments/shots (no re-segmentation).
+
+        Rules:
+        - Keep existing shot order and shot IDs.
+        - Duration is at least max(2s, voice_duration, estimated_voice_duration).
+        - Durations are rounded up to 0.5s for stability.
+        """
+        overrides = shot_durations_override if isinstance(shot_durations_override, dict) else {}
+
+        segments_out: List[Dict[str, Any]] = []
+        t = 0.0
+
+        segments = project.segments if isinstance(project.segments, list) else []
+        for seg_index, seg in enumerate(segments):
+            if not isinstance(seg, dict):
+                continue
+            seg_id = seg.get("id") if isinstance(seg.get("id"), str) else f"Segment_{seg_index+1}"
+            seg_name = seg.get("name") if isinstance(seg.get("name"), str) and seg.get("name").strip() else seg_id
+
+            shots_out: List[Dict[str, Any]] = []
+            shots = seg.get("shots") or []
+            if not isinstance(shots, list):
+                shots = []
+
+            for shot_index, shot in enumerate(shots):
+                if not isinstance(shot, dict):
+                    continue
+                shot_id = shot.get("id")
+                if not isinstance(shot_id, str) or not shot_id.strip():
+                    continue
+                shot_name = shot.get("name") if isinstance(shot.get("name"), str) and shot.get("name").strip() else shot_id
+
+                voice_ms = shot.get("voice_audio_duration_ms")
+                voice_ms_i = int(voice_ms) if isinstance(voice_ms, (int, float)) else 0
+                min_sec = float(voice_ms_i) / 1000.0 if voice_ms_i > 0 else 0.0
+
+                if min_sec <= 0.01:
+                    # Fallback estimate based on script text.
+                    narration = shot.get("narration") if isinstance(shot.get("narration"), str) else ""
+                    dialogue = shot.get("dialogue_script") if isinstance(shot.get("dialogue_script"), str) else ""
+                    text = " ".join([p for p in [narration.strip(), dialogue.strip()] if p])
+                    min_sec = _estimate_speech_seconds(text, speed=1.0)
+
+                raw_override = overrides.get(shot_id) if isinstance(overrides, dict) else None
+                raw_dur = raw_override if raw_override is not None else shot.get("duration", 5.0)
+                try:
+                    dur = float(raw_dur)
+                except Exception:
+                    dur = 5.0
+
+                dur = max(2.0, dur, float(min_sec or 0.0))
+                dur = self._ceil_to_half(dur)
+
+                start = t
+                end = t + dur
+                t = end
+
+                shots_out.append({
+                    "shot_id": shot_id,
+                    "shot_name": shot_name,
+                    "timecode_start": round(start, 3),
+                    "timecode_end": round(end, 3),
+                    "duration": float(dur),
+                    "voice_audio_url": shot.get("voice_audio_url") if isinstance(shot.get("voice_audio_url"), str) else "",
+                    "voice_duration_ms": int(voice_ms_i or 0),
+                })
+
+            segments_out.append({
+                "segment_id": seg_id,
+                "segment_name": seg_name,
+                "shots": shots_out,
+            })
+
+        return {
+            "version": "v1",
+            "confirmed": False,
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+            "master_audio_url": "",
+            "total_duration": round(t, 3),
+            "segments": segments_out,
+        }
+
+    def apply_audio_timeline_to_project(
+        self,
+        project: AgentProject,
+        audio_timeline: Dict[str, Any],
+        reset_videos: bool = True,
+    ) -> None:
+        """Apply timeline durations back to project shots (no shot count changes)."""
+        if not isinstance(audio_timeline, dict):
+            raise ValueError("audio_timeline must be an object")
+
+        segs = audio_timeline.get("segments") or []
+        if not isinstance(segs, list):
+            raise ValueError("audio_timeline.segments must be a list")
+
+        timeline_ids: List[str] = []
+        timeline_durations: Dict[str, float] = {}
+
+        for seg in segs:
+            if not isinstance(seg, dict):
+                continue
+            shots = seg.get("shots") or []
+            if not isinstance(shots, list):
+                continue
+            for s in shots:
+                if not isinstance(s, dict):
+                    continue
+                sid = s.get("shot_id")
+                if not isinstance(sid, str) or not sid.strip():
+                    continue
+                if sid in timeline_durations:
+                    raise ValueError(f"duplicate shot_id in audio_timeline: {sid}")
+                try:
+                    dur = float(s.get("duration", 0.0))
+                except Exception:
+                    dur = 0.0
+                timeline_ids.append(sid)
+                timeline_durations[sid] = self._ceil_to_half(max(2.0, dur))
+
+        project_ids: List[str] = []
+        segments = project.segments if isinstance(project.segments, list) else []
+        for seg in segments:
+            if not isinstance(seg, dict):
+                continue
+            for shot in (seg.get("shots") or []):
+                if not isinstance(shot, dict):
+                    continue
+                sid = shot.get("id")
+                if isinstance(sid, str) and sid.strip():
+                    project_ids.append(sid)
+
+        if len(project_ids) != len(timeline_ids) or set(project_ids) != set(timeline_ids):
+            raise ValueError("audio_timeline shot_id set must match project shots (no re-segmentation allowed)")
+
+        for seg in segments:
+            if not isinstance(seg, dict):
+                continue
+            for shot in (seg.get("shots") or []):
+                if not isinstance(shot, dict):
+                    continue
+                sid = shot.get("id")
+                if not isinstance(sid, str) or sid not in timeline_durations:
+                    continue
+
+                try:
+                    old = float(shot.get("duration", 5.0))
+                except Exception:
+                    old = 5.0
+                new = float(timeline_durations[sid])
+
+                shot["duration"] = new
+
+                if reset_videos and abs(old - new) > 0.2:
+                    shot.pop("video_url", None)
+                    shot.pop("video_source_url", None)
+                    shot.pop("cached_video_url", None)
+                    shot.pop("video_task_id", None)
+                    if shot.get("start_image_url"):
+                        shot["status"] = "frame_ready"
+                    else:
+                        shot["status"] = "pending"
+
+    async def execute_full_pipeline_v2(
+        self,
+        project: AgentProject,
+        visual_style: str = "吉卜力动画风格",
+        resolution: str = "720p",
+        audio_timeline: Optional[Dict[str, Any]] = None,
+        reset_videos: bool = False,
+        on_stage_complete: Optional[Callable[[str, Dict], None]] = None,
+        on_progress: Optional[Callable[[str, str, int, int, Dict], None]] = None,
+    ) -> Dict[str, Any]:
+        """执行完整的生成流程（可选 audio_timeline 约束）。"""
+        tl = audio_timeline if isinstance(audio_timeline, dict) else (project.audio_timeline if isinstance(getattr(project, "audio_timeline", None), dict) else None)
+        if isinstance(tl, dict) and tl.get("confirmed") is True:
+            try:
+                self.apply_audio_timeline_to_project(project, tl, reset_videos=reset_videos)
+            except Exception as e:
+                return {"success": False, "error": f"Invalid audio_timeline: {str(e)}"}
+
+        # 复用原 pipeline 逻辑（不改 execute_full_pipeline）
+        return await self.execute_full_pipeline(
+            project,
+            visual_style=visual_style,
+            resolution=resolution,
+            on_stage_complete=on_stage_complete,
+            on_progress=on_progress,
+        )
+
     def _is_stable_local_url(self, url: Any) -> bool:
         return isinstance(url, str) and (url.startswith("/api/uploads/") or url.startswith("data:"))
 
@@ -3374,12 +3606,33 @@ class AgentExecutor:
             try:
                 # 构建视频提示词
                 video_prompt = self._build_video_prompt_for_shot(shot, project)
+
+                # 时长：确保是 float，并且不短于人声轨（避免导出混音被截断）
+                try:
+                    duration = float(shot.get("duration", 5.0))
+                except Exception:
+                    duration = 5.0
+                if not math.isfinite(duration) or duration <= 0:
+                    duration = 5.0
+
+                voice_ms = shot.get("voice_audio_duration_ms")
+                try:
+                    voice_ms_i = int(voice_ms) if isinstance(voice_ms, (int, float)) else 0
+                except Exception:
+                    voice_ms_i = 0
+                if voice_ms_i > 0:
+                    voice_sec = float(voice_ms_i) / 1000.0
+                    if voice_sec > 0.01 and duration < voice_sec:
+                        duration = self._ceil_to_half(max(2.0, voice_sec))
+                        shot["duration"] = duration
+                else:
+                    duration = max(2.0, duration)
                 
                 # 生成视频
                 video_result = await self.video_service.generate(
                     image_url=shot["start_image_url"],
                     prompt=video_prompt,
-                    duration=shot.get("duration", 5),
+                    duration=duration,
                     resolution=resolution
                 )
                 

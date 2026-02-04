@@ -1,4 +1,4 @@
-export type ModuleType = 'elements' | 'storyboard' | 'timeline'
+export type ModuleType = 'elements' | 'storyboard' | 'timeline' | 'audio'
 export type GenerationStage = 'idle' | 'planning' | 'elements' | 'frames' | 'videos' | 'audio' | 'complete'
 export type TaskCardType = 'brief' | 'storyboard' | 'visual' | 'genPath' | 'narration' | 'music' | 'timeline'
 
@@ -69,4 +69,3 @@ export interface CreativeBrief {
   narratorVoiceProfile?: string
   [key: string]: string | undefined
 }
-

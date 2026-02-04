@@ -2864,6 +2864,22 @@ class ExecutePipelineRequest(BaseModel):
     resolution: str = "720p"
 
 
+class ExecutePipelineV2Request(BaseModel):
+    visualStyle: str = "吉卜力动画风格"
+    resolution: str = "720p"
+    forceRegenerateVideos: bool = False
+
+
+class SaveAudioTimelineRequest(BaseModel):
+    audioTimeline: dict
+    applyToProject: bool = True
+    resetVideos: bool = True
+
+
+class AudioTimelineMasterAudioRequest(BaseModel):
+    shotDurations: Dict[str, float] = Field(default_factory=dict)
+
+
 def get_agent_executor() -> AgentExecutor:
     """获取 Agent 执行器"""
     return AgentExecutor(
@@ -3980,6 +3996,168 @@ async def clear_project_audio(project_id: str, request: ClearAgentAudioRequest):
     }
 
 
+@app.get("/api/agent/projects/{project_id}/audio-timeline")
+async def get_project_audio_timeline(project_id: str):
+    """获取项目 audio_timeline；若不存在则返回基于当前 shots 的草稿。"""
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    # 若已保存 timeline，直接返回
+    existing = project_data.get("audio_timeline")
+    if isinstance(existing, dict) and isinstance(existing.get("segments"), list):
+        return {"success": True, "audio_timeline": existing}
+
+    project = AgentProject.from_dict(project_data)
+    executor = get_agent_executor()
+    draft = executor.build_audio_timeline_from_project(project)
+    return {"success": True, "audio_timeline": draft}
+
+
+@app.post("/api/agent/projects/{project_id}/audio-timeline")
+async def save_project_audio_timeline(project_id: str, request: SaveAudioTimelineRequest):
+    """保存项目 audio_timeline，并可选将 duration 写回 shots（不允许改变镜头数量）。"""
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    if not isinstance(request.audioTimeline, dict):
+        raise HTTPException(status_code=400, detail="audioTimeline must be an object")
+
+    project = AgentProject.from_dict(project_data)
+    executor = get_agent_executor()
+
+    # 校验并可选写回 duration
+    try:
+        if request.applyToProject:
+            executor.apply_audio_timeline_to_project(project, request.audioTimeline, reset_videos=bool(request.resetVideos))
+        else:
+            # 仅校验：在临时对象上 apply，避免修改原项目
+            tmp = AgentProject.from_dict(project.to_dict())
+            executor.apply_audio_timeline_to_project(tmp, request.audioTimeline, reset_videos=False)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # 写入 timeline（无论是否 applyToProject，都保存）
+    tl = dict(request.audioTimeline)
+    tl.setdefault("version", "v1")
+    tl["updated_at"] = datetime.utcnow().isoformat() + "Z"
+    project.audio_timeline = tl
+
+    saved = storage.save_agent_project(project.to_dict())
+    return {"success": True, "project": saved, "audio_timeline": tl}
+
+
+@app.post("/api/agent/projects/{project_id}/audio-timeline/master-audio")
+async def generate_audio_timeline_master_audio(project_id: str, request: AudioTimelineMasterAudioRequest):
+    """生成音频工作台预览用的 master 音轨（按当前 duration 拼接并补齐静默）。"""
+    import subprocess
+    from pathlib import Path
+
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    project = AgentProject.from_dict(project_data)
+    executor = get_agent_executor()
+
+    def _ffmpeg_ok() -> bool:
+        try:
+            p = subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+            return p.returncode == 0
+        except Exception:
+            return False
+
+    if not _ffmpeg_ok():
+        raise HTTPException(status_code=400, detail="未检测到 ffmpeg：无法生成波形预览音轨（请先安装 ffmpeg）")
+
+    timeline = executor.build_audio_timeline_from_project(project, shot_durations_override=request.shotDurations)
+
+    # 收集输入音频（按镜头顺序）
+    audio_dir = (Path(UPLOAD_DIR) / "audio").resolve()
+    inputs: List[str] = []
+    durations: List[float] = []
+    missing: List[str] = []
+
+    for seg in (timeline.get("segments") or []):
+        if not isinstance(seg, dict):
+            continue
+        for s in (seg.get("shots") or []):
+            if not isinstance(s, dict):
+                continue
+            sid = str(s.get("shot_id") or "").strip()
+            url = str(s.get("voice_audio_url") or "").strip()
+            dur = float(s.get("duration") or 0.0)
+            if not sid:
+                continue
+            if not url.startswith("/api/uploads/audio/"):
+                missing.append(sid)
+                continue
+            filename = url[len("/api/uploads/audio/") :].strip().replace("/", "")
+            if not filename:
+                missing.append(sid)
+                continue
+            fp = (audio_dir / filename).resolve()
+            if audio_dir not in fp.parents or not fp.exists() or not fp.is_file():
+                missing.append(sid)
+                continue
+            inputs.append(str(fp))
+            durations.append(max(0.0, dur))
+
+    if missing:
+        raise HTTPException(status_code=400, detail=f"缺少本地旁白/对白音频文件：{', '.join(missing[:20])}{'...' if len(missing) > 20 else ''}")
+
+    if not inputs:
+        raise HTTPException(status_code=400, detail="没有可用的人声轨，无法生成 master 音频")
+
+    out_name = f"timeline_master_{project_id}_{uuid.uuid4().hex[:8]}.mp3"
+    out_path = (audio_dir / out_name).resolve()
+
+    # Build filter_complex for concat with padding/trimming.
+    parts = []
+    concat_inputs = []
+    for i, dur in enumerate(durations):
+        dur_s = max(0.0, float(dur))
+        parts.append(
+            f"[{i}:a]aresample=24000,aformat=channel_layouts=mono,apad,atrim=0:{dur_s:.3f},asetpts=N/SR/TB[a{i}]"
+        )
+        concat_inputs.append(f"[a{i}]")
+    parts.append("".join(concat_inputs) + f"concat=n={len(durations)}:v=0:a=1[outa]")
+    filter_complex = ";".join(parts)
+
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    for fp in inputs:
+        cmd.extend(["-i", fp])
+    cmd.extend([
+        "-filter_complex",
+        filter_complex,
+        "-map",
+        "[outa]",
+        "-c:a",
+        "libmp3lame",
+        "-b:a",
+        "192k",
+        str(out_path),
+    ])
+
+    def _run(cmd_args: List[str]) -> subprocess.CompletedProcess:
+        return subprocess.run(cmd_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    p = _run(cmd)
+    if p.returncode != 0:
+        # fallback: some ffmpeg builds don't have libmp3lame
+        cmd2 = list(cmd)
+        for j, v in enumerate(cmd2):
+            if v == "libmp3lame":
+                cmd2[j] = "mp3"
+        p = _run(cmd2)
+        if p.returncode != 0:
+            raise HTTPException(status_code=500, detail=p.stderr.decode("utf-8", errors="ignore")[:2000] or "ffmpeg failed")
+
+    total_ms = int(round(sum(durations) * 1000.0))
+    return {"success": True, "master_audio_url": f"/api/uploads/audio/{out_name}", "duration_ms": total_ms}
+
+
 @app.get("/api/agent/projects/{project_id}/generate-videos-stream")
 async def generate_project_videos_stream(project_id: str, resolution: str = "720p"):
     """流式生成项目的所有视频 (SSE)
@@ -4207,6 +4385,36 @@ async def execute_project_pipeline(project_id: str, request: ExecutePipelineRequ
             resolution=request.resolution
         )
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"执行失败: {str(e)}")
+
+
+@app.post("/api/agent/projects/{project_id}/execute-pipeline-v2")
+async def execute_project_pipeline_v2(project_id: str, request: ExecutePipelineV2Request):
+    """执行完整的生成流程（音频先行约束版）。
+
+    若项目存在已确认的 audio_timeline，则会在执行前将 timeline.duration 写回 shots 并可选重置视频引用。
+    若不存在或未确认，则退化为原行为。
+    """
+    project_data = storage.get_agent_project(project_id)
+    if not project_data:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    project = AgentProject.from_dict(project_data)
+    executor = get_agent_executor()
+
+    try:
+        result = await executor.execute_full_pipeline_v2(
+            project,
+            visual_style=request.visualStyle,
+            resolution=request.resolution,
+            reset_videos=bool(request.forceRegenerateVideos),
+        )
+        if not result.get("success") and result.get("error"):
+            raise HTTPException(status_code=400, detail=str(result.get("error")))
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"执行失败: {str(e)}")
 

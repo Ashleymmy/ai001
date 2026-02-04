@@ -17,6 +17,7 @@ import {
   generateProjectElementsStream,
   generateProjectFramesStream, generateProjectVideosStream,
    executeProjectPipeline,
+   executeProjectPipelineV2,
    generateAgentAudio,
    clearAgentAudio,
    pollProjectVideoTasks,
@@ -27,6 +28,7 @@ import {
   type FrameStreamEvent, type VideoStreamEvent
 } from '../services/api'
 import ChatInput, { UploadedFile } from '../components/ChatInput'
+import AudioWorkbench from '../components/audio-workbench/AudioWorkbench'
 
 import {
   AudioAssetItem,
@@ -2258,11 +2260,27 @@ ${event.failed && event.failed > 0 ? `\n⚠️ ${event.failed} 个视频生成�
     ])
     
     try {
-      const result = await executeProjectPipeline(
-        pid,
-        creativeBrief.visualStyle || '吉卜力动画风格',
-        '720p'
-      )
+      let result
+      try {
+        result = await executeProjectPipelineV2(
+          pid,
+          creativeBrief.visualStyle || '吉卜力动画风格',
+          '720p'
+        )
+      } catch (e) {
+        const status = (e as { response?: { status?: number; data?: { detail?: string } } })?.response?.status
+        const detail = (e as { response?: { status?: number; data?: { detail?: string } } })?.response?.data?.detail
+        // 兼容旧后端：没有 v2 端点时回退到旧接口（FastAPI 默认 404: "Not Found"）
+        if ((status === 404 && detail === 'Not Found') || status === 405) {
+          result = await executeProjectPipeline(
+            pid,
+            creativeBrief.visualStyle || '吉卜力动画风格',
+            '720p'
+          )
+        } else {
+          throw e
+        }
+      }
       
       await loadProject(pid)
       
@@ -3370,6 +3388,7 @@ ${result.success
   const modules = [
     { id: 'elements' as ModuleType, icon: Sparkles, label: '关键元素' },
     { id: 'storyboard' as ModuleType, icon: Film, label: '分镜' },
+    { id: 'audio' as ModuleType, icon: Music, label: '音频工作台' },
     { id: 'timeline' as ModuleType, icon: Clock, label: '时间线' }
   ]
 
@@ -4137,6 +4156,22 @@ ${result.success
               clearingAudioShotId={clearingAudioShotId}
               onOpenImportShotRefs={openImportShotRefsModal}
             />
+          )}
+
+          {activeModule === 'audio' && (
+            projectId ? (
+              <AudioWorkbench
+                projectId={projectId}
+                includeNarration={audioGenIncludeNarration}
+                includeDialogue={audioGenIncludeDialogue}
+                onExitToStoryboard={() => setActiveModule('storyboard')}
+                onReloadProject={async (id) => { await loadProject(id) }}
+              />
+            ) : (
+              <div className="glass-card rounded-2xl p-6 text-sm text-gray-400">
+                ⚠️ 请先保存/加载 Agent 项目后再进入「音频工作台」。
+              </div>
+            )
           )}
           
           {activeModule === 'timeline' && (

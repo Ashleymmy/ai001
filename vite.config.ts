@@ -6,7 +6,8 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src')
+      '@': path.resolve(__dirname, './src'),
+      'wavesurfer.js': path.resolve(__dirname, './vendor/wavesurfer.js/index.js')
     }
   },
   base: './',
