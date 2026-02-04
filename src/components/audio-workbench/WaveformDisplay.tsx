@@ -28,6 +28,15 @@ export default forwardRef(function WaveformDisplay(
   const containerRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<any>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const callbacksRef = useRef<{ onReady?: typeof onReady; onTimeUpdate?: typeof onTimeUpdate; onPlayStateChange?: typeof onPlayStateChange }>({
+    onReady,
+    onTimeUpdate,
+    onPlayStateChange,
+  })
+
+  useEffect(() => {
+    callbacksRef.current = { onReady, onTimeUpdate, onPlayStateChange }
+  }, [onReady, onPlayStateChange, onTimeUpdate])
 
   useEffect(() => {
     setLoadError(null)
@@ -56,20 +65,20 @@ export default forwardRef(function WaveformDisplay(
 
       ws.on('ready', () => {
         try {
-          onReady?.(ws.getDuration())
+          callbacksRef.current.onReady?.(ws.getDuration())
         } catch {
           // ignore
         }
       })
       ws.on('audioprocess', (t: number) => {
-        onTimeUpdate?.(t)
+        callbacksRef.current.onTimeUpdate?.(t)
       })
       ws.on('seek', () => {
-        onTimeUpdate?.(ws.getCurrentTime())
+        callbacksRef.current.onTimeUpdate?.(ws.getCurrentTime())
       })
-      ws.on('play', () => onPlayStateChange?.(true))
-      ws.on('pause', () => onPlayStateChange?.(false))
-      ws.on('finish', () => onPlayStateChange?.(false))
+      ws.on('play', () => callbacksRef.current.onPlayStateChange?.(true))
+      ws.on('pause', () => callbacksRef.current.onPlayStateChange?.(false))
+      ws.on('finish', () => callbacksRef.current.onPlayStateChange?.(false))
       ws.on('error', (e: unknown) => {
         const msg = e instanceof Error ? e.message : String(e || '加载失败')
         setLoadError(msg)
@@ -91,7 +100,7 @@ export default forwardRef(function WaveformDisplay(
         wsRef.current = null
       }
     }
-  }, [audioUrl, onReady, onPlayStateChange, onTimeUpdate])
+  }, [audioUrl])
 
   useImperativeHandle(ref, () => ({
     play: (start?: number, end?: number) => {
@@ -136,4 +145,3 @@ export default forwardRef(function WaveformDisplay(
     </div>
   )
 })
-

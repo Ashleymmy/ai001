@@ -19,6 +19,7 @@ import {
    executeProjectPipeline,
    executeProjectPipelineV2,
    generateAgentAudio,
+   getAgentAudioTimeline,
    clearAgentAudio,
    pollProjectVideoTasks,
    exportProjectAssets, exportMergedVideo,
@@ -1674,7 +1675,9 @@ export default function AgentPage() {
             duration: plan.creative_brief.duration,
             aspectRatio: plan.creative_brief.aspect_ratio,
             language: plan.creative_brief.language,
-            narratorVoiceProfile: plan.creative_brief.narratorVoiceProfile || plan.creative_brief.narrator_voice_profile
+            narratorVoiceProfile: plan.creative_brief.narratorVoiceProfile || plan.creative_brief.narrator_voice_profile,
+            ttsSpeedRatio: plan.creative_brief.ttsSpeedRatio,
+            targetDurationSeconds: plan.creative_brief.targetDurationSeconds
           })
           setProjectName(plan.creative_brief.title || projectName)
           
@@ -1736,7 +1739,9 @@ export default function AgentPage() {
                duration: plan.creative_brief.duration,
                aspectRatio: plan.creative_brief.aspect_ratio,
                language: plan.creative_brief.language,
-               narratorVoiceProfile: plan.creative_brief.narratorVoiceProfile || plan.creative_brief.narrator_voice_profile
+               narratorVoiceProfile: plan.creative_brief.narratorVoiceProfile || plan.creative_brief.narrator_voice_profile,
+               ttsSpeedRatio: plan.creative_brief.ttsSpeedRatio,
+               targetDurationSeconds: plan.creative_brief.targetDurationSeconds
              }
             const newProject = await createAgentProject(plan.creative_brief.title || projectName, newBrief)
             setProjectId(newProject.id)
@@ -2088,6 +2093,23 @@ ${event.failed && event.failed > 0 ? `\n⚠️ ${event.failed} 个镜头生成�
     if (!projectId) {
       addMessage('assistant', '⚠️ 请先保存项目')
       return
+    }
+
+    // 音频先行约束：若 audio_timeline 尚未确认，提示先去音频工作台确认保存。
+    try {
+      const tl = await getAgentAudioTimeline(projectId)
+      const confirmed = Boolean(tl.audio_timeline?.confirmed)
+      if (!confirmed) {
+        const proceed = window.confirm(
+          '检测到「音频工作台」尚未确认并保存 audio_timeline。\n\n继续生成视频将沿用当前镜头时长，可能与旁白/对白不匹配。\n\n点击“确定”继续生成；点击“取消”跳转到音频工作台。'
+        )
+        if (!proceed) {
+          setActiveModule('audio')
+          return
+        }
+      }
+    } catch {
+      // ignore timeline check failures; fall back to legacy behavior
     }
 
     setGenerationStage('videos')

@@ -14,6 +14,7 @@ import re
 import asyncio
 import hashlib
 import math
+import copy
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any, Callable
 from urllib.parse import urlparse, parse_qs
@@ -27,6 +28,7 @@ from .agent.prompts import (
     DEFAULT_ASSET_COMPLETION_PROMPT,
     DEFAULT_MANAGER_SYSTEM_PROMPT,
     DEFAULT_PROJECT_PLANNING_PROMPT,
+    DEFAULT_DURATION_FIT_PROMPT,
     DEFAULT_SCRIPT_DOCTOR_PROMPT,
 )
 from .agent.models import AgentProject
@@ -74,6 +76,172 @@ def _estimate_speech_seconds(text: str, speed: float = 1.0) -> float:
 
     spd = speed if isinstance(speed, (int, float)) and speed > 0 else 1.0
     return max(0.0, (base + pauses + lead) / float(spd))
+
+
+def _clamp(value: float, min_value: float, max_value: float) -> float:
+    try:
+        v = float(value)
+    except Exception:
+        v = 0.0
+    return max(min_value, min(max_value, v))
+
+
+def _ceil_to_half(seconds: float) -> float:
+    try:
+        s = float(seconds)
+    except Exception:
+        return 0.0
+    if not math.isfinite(s) or s < 0:
+        return 0.0
+    return float(math.ceil(s * 2.0) / 2.0)
+
+
+def _parse_duration_seconds(text: Any) -> Optional[float]:
+    """Parse a human duration string into seconds.
+
+    Supports: 90秒 / 1分钟 / 1.5分钟 / 1分30秒 / 00:30 / 01:02:03 / 90s / 1m30s / 1h.
+    """
+    if not isinstance(text, str):
+        return None
+    s = text.strip()
+    if not s:
+        return None
+
+    raw = s
+    s = s.strip().lower()
+
+    # timecode formats: mm:ss or hh:mm:ss
+    m = re.search(r"(?<!\d)(\d{1,2}):(\d{2})(?::(\d{2}))?(?!\d)", s)
+    if m:
+        a = int(m.group(1))
+        b = int(m.group(2))
+        c = int(m.group(3)) if m.group(3) else None
+        if c is None:
+            # mm:ss
+            return float(a * 60 + b)
+        # hh:mm:ss
+        return float(a * 3600 + b * 60 + c)
+
+    # Chinese combined
+    hours = 0.0
+    minutes = 0.0
+    seconds = 0.0
+
+    mh = re.search(r"(\d+(?:\.\d+)?)\s*(?:小时|h|hr|hrs|hour|hours)\b", s)
+    if mh:
+        hours = float(mh.group(1))
+
+    mmn = re.search(r"(\d+(?:\.\d+)?)\s*(?:分钟|min|mins|minute|minutes|m)\b", s)
+    if mmn:
+        minutes = float(mmn.group(1))
+
+    ms = re.search(r"(\d+(?:\.\d+)?)\s*(?:秒|s|sec|secs|second|seconds)\b", s)
+    if ms:
+        seconds = float(ms.group(1))
+
+    if hours or minutes or seconds:
+        return hours * 3600.0 + minutes * 60.0 + seconds
+
+    # Chinese shorthand like "1分30秒" or "1分30"
+    mcn = re.search(r"(\d+(?:\.\d+)?)\s*分(?:钟)?\s*(\d+(?:\.\d+)?)\s*秒?", raw)
+    if mcn:
+        return float(mcn.group(1)) * 60.0 + float(mcn.group(2))
+
+    return None
+
+
+def _extract_dialogue_utterances(dialogue_script: Any) -> List[str]:
+    if not isinstance(dialogue_script, str) or not dialogue_script.strip():
+        return []
+    out: List[str] = []
+    for raw_line in dialogue_script.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        # remove bullets / numbering
+        line = re.sub(r"^[-*•\u2022]\s*", "", line)
+        line = re.sub(r"^\d+\s*[.)、]\s*", "", line)
+        if "：" in line:
+            _, tail = line.split("：", 1)
+            out.append(tail.strip())
+        elif ":" in line:
+            _, tail = line.split(":", 1)
+            out.append(tail.strip())
+        else:
+            out.append(line)
+    return [t for t in out if t]
+
+
+def _split_narration_sentences(text: str) -> List[str]:
+    s = (text or "").strip()
+    if not s:
+        return []
+    # preserve punctuation as sentence boundary
+    parts: List[str] = []
+    buf: List[str] = []
+    for ch in s:
+        buf.append(ch)
+        if ch in "。！？!?":
+            seg = "".join(buf).strip()
+            if seg:
+                parts.append(seg)
+            buf = []
+    tail = "".join(buf).strip()
+    if tail:
+        parts.append(tail)
+    # fallback: split by newlines if no punctuation boundaries
+    flat: List[str] = []
+    for p in parts or [s]:
+        flat.extend([x.strip() for x in p.splitlines() if x.strip()])
+    return flat
+
+
+def _split_dialogue_line(line: str, max_chars: int = 26) -> List[str]:
+    """Split a dialogue line into multiple shorter lines (keep speaker prefix)."""
+    ln = (line or "").strip()
+    if not ln:
+        return []
+    speaker = ""
+    content = ln
+    if "：" in ln:
+        speaker, content = ln.split("：", 1)
+        speaker = speaker.strip()
+        content = content.strip()
+    elif ":" in ln:
+        speaker, content = ln.split(":", 1)
+        speaker = speaker.strip()
+        content = content.strip()
+
+    if not content:
+        return [ln]
+
+    # try to split by punctuation first
+    segs: List[str] = []
+    buf: List[str] = []
+    for ch in content:
+        buf.append(ch)
+        if ch in "，,。！？!?；;、":
+            seg = "".join(buf).strip()
+            if seg:
+                segs.append(seg)
+            buf = []
+    tail = "".join(buf).strip()
+    if tail:
+        segs.append(tail)
+
+    # if still too long, hard wrap by char count
+    wrapped: List[str] = []
+    for seg in segs or [content]:
+        t = seg.strip()
+        while len(t) > max_chars:
+            wrapped.append(t[:max_chars].strip())
+            t = t[max_chars:].strip()
+        if t:
+            wrapped.append(t)
+
+    if speaker:
+        return [f"{speaker}：{t}" for t in wrapped if t]
+    return [t for t in wrapped if t]
 
 # 元素生成提示词模板
 ELEMENT_PROMPT_TEMPLATE = """请为以下角色/元素生成详细的图像生成提示词：
@@ -1632,6 +1800,8 @@ class AgentService:
             data = self._extract_json_from_reply(reply)
             normalized = self._normalize_project_plan(data)
             if normalized:
+                normalized = self._postprocess_audio_driven_plan(normalized, user_request)
+                normalized = await self._maybe_duration_fit_plan(normalized, user_request)
                 return {"success": True, "plan": normalized}
 
             # Repair attempt: ask the model to output strict JSON matching the schema.
@@ -1654,6 +1824,8 @@ class AgentService:
                 repaired = self._extract_json_from_reply(repair_reply)
                 normalized2 = self._normalize_project_plan(repaired)
                 if normalized2:
+                    normalized2 = self._postprocess_audio_driven_plan(normalized2, user_request)
+                    normalized2 = await self._maybe_duration_fit_plan(normalized2, user_request)
                     return {"success": True, "plan": normalized2}
             except Exception as e:
                 print(f"[Agent] project planning repair failed: {e}")
@@ -1663,6 +1835,454 @@ class AgentService:
         except Exception as e:
             print(f"[Agent] 项目规划失败: {e}")
             return {"success": False, "error": str(e)}
+
+    def _find_target_duration_seconds(self, user_request: str, brief_duration: Any) -> Optional[float]:
+        # Prefer explicit duration mentioned by user; fall back to model's creative_brief.duration.
+        t = _parse_duration_seconds(user_request)
+        if t is None:
+            t = _parse_duration_seconds(brief_duration)
+        if t is None:
+            return None
+        try:
+            v = float(t)
+        except Exception:
+            return None
+        if not math.isfinite(v) or v <= 0:
+            return None
+        # Reject implausibly long durations for this app.
+        if v > 3600 * 2:
+            return None
+        return v
+
+    def _duration_fit_snapshot(self, plan: Dict[str, Any]) -> Dict[str, Any]:
+        """Compact snapshot for duration-fitting: keep only audio-relevant fields."""
+        if not isinstance(plan, dict):
+            return {}
+        brief = plan.get("creative_brief") if isinstance(plan.get("creative_brief"), dict) else {}
+        segs_out: List[Dict[str, Any]] = []
+        segs = plan.get("segments") or []
+        if isinstance(segs, list):
+            for seg in segs:
+                if not isinstance(seg, dict):
+                    continue
+                shots_out: List[Dict[str, Any]] = []
+                for shot in seg.get("shots") or []:
+                    if not isinstance(shot, dict):
+                        continue
+                    shots_out.append({
+                        "id": shot.get("id"),
+                        "name": shot.get("name"),
+                        "duration": shot.get("duration"),
+                        "description": shot.get("description"),
+                        "narration": shot.get("narration"),
+                        "dialogue_script": shot.get("dialogue_script"),
+                    })
+                segs_out.append({
+                    "id": seg.get("id"),
+                    "name": seg.get("name"),
+                    "description": seg.get("description"),
+                    "shots": shots_out,
+                })
+        return {"creative_brief": brief, "segments": segs_out}
+
+    def _collect_script_text(self, plan: Dict[str, Any]) -> str:
+        parts: List[str] = []
+        for seg in plan.get("segments") or []:
+            if not isinstance(seg, dict):
+                continue
+            for shot in seg.get("shots") or []:
+                if not isinstance(shot, dict):
+                    continue
+                narration = _as_text(shot.get("narration")).strip()
+                if narration:
+                    parts.append(narration)
+                dlg = _as_text(shot.get("dialogue_script")).strip()
+                if dlg:
+                    parts.append(" ".join(_extract_dialogue_utterances(dlg)))
+        return " ".join([p for p in parts if p])
+
+    def _suggest_tts_speed_ratio(self, plan: Dict[str, Any], target_seconds: float) -> Optional[float]:
+        if not isinstance(target_seconds, (int, float)) or target_seconds <= 0:
+            return None
+        text = self._collect_script_text(plan)
+        est = _estimate_speech_seconds(text, speed=1.0)
+        if est <= 0.01:
+            return None
+        # If script is longer than target, speed_ratio > 1.0 (faster).
+        # Clamp to a reasonable range to avoid unnatural speech.
+        ratio = est / float(target_seconds)
+        ratio = _clamp(ratio, 0.85, 1.25)
+        return ratio
+
+    def _sum_plan_shot_durations(self, plan: Dict[str, Any]) -> float:
+        total = 0.0
+        segs = plan.get("segments") or []
+        if not isinstance(segs, list):
+            return 0.0
+        for seg in segs:
+            if not isinstance(seg, dict):
+                continue
+            for shot in seg.get("shots") or []:
+                if not isinstance(shot, dict):
+                    continue
+                d = self._coerce_duration_seconds(shot.get("duration"), default=5.0)
+                total += float(_ceil_to_half(_clamp(d, 2.0, 6.0)) or 2.0)
+        return total
+
+    def _estimate_total_duration_after_split(self, plan: Dict[str, Any], speed_ratio: float, max_shot_seconds: float = 6.0) -> float:
+        """Estimate total timeline seconds if we split shots by audio at the given speed."""
+        total = 0.0
+        segs = plan.get("segments") or []
+        if not isinstance(segs, list):
+            return 0.0
+        for seg in segs:
+            if not isinstance(seg, dict):
+                continue
+            shots = seg.get("shots") or []
+            if not isinstance(shots, list):
+                continue
+            for shot in shots:
+                if not isinstance(shot, dict):
+                    continue
+                for ns in self._split_shot_by_audio(shot, speed_ratio=speed_ratio, max_shot_seconds=max_shot_seconds):
+                    d = self._coerce_duration_seconds(ns.get("duration"), default=5.0)
+                    total += float(_ceil_to_half(_clamp(d, 2.0, max_shot_seconds)) or 2.0)
+        return total
+
+    def _pick_speed_ratio_for_target(self, plan: Dict[str, Any], target_seconds: float, max_shot_seconds: float = 6.0) -> float:
+        """Pick a speed ratio (0.85-1.25) that best matches target duration after audio-driven splitting."""
+        if not isinstance(target_seconds, (int, float)) or target_seconds <= 0:
+            return 1.0
+        candidates = [round(0.85 + 0.05 * i, 2) for i in range(9)]  # 0.85..1.25
+        best = 1.0
+        best_diff = float("inf")
+        for sp in candidates:
+            total = self._estimate_total_duration_after_split(plan, speed_ratio=sp, max_shot_seconds=max_shot_seconds)
+            diff = abs(total - float(target_seconds))
+            # tie-break: prefer closer to 1.0
+            if diff < best_diff - 1e-6 or (abs(diff - best_diff) <= 1e-6 and abs(sp - 1.0) < abs(best - 1.0)):
+                best = sp
+                best_diff = diff
+        return float(_clamp(best, 0.85, 1.25))
+
+    def _distribute_duration_slack(self, plan: Dict[str, Any], target_seconds: float, max_shot_seconds: float = 6.0) -> None:
+        """If the timeline is shorter than target, distribute extra duration by extending shots (up to max_shot_seconds)."""
+        if not isinstance(target_seconds, (int, float)) or target_seconds <= 0:
+            return
+        shots: List[Dict[str, Any]] = []
+        segs = plan.get("segments") or []
+        if isinstance(segs, list):
+            for seg in segs:
+                if not isinstance(seg, dict):
+                    continue
+                for shot in seg.get("shots") or []:
+                    if isinstance(shot, dict):
+                        shots.append(shot)
+
+        if not shots:
+            return
+
+        total = self._sum_plan_shot_durations(plan)
+        remaining = float(target_seconds) - float(total)
+        # Convert to 0.5s ticks (avoid tiny oscillations)
+        ticks = int(round(_ceil_to_half(max(0.0, remaining)) * 2.0))
+        if ticks <= 0:
+            return
+
+        # Prioritize shots with more slack.
+        def slack_of(s: Dict[str, Any]) -> float:
+            d = self._coerce_duration_seconds(s.get("duration"), default=5.0)
+            d = float(_ceil_to_half(_clamp(d, 2.0, max_shot_seconds)) or 2.0)
+            return float(max_shot_seconds) - d
+
+        # Limit cycles to avoid infinite loops if everything is capped.
+        max_cycles = max(3, len(shots) * 3)
+        cycle = 0
+        while ticks > 0 and cycle < max_cycles:
+            cycle += 1
+            progress = False
+            shots_sorted = sorted(shots, key=slack_of, reverse=True)
+            for shot in shots_sorted:
+                if ticks <= 0:
+                    break
+                cur = self._coerce_duration_seconds(shot.get("duration"), default=5.0)
+                cur = float(_ceil_to_half(_clamp(cur, 2.0, max_shot_seconds)) or 2.0)
+                if cur + 0.5 <= float(max_shot_seconds) + 1e-6:
+                    shot["duration"] = str(_ceil_to_half(cur + 0.5) or cur + 0.5)
+                    ticks -= 1
+                    progress = True
+            if not progress:
+                break
+
+    async def _maybe_duration_fit_plan(self, plan: Dict[str, Any], user_request: str) -> Dict[str, Any]:
+        """If user provided total duration and heuristic fit is still off, ask LLM to rewrite narration/dialogue to fit."""
+        if not isinstance(plan, dict):
+            return plan
+        brief = plan.get("creative_brief")
+        if not isinstance(brief, dict):
+            brief = {}
+            plan["creative_brief"] = brief
+
+        target_seconds = self._find_target_duration_seconds(user_request, brief.get("duration"))
+        if not target_seconds:
+            return plan
+
+        total = self._sum_plan_shot_durations(plan)
+        diff_ratio = abs(total - float(target_seconds)) / float(target_seconds) if target_seconds else 0.0
+        try:
+            sp = float(brief.get("ttsSpeedRatio")) if isinstance(brief.get("ttsSpeedRatio"), str) else None
+        except Exception:
+            sp = None
+
+        # Only do an extra LLM pass when mismatch is large or we hit speed caps.
+        at_cap = sp is not None and (abs(sp - 0.85) < 0.02 or abs(sp - 1.25) < 0.02)
+        if diff_ratio <= 0.08 and not (at_cap and diff_ratio > 0.05):
+            return plan
+
+        if not self._ensure_client():
+            return plan
+
+        snapshot = self._duration_fit_snapshot(plan)
+        prompt = self._format_prompt_safe(
+            self._get_prompt("agent.duration_fit_prompt", DEFAULT_DURATION_FIT_PROMPT),
+            user_request=user_request,
+            target_seconds=str(int(round(float(target_seconds)))),
+            project_json=json.dumps(snapshot, ensure_ascii=False, indent=2),
+        )
+        prompt = (
+            "IMPORTANT:\n"
+            "- Output must be valid JSON (double quotes, no trailing commas).\n"
+            "- Output only ONE ```json ... ``` code block, with no extra text.\n\n"
+            + prompt
+        )
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self._get_prompt("agent.system_prompt", DEFAULT_AGENT_SYSTEM_PROMPT)},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=6000,
+            )
+            reply = response.choices[0].message.content or ""
+            data = self._extract_json_from_reply(reply)
+            if not isinstance(data, dict):
+                return plan
+
+            creative_brief_patch = data.get("creative_brief_patch") or {}
+            segments_patch = data.get("segments_patch") or []
+            add_shots = data.get("add_shots") or []
+
+            next_plan = copy.deepcopy(plan)
+            next_brief = dict(next_plan.get("creative_brief") or {})
+            if isinstance(creative_brief_patch, dict):
+                next_brief.update(creative_brief_patch)
+            next_plan["creative_brief"] = next_brief
+
+            next_segments = next_plan.get("segments") or []
+            if isinstance(next_segments, list) and isinstance(segments_patch, list):
+                next_segments = self._apply_segments_patch(next_segments, segments_patch)
+            if isinstance(next_segments, list) and isinstance(add_shots, list) and add_shots:
+                next_segments = self._insert_shots(next_segments, add_shots)
+            next_plan["segments"] = next_segments
+
+            # Re-apply audio-driven postprocess (split + speed + duration slack)
+            return self._postprocess_audio_driven_plan(next_plan, user_request)
+        except Exception as e:
+            print(f"[Agent] duration fit failed: {e}")
+            return plan
+
+    def _coerce_duration_seconds(self, raw: Any, default: float = 5.0) -> float:
+        try:
+            v = float(raw)
+        except Exception:
+            v = default
+        if not math.isfinite(v) or v <= 0:
+            v = default
+        return v
+
+    def _dialogue_line_utterance(self, line: str) -> str:
+        ln = (line or "").strip()
+        if not ln:
+            return ""
+        if "：" in ln:
+            _, tail = ln.split("：", 1)
+            return tail.strip()
+        if ":" in ln:
+            _, tail = ln.split(":", 1)
+            return tail.strip()
+        return ln
+
+    def _split_shot_by_audio(self, shot: Dict[str, Any], speed_ratio: float, max_shot_seconds: float) -> List[Dict[str, Any]]:
+        narration = _as_text(shot.get("narration")).strip()
+        dialogue_script = _as_text(shot.get("dialogue_script")).strip()
+
+        chunks: List[Dict[str, str]] = []
+        for sent in _split_narration_sentences(narration):
+            if sent.strip():
+                chunks.append({"role": "narration", "text": sent.strip()})
+        if dialogue_script:
+            for raw_line in dialogue_script.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                # Keep the original "角色: 台词" format, but split overly long lines.
+                for sub in _split_dialogue_line(line):
+                    if sub.strip():
+                        chunks.append({"role": "dialogue", "text": sub.strip()})
+
+        # No audio content: just clamp duration to a sane range.
+        if not chunks:
+            out = dict(shot)
+            d = self._coerce_duration_seconds(out.get("duration"), default=5.0)
+            d = _clamp(d, 2.0, float(max_shot_seconds))
+            out["duration"] = str(_ceil_to_half(d) or 2.0)
+            return [out]
+
+        soft_limit = max(1.5, float(max_shot_seconds) - 0.6)
+        groups: List[List[Dict[str, str]]] = []
+        cur: List[Dict[str, str]] = []
+        cur_dur = 0.0
+
+        def chunk_seconds(c: Dict[str, str]) -> float:
+            role = c.get("role") or "dialogue"
+            t = c.get("text") or ""
+            utter = t if role == "narration" else self._dialogue_line_utterance(t)
+            return _estimate_speech_seconds(utter, speed=speed_ratio)
+
+        for c in chunks:
+            dur = chunk_seconds(c)
+            # If a single chunk is too long, further hard-wrap by chars (narration) or split dialogue more.
+            if dur > soft_limit + 0.2 and c.get("role") == "narration":
+                t = c.get("text") or ""
+                # hard wrap by characters (roughly 4 chars/sec)
+                max_chars = max(8, int(soft_limit * 4.0))
+                t2 = t.strip()
+                while len(t2) > max_chars:
+                    head = t2[:max_chars].strip()
+                    if head:
+                        d2 = _estimate_speech_seconds(head, speed=speed_ratio)
+                        if cur and cur_dur + d2 > soft_limit:
+                            groups.append(cur)
+                            cur = []
+                            cur_dur = 0.0
+                        cur.append({"role": "narration", "text": head})
+                        cur_dur += d2
+                    t2 = t2[max_chars:].strip()
+                if t2:
+                    d2 = _estimate_speech_seconds(t2, speed=speed_ratio)
+                    if cur and cur_dur + d2 > soft_limit:
+                        groups.append(cur)
+                        cur = []
+                        cur_dur = 0.0
+                    cur.append({"role": "narration", "text": t2})
+                    cur_dur += d2
+                continue
+
+            if cur and cur_dur + dur > soft_limit:
+                groups.append(cur)
+                cur = []
+                cur_dur = 0.0
+            cur.append(c)
+            cur_dur += dur
+
+        if cur:
+            groups.append(cur)
+
+        orig_id = _as_text(shot.get("id")).strip() or "Shot_1"
+        orig_name = _as_text(shot.get("name")).strip() or orig_id
+
+        out_shots: List[Dict[str, Any]] = []
+        total_parts = len(groups)
+        for idx, g in enumerate(groups):
+            narr_parts: List[str] = []
+            dlg_lines: List[str] = []
+            g_dur = 0.0
+            for c in g:
+                role = c.get("role") or "dialogue"
+                t = (c.get("text") or "").strip()
+                if not t:
+                    continue
+                if role == "narration":
+                    narr_parts.append(t)
+                else:
+                    dlg_lines.append(t)
+                g_dur += chunk_seconds(c)
+
+            dur_s = _ceil_to_half(max(2.0, min(float(max_shot_seconds), g_dur + 0.4))) or 2.0
+            ns = dict(shot)
+            if idx == 0:
+                ns["id"] = orig_id
+                ns["name"] = orig_name if total_parts == 1 else f"{orig_name}（1/{total_parts}）"
+            else:
+                ns["id"] = f"{orig_id}_P{idx+1}"
+                ns["name"] = f"{orig_name}（{idx+1}/{total_parts}）"
+            ns["duration"] = str(dur_s)
+            ns["narration"] = "\n".join(narr_parts).strip()
+            ns["dialogue_script"] = "\n".join(dlg_lines).strip()
+            out_shots.append(ns)
+
+        return out_shots
+
+    def _split_plan_shots_by_audio(self, plan: Dict[str, Any], speed_ratio: float, max_shot_seconds: float = 6.0) -> None:
+        segs = plan.get("segments") or []
+        if not isinstance(segs, list):
+            return
+        for seg in segs:
+            if not isinstance(seg, dict):
+                continue
+            shots = seg.get("shots") or []
+            if not isinstance(shots, list):
+                continue
+            next_shots: List[Dict[str, Any]] = []
+            used_ids: set = set()
+            for shot in shots:
+                if not isinstance(shot, dict):
+                    continue
+                # clamp declared duration first (avoid pathological values)
+                declared = self._coerce_duration_seconds(shot.get("duration"), default=5.0)
+                shot["duration"] = str(_ceil_to_half(_clamp(declared, 2.0, max_shot_seconds)) or 2.0)
+
+                for ns in self._split_shot_by_audio(shot, speed_ratio=speed_ratio, max_shot_seconds=max_shot_seconds):
+                    sid = _as_text(ns.get("id")).strip()
+                    if not sid:
+                        sid = f"Shot_{uuid.uuid4().hex[:8].upper()}"
+                        ns["id"] = sid
+                    # ensure unique within the segment
+                    base = sid
+                    k = 2
+                    while sid in used_ids:
+                        sid = f"{base}_{k}"
+                        k += 1
+                    ns["id"] = sid
+                    used_ids.add(sid)
+                    next_shots.append(ns)
+            seg["shots"] = next_shots
+
+    def _postprocess_audio_driven_plan(self, plan: Dict[str, Any], user_request: str) -> Dict[str, Any]:
+        if not isinstance(plan, dict):
+            return plan
+        brief = plan.get("creative_brief")
+        if not isinstance(brief, dict):
+            brief = {}
+            plan["creative_brief"] = brief
+
+        target_seconds = self._find_target_duration_seconds(user_request, brief.get("duration"))
+        speed_ratio = 1.0
+        if target_seconds:
+            speed_ratio = self._pick_speed_ratio_for_target(plan, target_seconds, max_shot_seconds=6.0)
+            brief["targetDurationSeconds"] = str(int(round(target_seconds)))
+            brief["ttsSpeedRatio"] = f"{float(speed_ratio):.2f}"
+
+        # Audio-driven constraint: keep shot durations <= 6s by splitting long speech.
+        self._split_plan_shots_by_audio(plan, speed_ratio=float(speed_ratio), max_shot_seconds=6.0)
+
+        # If we have a target and are shorter, try to distribute slack by extending shots up to 6s.
+        if target_seconds:
+            self._distribute_duration_slack(plan, target_seconds=float(target_seconds), max_shot_seconds=6.0)
+        return plan
     
     async def script_doctor(self, project: Dict[str, Any], mode: str = "expand") -> Dict[str, Any]:
         """Enhance storyboard/script quality (hook/climax/logic) without breaking IDs."""
@@ -2608,6 +3228,10 @@ class AgentExecutor:
                     "duration": float(dur),
                     "voice_audio_url": shot.get("voice_audio_url") if isinstance(shot.get("voice_audio_url"), str) else "",
                     "voice_duration_ms": int(voice_ms_i or 0),
+                    "narration_audio_url": shot.get("narration_audio_url") if isinstance(shot.get("narration_audio_url"), str) else "",
+                    "narration_duration_ms": int(shot.get("narration_audio_duration_ms") or 0) if isinstance(shot.get("narration_audio_duration_ms"), (int, float)) else 0,
+                    "dialogue_audio_url": shot.get("dialogue_audio_url") if isinstance(shot.get("dialogue_audio_url"), str) else "",
+                    "dialogue_duration_ms": int(shot.get("dialogue_audio_duration_ms") or 0) if isinstance(shot.get("dialogue_audio_duration_ms"), (int, float)) else 0,
                 })
 
             segments_out.append({
@@ -3008,6 +3632,14 @@ class AgentExecutor:
             dialogue_script = ""
         dialogue_script = dialogue_script.strip()
 
+        duration_rule = ""
+        try:
+            dur_f = float(shot.get("duration", 0.0))
+            if math.isfinite(dur_f) and dur_f > 0:
+                duration_rule = f"镜头时长严格为 {dur_f:.1f} 秒（节奏与旁白/对白长度匹配，不要过快或过慢）"
+        except Exception:
+            duration_rule = ""
+
         audio_rules = (
             "音频规则：只保留自然环境音/音效（与画面匹配），禁止任何旁白/对白/朗读/人声/唱歌。"
             "no speech, no voiceover, no narration, no dialogue."
@@ -3031,6 +3663,7 @@ class AgentExecutor:
             character_consistency.strip(),
             style.strip(),
             motion,
+            duration_rule,
             voice_cast_rule,
             audio_rules,
             no_text

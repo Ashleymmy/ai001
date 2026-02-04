@@ -5,11 +5,13 @@ import {
   generateAgentAudio,
   generateAudioTimelineMasterAudio,
   getAgentAudioTimeline,
+  getAgentProject,
   saveAgentAudioTimeline,
 } from '../../services/api'
 import PlaybackControls from './PlaybackControls'
 import SegmentTimeline from './SegmentTimeline'
 import ShotListEditor from './ShotListEditor'
+import MultiTrackTimeline from './MultiTrackTimeline'
 import WaveformDisplay, { type WaveformHandle } from './WaveformDisplay'
 
 function resolveMediaUrl(url?: string | null) {
@@ -85,6 +87,7 @@ export default function AudioWorkbench({
   const [masterAudioUrl, setMasterAudioUrl] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [generatingVoice, setGeneratingVoice] = useState(false)
+  const [fixingShotAudio, setFixingShotAudio] = useState(false)
   const [generatingMaster, setGeneratingMaster] = useState(false)
   const [saving, setSaving] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
@@ -92,6 +95,27 @@ export default function AudioWorkbench({
   const [isPlaying, setIsPlaying] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [mediaByShotId, setMediaByShotId] = useState<Record<string, { start_image_url?: string; video_url?: string; status?: string }>>({})
+
+  const refreshProjectMedia = useCallback(async () => {
+    try {
+      const proj = await getAgentProject(projectId)
+      const next: Record<string, { start_image_url?: string; video_url?: string; status?: string }> = {}
+      for (const seg of proj.segments || []) {
+        for (const shot of seg.shots || []) {
+          const sid = shot.id
+          next[sid] = {
+            start_image_url: (shot.cached_start_image_url || shot.start_image_url || '').trim() || undefined,
+            video_url: (shot.video_url || '').trim() || undefined,
+            status: (shot.status || '').trim() || undefined,
+          }
+        }
+      }
+      setMediaByShotId(next)
+    } catch {
+      // ignore
+    }
+  }, [projectId])
 
   const refreshTimeline = useCallback(async () => {
     setLoading(true)
@@ -105,6 +129,7 @@ export default function AudioWorkbench({
 
       const first = tl.segments?.[0]?.shots?.[0]?.shot_id
       setSelectedShotId((prev) => prev || first || null)
+      void refreshProjectMedia()
     } catch (e) {
       const msg =
         (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
@@ -119,6 +144,17 @@ export default function AudioWorkbench({
   useEffect(() => {
     void refreshTimeline()
   }, [refreshTimeline])
+
+  useEffect(() => {
+    void refreshProjectMedia()
+  }, [refreshProjectMedia])
+
+  useEffect(() => {
+    const shouldPoll = Object.values(mediaByShotId).some((m) => (m.status || '').includes('video_processing'))
+    if (!shouldPoll) return
+    const id = window.setInterval(() => void refreshProjectMedia(), 4000)
+    return () => window.clearInterval(id)
+  }, [mediaByShotId, refreshProjectMedia])
 
   const flatShots = useMemo(() => {
     if (!timeline) return []
@@ -220,6 +256,35 @@ export default function AudioWorkbench({
       setGeneratingVoice(false)
     }
   }, [includeDialogue, includeNarration, onReloadProject, projectId, refreshTimeline])
+
+  const handleFixSelectedShotAudio = useCallback(async () => {
+    if (!selectedShotId) return
+    if (!includeNarration && !includeDialogue) {
+      setError('请至少选择一个：旁白 或 对白')
+      return
+    }
+    setFixingShotAudio(true)
+    setError(null)
+    try {
+      await generateAgentAudio(projectId, {
+        overwrite: true,
+        includeNarration,
+        includeDialogue,
+        shotIds: [selectedShotId],
+      })
+      await onReloadProject(projectId)
+      await refreshTimeline()
+      setNotice(`已重生成镜头音频：${selectedShotId}`)
+    } catch (e) {
+      const msg =
+        (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        (e as Error)?.message ||
+        '未知错误'
+      setError(msg)
+    } finally {
+      setFixingShotAudio(false)
+    }
+  }, [includeDialogue, includeNarration, onReloadProject, projectId, refreshTimeline, selectedShotId])
 
   const handleRefreshMasterAudio = useCallback(async () => {
     if (!timeline) return
@@ -342,6 +407,18 @@ export default function AudioWorkbench({
               </>
             )}
 
+            {selectedShotId && (
+              <button
+                onClick={() => void handleFixSelectedShotAudio()}
+                disabled={fixingShotAudio || generatingVoice}
+                className="px-3 py-2 glass-button rounded-xl text-sm flex items-center gap-2 disabled:opacity-50"
+                title="仅重生成当前选中镜头的旁白/对白音频（用于修复片段）"
+              >
+                {fixingShotAudio ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />}
+                修复本镜头
+              </button>
+            )}
+
             <button
               onClick={handleAlignToVoice}
               className="px-3 py-2 glass-button rounded-xl text-sm"
@@ -395,31 +472,44 @@ export default function AudioWorkbench({
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
         <div className="xl:col-span-2 space-y-4">
           <div className="glass-card rounded-2xl p-4">
-            <WaveformDisplay
-              ref={waveformRef}
-              audioUrl={masterAudioUrl}
-              onTimeUpdate={(t) => setCurrentTime(t)}
-              onReady={(d) => setDuration(d)}
-              onPlayStateChange={setIsPlaying}
+            <MultiTrackTimeline
+              shots={flatShots}
+              totalDuration={duration}
+              currentTime={currentTime}
+              selectedShotId={selectedShotId}
+              mediaByShotId={mediaByShotId}
+              onSelectShot={handleSelectShot}
+              onSeek={handleSeek}
+              resolveMediaUrl={resolveMediaUrl}
             />
 
-            <PlaybackControls
-              isPlaying={isPlaying}
-              currentTime={currentTime}
-              duration={duration}
-              onPlayPause={() => {
-                if (!waveformRef.current) return
-                if (waveformRef.current.isPlaying()) waveformRef.current.pause()
-                else waveformRef.current.play()
-              }}
-              onSeek={(t) => handleSeek(t)}
-              onPrevShot={() => handlePrevNext(-1)}
-              onNextShot={() => handlePrevNext(1)}
-              onPlayShot={() => {
-                if (selectedShotId) handlePlayShot(selectedShotId)
-              }}
-              disablePlayback={!masterAudioUrl}
-            />
+            <div className="mt-3">
+              <WaveformDisplay
+                ref={waveformRef}
+                audioUrl={masterAudioUrl}
+                onTimeUpdate={(t) => setCurrentTime(t)}
+                onReady={(d) => setDuration(d)}
+                onPlayStateChange={setIsPlaying}
+              />
+
+              <PlaybackControls
+                isPlaying={isPlaying}
+                currentTime={currentTime}
+                duration={duration}
+                onPlayPause={() => {
+                  if (!waveformRef.current) return
+                  if (waveformRef.current.isPlaying()) waveformRef.current.pause()
+                  else waveformRef.current.play()
+                }}
+                onSeek={(t) => handleSeek(t)}
+                onPrevShot={() => handlePrevNext(-1)}
+                onNextShot={() => handlePrevNext(1)}
+                onPlayShot={() => {
+                  if (selectedShotId) handlePlayShot(selectedShotId)
+                }}
+                disablePlayback={!masterAudioUrl}
+              />
+            </div>
           </div>
 
           <div className="glass-card rounded-2xl p-4">

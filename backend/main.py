@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import os
 import uuid
 import base64
@@ -2185,6 +2185,93 @@ def _extract_dialogue_text(dialogue_script: str) -> str:
     return " ".join([u for u in utterances if u])
 
 
+def _sanitize_tts_text(text: Any) -> str:
+    """Remove common non-speech metadata from text before sending to TTS."""
+    if not isinstance(text, str):
+        return ""
+    s = text.strip()
+    if not s:
+        return ""
+
+    # Remove known element annotations like "(character)" / "(object)" / "(scene)" (including full-width parens).
+    s = re.sub(r"[（(]\s*(?:character|object|scene|location|prop|bg|setting)\s*[)）]", "", s, flags=re.IGNORECASE)
+
+    # Remove stable id markers that often leak into speech.
+    s = re.sub(r"\[Element_[A-Za-z0-9_\-]+\]", "", s)
+    s = re.sub(r"\bElement_[A-Za-z0-9_\-]+\b", "", s)
+    s = re.sub(r"\b(?:shot|segment|character|object|scene)_[A-Za-z0-9_\-]+\b", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b(?:id|ID)\s*[:=：]\s*[A-Za-z0-9_\-]{2,}\b", "", s)
+
+    # Remove bracketed metadata blocks like "[id: xxx]" / "【id: xxx】".
+    s = re.sub(
+        r"[【\[]\s*(?:id|ID|shot_id|shotId|element|Element|character|object|scene)\s*[:=：][^】\]]{0,60}[】\]]",
+        "",
+        s,
+    )
+
+    # Normalize whitespace.
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _sanitize_speaker_name(name: Any) -> str:
+    if not isinstance(name, str):
+        return ""
+    s = name.strip()
+    if not s:
+        return ""
+    # Strip common trailing labels.
+    s = re.sub(r"\s*[（(]\s*(?:character|object|scene)\s*[)）]\s*$", "", s, flags=re.IGNORECASE).strip()
+    # Strip trailing bracketed ids.
+    s = re.sub(r"\s*[【\[]\s*(?:id|ID)\s*[:=：][^】\]]{0,60}[】\]]\s*$", "", s).strip()
+    s = re.sub(r"\s*\b(?:id|ID)\s*[:=：]\s*[A-Za-z0-9_\-]{2,}\s*$", "", s).strip()
+    return s
+
+
+def _parse_duration_seconds(text: Any) -> Optional[float]:
+    """Parse a duration string to seconds (used for audio-driven speed fitting)."""
+    if not isinstance(text, str):
+        return None
+    s = text.strip()
+    if not s:
+        return None
+    raw = s
+    s = s.strip().lower()
+
+    # timecode: mm:ss or hh:mm:ss
+    m = re.search(r"(?<!\d)(\d{1,2}):(\d{2})(?::(\d{2}))?(?!\d)", s)
+    if m:
+        a = int(m.group(1))
+        b = int(m.group(2))
+        c = int(m.group(3)) if m.group(3) else None
+        if c is None:
+            return float(a * 60 + b)
+        return float(a * 3600 + b * 60 + c)
+
+    # Chinese: 1分30秒 / 1分钟 / 90秒
+    m2 = re.search(r"(\d+(?:\.\d+)?)\s*分(?:钟)?\s*(\d+(?:\.\d+)?)\s*秒?", raw)
+    if m2:
+        try:
+            return float(m2.group(1)) * 60.0 + float(m2.group(2))
+        except Exception:
+            return None
+
+    mh = re.search(r"(\d+(?:\.\d+)?)\s*(?:小时|h|hour|hours)\b", s)
+    mmn = re.search(r"(\d+(?:\.\d+)?)\s*(?:分钟|min|minute|minutes|m)\b", s)
+    ms = re.search(r"(\d+(?:\.\d+)?)\s*(?:秒|s|sec|second|seconds)\b", s)
+
+    try:
+        hours = float(mh.group(1)) if mh else 0.0
+        minutes = float(mmn.group(1)) if mmn else 0.0
+        seconds = float(ms.group(1)) if ms else 0.0
+    except Exception:
+        return None
+
+    if hours or minutes or seconds:
+        return hours * 3600.0 + minutes * 60.0 + seconds
+    return None
+
+
 def _estimate_speech_seconds(text: str, speed: float = 1.0) -> float:
     """Heuristic duration estimate for TTS/voiceover (seconds)."""
     if not isinstance(text, str):
@@ -3300,6 +3387,15 @@ async def generate_project_videos(project_id: str, request: GenerateVideosReques
     project = AgentProject.from_dict(project_data)
     executor = get_agent_executor()
 
+    # 若存在已确认的 audio_timeline，则在生成前应用到 shots.duration（作为视频时长约束）。
+    tl = project_data.get("audio_timeline")
+    if isinstance(tl, dict) and tl.get("confirmed") is True:
+        try:
+            executor.apply_audio_timeline_to_project(project, tl, reset_videos=False)
+            storage.save_agent_project(project.to_dict())
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid audio_timeline: {str(e)}")
+
     try:
         result = await executor.generate_all_videos(
             project,
@@ -3352,6 +3448,63 @@ async def generate_project_audio(project_id: str, request: GenerateAgentAudioReq
     custom_openai_api_key = ""
     custom_openai_model = ""
 
+    # Auto speed-fit (audio-driven): when user sets a total duration in creative_brief.duration (or targetDurationSeconds),
+    # and request.speedRatio is not provided, estimate speech length and pick a reasonable speedRatio.
+    brief = project.creative_brief if isinstance(project.creative_brief, dict) else {}
+
+    def coerce_positive_float(val: Any) -> Optional[float]:
+        try:
+            v = float(val)
+        except Exception:
+            return None
+        if not math.isfinite(v) or v <= 0:
+            return None
+        return v
+
+    requested_speed = coerce_positive_float(request.speedRatio)
+    hinted_speed = coerce_positive_float(brief.get("ttsSpeedRatio"))
+
+    target_seconds: Optional[float] = None
+    td = brief.get("targetDurationSeconds")
+    if isinstance(td, (int, float)):
+        target_seconds = float(td) if float(td) > 0 else None
+    elif isinstance(td, str) and td.strip():
+        target_seconds = coerce_positive_float(td.strip())
+    if target_seconds is None:
+        target_seconds = _parse_duration_seconds(brief.get("duration")) if isinstance(brief.get("duration"), str) else None
+
+    auto_speed: Optional[float] = None
+    if requested_speed is None and hinted_speed is None and target_seconds and not (request.shotIds or []):
+        parts: List[str] = []
+        segs = project.segments or []
+        if isinstance(segs, list):
+            for seg in segs:
+                if not isinstance(seg, dict):
+                    continue
+                for shot in (seg.get("shots") or []):
+                    if not isinstance(shot, dict):
+                        continue
+                    narration = shot.get("narration") or ""
+                    dialogue_script = shot.get("dialogue_script") or shot.get("dialogueScript") or shot.get("dialogue") or ""
+                    if request.includeNarration and isinstance(narration, str) and narration.strip():
+                        parts.append(_sanitize_tts_text(narration.strip()))
+                    if request.includeDialogue and isinstance(dialogue_script, str) and dialogue_script.strip():
+                        parts.append(_sanitize_tts_text(_extract_dialogue_text(dialogue_script)))
+        text = " ".join([p for p in parts if p]).strip()
+        est = _estimate_speech_seconds(text, speed=1.0) if text else 0.0
+        if est > 0.01:
+            auto_speed = est / float(target_seconds)
+            auto_speed = max(0.85, min(1.25, float(auto_speed)))
+            # Persist hint for subsequent audio generations.
+            try:
+                if isinstance(project.creative_brief, dict):
+                    project.creative_brief.setdefault("targetDurationSeconds", str(int(round(float(target_seconds)))))
+                    project.creative_brief["ttsSpeedRatio"] = f"{float(auto_speed):.2f}"
+            except Exception:
+                pass
+
+    speed_choice = requested_speed or hinted_speed or auto_speed
+
     if is_fish_tts:
         fish_cfg = tts_settings.fish
         access_token = str(fish_cfg.apiKey or "").strip()
@@ -3363,7 +3516,7 @@ async def generate_project_audio(project_id: str, request: GenerateAgentAudioReq
             model = "speech-1.5"
         encoding = str(request.encoding or fish_cfg.encoding or "mp3").strip() or "mp3"
         rate = int(request.rate or fish_cfg.rate or 24000)
-        speed_ratio = float(request.speedRatio or fish_cfg.speedRatio or 1.0)
+        speed_ratio = float(speed_choice or coerce_positive_float(fish_cfg.speedRatio) or 1.0)
     elif is_bailian_tts:
         bailian_cfg = tts_settings.bailian
         access_token = str(bailian_cfg.apiKey or "").strip()
@@ -3374,7 +3527,7 @@ async def generate_project_audio(project_id: str, request: GenerateAgentAudioReq
         model = str(bailian_cfg.model or "").strip() or "cosyvoice-v1"
         encoding = str(request.encoding or bailian_cfg.encoding or "mp3").strip() or "mp3"
         rate = int(request.rate or bailian_cfg.rate or 24000)
-        speed_ratio = float(request.speedRatio or bailian_cfg.speedRatio or 1.0)
+        speed_ratio = float(speed_choice or coerce_positive_float(bailian_cfg.speedRatio) or 1.0)
     elif is_custom_tts:
         custom_provider = storage.get_custom_provider(provider) or {}
         if not custom_provider or str(custom_provider.get("category") or "") != "tts":
@@ -3388,7 +3541,7 @@ async def generate_project_audio(project_id: str, request: GenerateAgentAudioReq
         custom_cfg = tts_settings.custom
         encoding = str(request.encoding or custom_cfg.encoding or "mp3").strip() or "mp3"
         rate = int(request.rate or custom_cfg.rate or 24000)
-        speed_ratio = float(request.speedRatio or custom_cfg.speedRatio or 1.0)
+        speed_ratio = float(speed_choice or coerce_positive_float(custom_cfg.speedRatio) or 1.0)
     else:
         volc_cfg = tts_settings.volc
         appid = str(volc_cfg.appid or "").strip()
@@ -3400,7 +3553,7 @@ async def generate_project_audio(project_id: str, request: GenerateAgentAudioReq
         model = str(volc_cfg.model or "seed-tts-1.1").strip() or "seed-tts-1.1"
         encoding = str(request.encoding or volc_cfg.encoding or "mp3").strip() or "mp3"
         rate = int(request.rate or volc_cfg.rate or 24000)
-        speed_ratio = float(request.speedRatio or volc_cfg.speedRatio or 1.0)
+        speed_ratio = float(speed_choice or coerce_positive_float(volc_cfg.speedRatio) or 1.0)
 
     def check_ffmpeg() -> bool:
         try:
@@ -3634,7 +3787,12 @@ async def generate_project_audio(project_id: str, request: GenerateAgentAudioReq
     # 清理旧的 voice 资产（按 shot_id）
     def remove_voice_assets_for_shot(shot_id: str):
         nonlocal audio_assets
-        audio_assets = [a for a in audio_assets if str(a.get("shot_id") or "") != shot_id or a.get("type") != "narration"]
+        audio_assets = [
+            a
+            for a in audio_assets
+            if str(a.get("shot_id") or "") != shot_id
+            or a.get("type") not in ("narration", "dialogue")
+        ]
 
     # 输出目录（复用 uploads/audio）
     audio_dir = Path(UPLOAD_DIR) / "audio"
@@ -3662,7 +3820,7 @@ async def generate_project_audio(project_id: str, request: GenerateAgentAudioReq
 
             narration = shot.get("narration")
             narration = narration if isinstance(narration, str) else ""
-            narration = narration.strip()
+            narration = _sanitize_tts_text(narration)
 
             dialogue_script = shot.get("dialogue_script") or shot.get("dialogueScript") or shot.get("dialogue")
             dialogue_script = dialogue_script if isinstance(dialogue_script, str) else ""
@@ -3671,7 +3829,7 @@ async def generate_project_audio(project_id: str, request: GenerateAgentAudioReq
             segments_to_say: List[Dict[str, str]] = []
 
             if request.includeNarration and narration:
-                segments_to_say.append({"voice_type": narrator_voice or auto_narrator_voice, "text": narration})
+                segments_to_say.append({"role": "narration", "voice_type": narrator_voice or auto_narrator_voice, "text": narration})
 
             if request.includeDialogue and dialogue_script:
                 for raw_line in dialogue_script.splitlines():
@@ -3685,12 +3843,17 @@ async def generate_project_audio(project_id: str, request: GenerateAgentAudioReq
                     if not m:
                         # 不符合格式，按默认对白音色朗读整行
                         fallback_voice = dialogue_voice_legacy or dialogue_voice_male or dialogue_voice_female or narrator_voice or auto_narrator_voice
-                        segments_to_say.append({"voice_type": fallback_voice, "text": line})
+                        # 尝试去掉类似“角色 (character)”的非朗读前缀
+                        line = re.sub(r"^[^:：]{1,40}\\s*[（(]\\s*(?:character|object|scene)\\s*[)）]\\s*", "", line, flags=re.IGNORECASE)
+                        line = re.sub(r"^\\[Element_[A-Za-z0-9_\\-]+\\]\\s*", "", line)
+                        spoken = _sanitize_tts_text(line)
+                        if spoken:
+                            segments_to_say.append({"role": "dialogue", "voice_type": fallback_voice, "text": spoken})
                         continue
 
-                    speaker = m.group(1).strip()
+                    speaker = _sanitize_speaker_name(m.group(1).strip())
                     speaker = speaker.strip(" \t【】[]（）()")
-                    content = m.group(2).strip()
+                    content = _sanitize_tts_text(m.group(2))
                     if not content:
                         continue
 
@@ -3756,7 +3919,7 @@ async def generate_project_audio(project_id: str, request: GenerateAgentAudioReq
                         )
 
                     if voice_type:
-                        segments_to_say.append({"voice_type": voice_type, "text": content})
+                        segments_to_say.append({"role": "dialogue", "voice_type": voice_type, "text": content})
 
             if not segments_to_say:
                 skipped += 1
@@ -3766,30 +3929,91 @@ async def generate_project_audio(project_id: str, request: GenerateAgentAudioReq
             use_pcm_concat = (not ffmpeg_ok) and (len(segments_to_say) > 1)
 
             try:
-                out_bytes: bytes
-                effective_encoding = encoding
+                def _write_audio_file(label: str, audio_bytes: bytes, ext: str) -> str:
+                    fn = f"{project_id}_{shot_id}_{label}_{uuid.uuid4().hex[:8]}.{ext}"
+                    fp = audio_dir / fn
+                    fp.write_bytes(audio_bytes)
+                    return f"/api/uploads/audio/{fn}"
+
+                def _concat_paths_to_bytes(paths: List[Path], base_name: str) -> Tuple[bytes, str]:
+                    if not paths:
+                        return b"", ""
+                    if len(paths) == 1:
+                        return paths[0].read_bytes(), encoding
+
+                    inputs = []
+                    filter_inputs = []
+                    for idx, p in enumerate(paths):
+                        inputs.extend(["-i", str(p)])
+                        filter_inputs.append(f"[{idx}:a]")
+                    filter_complex = "".join(filter_inputs) + f"concat=n={len(paths)}:v=0:a=1[a]"
+
+                    def _run_concat(out_ext: str, codec: str) -> bytes:
+                        out_path = temp_dir / f"{base_name}.{out_ext}"
+                        cmd = [
+                            "ffmpeg",
+                            "-y",
+                            *inputs,
+                            "-filter_complex",
+                            filter_complex,
+                            "-map",
+                            "[a]",
+                            "-c:a",
+                            codec,
+                            str(out_path),
+                        ]
+                        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        if proc.returncode != 0 or not out_path.exists():
+                            raise Exception(proc.stderr.decode("utf-8", errors="ignore")[:2000])
+                        return out_path.read_bytes()
+
+                    try:
+                        if encoding.lower() == "mp3":
+                            return _run_concat("mp3", "libmp3lame"), "mp3"
+                        # 默认使用 aac（容器扩展名用 m4a 更通用）
+                        out_ext = "m4a" if encoding.lower() in ("aac", "m4a") else encoding.lower()
+                        return _run_concat(out_ext, "aac"), out_ext
+                    except Exception:
+                        return _run_concat("m4a", "aac"), "m4a"
+
+                # --- synthesize once, then fan-out to tracks ---
                 total_ms = 0
+                narration_ms = 0
+                dialogue_ms = 0
+                mix_bytes: bytes = b""
+                mix_ext = ""
+                narration_bytes: bytes = b""
+                narration_ext = ""
+                dialogue_bytes: bytes = b""
+                dialogue_ext = ""
 
                 if use_pcm_concat:
                     # 无 FFmpeg 时，用 pcm 生成并在服务端直接拼接成 wav，避免阻塞对白+旁白的多段合成。
                     silence_ms = 200
+
+                    role_remaining = {"narration": 0, "dialogue": 0}
+                    for p in segments_to_say:
+                        role = str(p.get("role") or "dialogue")
+                        if role in role_remaining:
+                            role_remaining[role] += 1
+
                     pcm_chunks: List[bytes] = []
+                    pcm_by_role: Dict[str, List[bytes]] = {"narration": [], "dialogue": []}
 
                     for i, part in enumerate(segments_to_say):
-                        text = part["text"].strip()
+                        text = part.get("text", "").strip()
                         if text and text[-1] not in "。！？.!?":
                             text = text + "。"
 
                         try:
                             audio_bytes, duration_ms = await tts_synthesize(
                                 text=text,
-                                voice=part["voice_type"],
+                                voice=part.get("voice_type", ""),
                                 out_encoding="pcm",
                             )
                         except Exception:
-                            # 容错：对话音色可能未授权/不存在，回退到旁白默认音色再试一次
                             fallback_voice = narrator_voice or auto_narrator_voice
-                            if fallback_voice and fallback_voice != part["voice_type"]:
+                            if fallback_voice and fallback_voice != part.get("voice_type", ""):
                                 audio_bytes, duration_ms = await tts_synthesize(
                                     text=text,
                                     voice=fallback_voice,
@@ -3802,32 +4026,55 @@ async def generate_project_audio(project_id: str, request: GenerateAgentAudioReq
                         seg_ms = int(duration_ms or 0) or estimate_pcm_duration_ms(audio_bytes, rate)
                         total_ms += max(int(seg_ms or 0), 0)
 
+                        role = str(part.get("role") or "dialogue")
+                        if role in pcm_by_role:
+                            pcm_by_role[role].append(audio_bytes)
+                            if role == "narration":
+                                narration_ms += max(int(seg_ms or 0), 0)
+                            elif role == "dialogue":
+                                dialogue_ms += max(int(seg_ms or 0), 0)
+
+                            role_remaining[role] = max(0, int(role_remaining.get(role, 0)) - 1)
+                            if role_remaining.get(role, 0) > 0 and silence_ms > 0:
+                                pcm_by_role[role].append(pcm_silence_bytes(silence_ms, rate))
+                                if role == "narration":
+                                    narration_ms += silence_ms
+                                elif role == "dialogue":
+                                    dialogue_ms += silence_ms
+
                         if i < len(segments_to_say) - 1 and silence_ms > 0:
                             pcm_chunks.append(pcm_silence_bytes(silence_ms, rate))
                             total_ms += silence_ms
 
-                    out_bytes = pcm_to_wav_bytes(b"".join(pcm_chunks), rate)
-                    effective_encoding = "wav"
+                    mix_bytes = pcm_to_wav_bytes(b"".join(pcm_chunks), rate)
+                    mix_ext = "wav"
+
+                    if pcm_by_role["narration"]:
+                        narration_bytes = pcm_to_wav_bytes(b"".join(pcm_by_role["narration"]), rate)
+                        narration_ext = "wav"
+                    if pcm_by_role["dialogue"]:
+                        dialogue_bytes = pcm_to_wav_bytes(b"".join(pcm_by_role["dialogue"]), rate)
+                        dialogue_ext = "wav"
                 else:
                     with tempfile.TemporaryDirectory() as td:
                         temp_dir = Path(td)
                         part_files: List[Path] = []
+                        role_files: Dict[str, List[Path]] = {"narration": [], "dialogue": []}
 
                         for i, part in enumerate(segments_to_say):
-                            text = part["text"].strip()
+                            text = part.get("text", "").strip()
                             if text and text[-1] not in "。！？.!?":
                                 text = text + "。"
 
                             try:
                                 audio_bytes, duration_ms = await tts_synthesize(
                                     text=text,
-                                    voice=part["voice_type"],
+                                    voice=part.get("voice_type", ""),
                                     out_encoding=encoding,
                                 )
                             except Exception:
-                                # 容错：对话音色可能未授权/不存在，回退到旁白默认音色再试一次
                                 fallback_voice = narrator_voice or auto_narrator_voice
-                                if fallback_voice and fallback_voice != part["voice_type"]:
+                                if fallback_voice and fallback_voice != part.get("voice_type", ""):
                                     audio_bytes, duration_ms = await tts_synthesize(
                                         text=text,
                                         voice=fallback_voice,
@@ -3835,77 +4082,103 @@ async def generate_project_audio(project_id: str, request: GenerateAgentAudioReq
                                     )
                                 else:
                                     raise
-                            total_ms += int(duration_ms or 0)
+
+                            seg_ms = int(duration_ms or 0)
+                            total_ms += max(seg_ms, 0)
+
+                            role = str(part.get("role") or "dialogue")
+                            if role == "narration":
+                                narration_ms += max(seg_ms, 0)
+                            elif role == "dialogue":
+                                dialogue_ms += max(seg_ms, 0)
+
                             part_path = temp_dir / f"part_{i}.{encoding}"
                             part_path.write_bytes(audio_bytes)
                             part_files.append(part_path)
+                            if role in role_files:
+                                role_files[role].append(part_path)
 
-                        if len(part_files) == 1:
-                            out_bytes = part_files[0].read_bytes()
-                        else:
-                            # concat filter（更稳，允许不同 mp3 header），输出统一 mp3
-                            inputs = []
-                            filter_inputs = []
-                            for idx, p in enumerate(part_files):
-                                inputs.extend(["-i", str(p)])
-                                filter_inputs.append(f"[{idx}:a]")
-                            filter_complex = "".join(filter_inputs) + f"concat=n={len(part_files)}:v=0:a=1[a]"
-                            # 优先按用户选择编码输出；若环境缺少对应编码器（常见：缺少 libmp3lame），自动降级为 m4a(aac)
-                            def _run_concat(out_ext: str, codec: str) -> bytes:
-                                out_path = temp_dir / f"voice.{out_ext}"
-                                cmd = [
-                                    "ffmpeg",
-                                    "-y",
-                                    *inputs,
-                                    "-filter_complex",
-                                    filter_complex,
-                                    "-map",
-                                    "[a]",
-                                    "-c:a",
-                                    codec,
-                                    str(out_path),
-                                ]
-                                proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                                if proc.returncode != 0 or not out_path.exists():
-                                    raise Exception(proc.stderr.decode("utf-8", errors="ignore")[:2000])
-                                return out_path.read_bytes()
-
-                            try:
-                                if encoding.lower() == "mp3":
-                                    out_bytes = _run_concat("mp3", "libmp3lame")
-                                    effective_encoding = "mp3"
-                                else:
-                                    # 默认使用 aac（容器扩展名用 m4a 更通用）
-                                    out_ext = "m4a" if encoding.lower() in ("aac", "m4a") else encoding.lower()
-                                    out_bytes = _run_concat(out_ext, "aac")
-                                    effective_encoding = out_ext
-                            except Exception:
-                                # fallback：m4a(aac)
-                                out_bytes = _run_concat("m4a", "aac")
-                                effective_encoding = "m4a"
-
-                filename = f"{project_id}_{shot_id}_voice_{uuid.uuid4().hex[:8]}.{effective_encoding}"
-                file_path = audio_dir / filename
-                file_path.write_bytes(out_bytes)
-                url = f"/api/uploads/audio/{filename}"
+                        mix_bytes, mix_ext = _concat_paths_to_bytes(part_files, "voice_mix")
+                        if role_files["narration"]:
+                            narration_bytes, narration_ext = _concat_paths_to_bytes(role_files["narration"], "voice_narration")
+                        if role_files["dialogue"]:
+                            dialogue_bytes, dialogue_ext = _concat_paths_to_bytes(role_files["dialogue"], "voice_dialogue")
 
                 # 更新镜头 & 资产列表
                 if request.overwrite:
                     remove_voice_assets_for_shot(shot_id)
 
-                shot["voice_audio_url"] = url
+                voice_url = ""
+                narration_url = ""
+                dialogue_url = ""
+
+                if narration_bytes and not dialogue_bytes:
+                    narration_url = _write_audio_file("narration", narration_bytes, narration_ext or mix_ext or encoding)
+                    voice_url = narration_url
+                    total_ms = narration_ms or total_ms
+                    shot["narration_audio_url"] = narration_url
+                    shot["narration_audio_duration_ms"] = int(narration_ms or 0)
+                    shot.pop("dialogue_audio_url", None)
+                    shot.pop("dialogue_audio_duration_ms", None)
+                elif dialogue_bytes and not narration_bytes:
+                    dialogue_url = _write_audio_file("dialogue", dialogue_bytes, dialogue_ext or mix_ext or encoding)
+                    voice_url = dialogue_url
+                    total_ms = dialogue_ms or total_ms
+                    shot["dialogue_audio_url"] = dialogue_url
+                    shot["dialogue_audio_duration_ms"] = int(dialogue_ms or 0)
+                    shot.pop("narration_audio_url", None)
+                    shot.pop("narration_audio_duration_ms", None)
+                else:
+                    if narration_bytes:
+                        narration_url = _write_audio_file("narration", narration_bytes, narration_ext or mix_ext or encoding)
+                        shot["narration_audio_url"] = narration_url
+                        shot["narration_audio_duration_ms"] = int(narration_ms or 0)
+                    else:
+                        shot.pop("narration_audio_url", None)
+                        shot.pop("narration_audio_duration_ms", None)
+                    if dialogue_bytes:
+                        dialogue_url = _write_audio_file("dialogue", dialogue_bytes, dialogue_ext or mix_ext or encoding)
+                        shot["dialogue_audio_url"] = dialogue_url
+                        shot["dialogue_audio_duration_ms"] = int(dialogue_ms or 0)
+                    else:
+                        shot.pop("dialogue_audio_url", None)
+                        shot.pop("dialogue_audio_duration_ms", None)
+
+                    if not mix_bytes:
+                        raise RuntimeError("voice mix is empty")
+                    voice_url = _write_audio_file("voice", mix_bytes, mix_ext or encoding)
+
+                shot["voice_audio_url"] = voice_url
                 shot["voice_audio_duration_ms"] = int(total_ms or 0)
 
-                audio_assets.append({
-                    "id": f"voice_{shot_id}",
-                    "url": url,
-                    "type": "narration",  # UI 里会归到“旁白/对白”
-                    "shot_id": shot_id,
-                    "duration_ms": int(total_ms or 0),
-                })
+                if narration_url:
+                    audio_assets.append({
+                        "id": f"narration_{shot_id}",
+                        "url": narration_url,
+                        "type": "narration",
+                        "shot_id": shot_id,
+                        "duration_ms": int(narration_ms or 0),
+                    })
+                if dialogue_url:
+                    audio_assets.append({
+                        "id": f"dialogue_{shot_id}",
+                        "url": dialogue_url,
+                        "type": "dialogue",
+                        "shot_id": shot_id,
+                        "duration_ms": int(dialogue_ms or 0),
+                    })
 
                 generated += 1
-                results.append({"shot_id": shot_id, "status": "ok", "url": url, "duration_ms": int(total_ms or 0)})
+                results.append({
+                    "shot_id": shot_id,
+                    "status": "ok",
+                    "voice_url": voice_url,
+                    "narration_url": narration_url,
+                    "dialogue_url": dialogue_url,
+                    "voice_duration_ms": int(total_ms or 0),
+                    "narration_duration_ms": int(narration_ms or 0),
+                    "dialogue_duration_ms": int(dialogue_ms or 0),
+                })
             except Exception as e:
                 failed += 1
                 results.append({"shot_id": shot_id, "status": "failed", "message": str(e)})
@@ -3944,12 +4217,28 @@ async def clear_project_audio(project_id: str, request: ClearAgentAudioRequest):
                 continue
             if selected_shot_ids is not None and shot_id not in selected_shot_ids:
                 continue
-            url = str(shot.get("voice_audio_url") or "").strip()
-            if url:
-                removed_urls.append(url)
-            if "voice_audio_url" in shot or "voice_audio_duration_ms" in shot:
-                shot.pop("voice_audio_url", None)
-                shot.pop("voice_audio_duration_ms", None)
+            urls = [
+                str(shot.get("voice_audio_url") or "").strip(),
+                str(shot.get("narration_audio_url") or "").strip(),
+                str(shot.get("dialogue_audio_url") or "").strip(),
+            ]
+            for u in urls:
+                if u:
+                    removed_urls.append(u)
+
+            cleared_any = False
+            for k in (
+                "voice_audio_url",
+                "voice_audio_duration_ms",
+                "narration_audio_url",
+                "narration_audio_duration_ms",
+                "dialogue_audio_url",
+                "dialogue_audio_duration_ms",
+            ):
+                if k in shot:
+                    shot.pop(k, None)
+                    cleared_any = True
+            if cleared_any:
                 cleared_shots += 1
 
     removed_assets = 0
@@ -4006,7 +4295,58 @@ async def get_project_audio_timeline(project_id: str):
     # 若已保存 timeline，直接返回
     existing = project_data.get("audio_timeline")
     if isinstance(existing, dict) and isinstance(existing.get("segments"), list):
-        return {"success": True, "audio_timeline": existing}
+        # 兼容：将最新的人声分轨 URL/时长回填到已保存 timeline（不落盘）。
+        import copy
+
+        tl = copy.deepcopy(existing)
+        project = AgentProject.from_dict(project_data)
+        shot_map: Dict[str, Dict[str, Any]] = {}
+        for seg in project.segments or []:
+            if not isinstance(seg, dict):
+                continue
+            for shot in seg.get("shots", []) if isinstance(seg.get("shots"), list) else []:
+                if not isinstance(shot, dict):
+                    continue
+                sid = str(shot.get("id") or "").strip()
+                if sid:
+                    shot_map[sid] = shot
+
+        for seg in tl.get("segments") or []:
+            if not isinstance(seg, dict):
+                continue
+            for s in seg.get("shots") or []:
+                if not isinstance(s, dict):
+                    continue
+                sid = str(s.get("shot_id") or "").strip()
+                if not sid:
+                    continue
+                sh = shot_map.get(sid)
+                if not isinstance(sh, dict):
+                    continue
+
+                # unified voice
+                if isinstance(sh.get("voice_audio_url"), str) and sh.get("voice_audio_url"):
+                    s["voice_audio_url"] = sh.get("voice_audio_url")
+                try:
+                    s["voice_duration_ms"] = int(sh.get("voice_audio_duration_ms") or s.get("voice_duration_ms") or 0)
+                except Exception:
+                    pass
+
+                # split tracks (optional)
+                if isinstance(sh.get("narration_audio_url"), str) and sh.get("narration_audio_url"):
+                    s["narration_audio_url"] = sh.get("narration_audio_url")
+                try:
+                    s["narration_duration_ms"] = int(sh.get("narration_audio_duration_ms") or s.get("narration_duration_ms") or 0)
+                except Exception:
+                    pass
+                if isinstance(sh.get("dialogue_audio_url"), str) and sh.get("dialogue_audio_url"):
+                    s["dialogue_audio_url"] = sh.get("dialogue_audio_url")
+                try:
+                    s["dialogue_duration_ms"] = int(sh.get("dialogue_audio_duration_ms") or s.get("dialogue_duration_ms") or 0)
+                except Exception:
+                    pass
+
+        return {"success": True, "audio_timeline": tl}
 
     project = AgentProject.from_dict(project_data)
     executor = get_agent_executor()
@@ -4170,6 +4510,15 @@ async def generate_project_videos_stream(project_id: str, resolution: str = "720
 
     project = AgentProject.from_dict(project_data)
     executor = get_agent_executor()
+
+    # 若存在已确认的 audio_timeline，则在生成前应用到 shots.duration（作为视频时长约束）。
+    tl = project_data.get("audio_timeline")
+    if isinstance(tl, dict) and tl.get("confirmed") is True:
+        try:
+            executor.apply_audio_timeline_to_project(project, tl, reset_videos=False)
+            storage.save_agent_project(project.to_dict())
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid audio_timeline: {str(e)}")
 
     async def event_generator():
         # 收集所有有起始帧的镜头

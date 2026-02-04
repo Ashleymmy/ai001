@@ -752,6 +752,8 @@ export interface AgentProjectPlan {
     language: string
     narratorVoiceProfile?: string
     narrator_voice_profile?: string
+    ttsSpeedRatio?: string
+    targetDurationSeconds?: string
   }
   elements: Array<{
     id: string
@@ -840,6 +842,10 @@ export interface AgentShot {
   reference_images?: string[]  // 用户上传的多张参考图（优先用于场景/道具对齐）
   voice_audio_url?: string
   voice_audio_duration_ms?: number
+  narration_audio_url?: string
+  narration_audio_duration_ms?: number
+  dialogue_audio_url?: string
+  dialogue_audio_duration_ms?: number
   status: string
   created_at: string
 }
@@ -879,6 +885,10 @@ export interface AudioTimelineShot {
   duration: number
   voice_audio_url?: string
   voice_duration_ms?: number
+  narration_audio_url?: string
+  narration_duration_ms?: number
+  dialogue_audio_url?: string
+  dialogue_duration_ms?: number
 }
 
 export interface AudioTimelineSegment {

@@ -35,8 +35,8 @@ cd demo/huobao-drama
 
 # 拉取最新代码
 git fetch origin
-git checkout main
-git pull origin main
+git checkout master
+git pull origin master
 
 # 返回主项目目录
 cd ../..
@@ -61,15 +61,15 @@ git submodule summary
 ```bash
 cd demo/huobao-drama
 
-# 确保在 main 分支
-git checkout main
+# 确保在 master 分支
+git checkout master
 
 # 进行修改...
 git add .
 git commit -m "你的修改说明"
 
 # 推送到远程仓库
-git push origin main
+git push origin master
 
 # 返回主项目，更新 submodule 引用
 cd ../..
@@ -79,7 +79,7 @@ git commit -m "更新 huobao-drama"
 
 ### 5. 同步上游更新（可选）
 
-如需合并官方仓库的更新：
+（不合并）如需合并官方仓库的更新：
 
 ```bash
 cd demo/huobao-drama
@@ -89,10 +89,10 @@ git remote add upstream https://github.com/chatfire-AI/huobao-drama.git
 
 # 拉取上游更新
 git fetch upstream
-git merge upstream/main  # 如上游默认分支为 master，则改为 upstream/master
+git merge upstream/master
 
 # 解决冲突后推送
-git push origin main
+git push origin master
 
 cd ../..
 git add demo/huobao-drama
@@ -158,7 +158,7 @@ git submodule update --force
 ```bash
 cd demo/huobao-drama
 git fetch origin
-git reset --hard origin/main
+git reset --hard origin/master
 cd ../..
 git add demo/huobao-drama
 git commit -m "重置 huobao-drama 到最新版本"

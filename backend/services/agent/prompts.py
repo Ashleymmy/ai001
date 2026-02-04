@@ -110,6 +110,69 @@ mode: {mode}
 }}
 ```"""
 
+# Duration fit: rewrite narration/dialogue to match a target total duration (audio-driven).
+DEFAULT_DURATION_FIT_PROMPT = """你是“音频驱动的配音编剧/节奏剪辑师”。你的任务是：在不破坏故事逻辑与镜头信息点的前提下，让全片“旁白 + 对白”的总时长贴合目标总时长，并确保每个镜头内的音频时长不超过该镜头时长（由音频定分镜）。
+
+用户需求（原文，仅供理解）：
+{user_request}
+
+目标总时长（秒）：{target_seconds}
+
+输入是项目“音频快照” JSON（只包含对时长相关的字段）：
+{project_json}
+
+你必须遵守：
+1) **不允许修改任何已有 Segment/Shot 的 id**；可以改写 name/description/narration/dialogue_script/duration；必要时允许新增镜头（新增镜头的 id 置空或留空字符串）。
+2) **音频驱动分镜**：每个镜头的 narration/dialogue_script 朗读时长必须 <= duration；如果一句话太长，优先改写更短/更口语化，或拆句到相邻镜头；不要简单把 duration 拉得很长。
+3) 单镜头 duration 必须在 **2–6 秒**，建议 5–6 秒；不要超过 6 秒。
+4) **总时长约束**：全部镜头 duration 的总和应尽量贴近目标总时长（允许 ±5%）。
+   - 若目标总时长更短：优先压缩旁白/对白信息密度，必要时略微提高语速（只在 creative_brief_patch.ttsSpeedRatio 中建议，范围 0.85–1.25）。
+   - 若目标总时长更长：适度补充旁白/对白或增加镜头；不要空镜头堆时长。
+5) dialogue_script 必须按“角色: 台词”逐行输出，每行一句；**不要**在台词里包含角色标签/类型/ID（例如“（character）”“Shot_XXX”“Element_XXX”等）。
+6) narration 保持简短、口语化、可配音；同样不要包含 ID/标签。
+
+请只输出一个 JSON 代码块：
+```json
+{
+  "creative_brief_patch": {
+    "duration": "可选：用更明确的方式表达目标时长，例如 90秒 / 1分30秒",
+    "targetDurationSeconds": "可选：目标总秒数（数字字符串）",
+    "ttsSpeedRatio": "可选：建议语速倍率（0.85–1.25，字符串）"
+  },
+  "segments_patch": [
+    {
+      "id": "Segment_XXX",
+      "shots": [
+        {
+          "id": "Shot_XXX",
+          "duration": 5.0,
+          "narration": "可选：改写后的旁白",
+          "dialogue_script": "可选：改写后的对白（多行）"
+        }
+      ]
+    }
+  ],
+  "add_shots": [
+    {
+      "segment_id": "Segment_XXX",
+      "after_shot_id": "Shot_XXX",
+      "shot": {
+        "id": "",
+        "name": "新增镜头名",
+        "type": "standard",
+        "duration": 5.0,
+        "description": "新增镜头描述（动作/信息点）",
+        "prompt": "新增镜头 prompt（含 [Element_XXX]，如有）",
+        "video_prompt": "新增镜头 video_prompt（含 [Element_XXX]，如有）",
+        "narration": "",
+        "dialogue_script": ""
+      }
+    }
+  ]
+}
+```
+"""
+
 # Asset completion: extract missing scene/props from storyboard and optionally patch shot prompts.
 DEFAULT_ASSET_COMPLETION_PROMPT = """你是“镜头资产拆解助手”，目标是从现有分镜中补齐后续制作所需的关键元素：人物/场景/道具/关键物品。
 
@@ -208,4 +271,12 @@ DEFAULT_PROJECT_PLANNING_PROMPT = """请根据用户的需求，生成完整的�
 3. `prompt` 用于起始帧；`video_prompt` 用于视频；两者要分工清晰，不要混用
 4. 旁白（narration）与对白（dialogue_script）不要冲突：对白按“角色: 台词”逐字一致输出
 5. 合理估算成本
+6. **音频驱动分镜（重要）**：
+   - 分镜要优先按“旁白/对白的节奏与时长”来切分镜头（由音频定分镜），不要只按剧情段落粗切。
+   - 每个镜头的旁白/对白朗读时长必须 **不超过该镜头的 duration**（按自然语速估算，必要时缩短台词/旁白或拆成多个镜头）。
+   - 单镜头时长建议 **5–6 秒**，不要超过 6 秒；如果内容较长，应通过“增加镜头数量 + 拆分音频”来完成，而不是把单镜头拉得很长。
+7. **总时长约束（如果用户明确给出）**：
+   - `creative_brief.duration` 必须反映用户的目标总时长。
+   - 全部镜头 `duration` 的总和应尽量贴近目标总时长（允许 ±5% 的误差）。
+   - 若目标总时长更短：优先缩短旁白/对白并保持信息密度；必要时提高语速（不宜过快，建议在自然范围内）。
 """
