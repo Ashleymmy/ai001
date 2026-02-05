@@ -2486,37 +2486,154 @@ class AgentService:
                     composition_tag = "道具/环境细节插入（插入镜头/特写）"
 
                 if hint_txt:
-                    visual_hint = f"镜头要点（{idx+1}/{total_parts}）：{composition_tag}；{hint_txt}"
+                    visual_hint = f"镜头要点（{idx+1}/{total_parts}）：{composition_tag}；只表现本段：{hint_txt}"
                 else:
                     visual_hint = f"镜头要点（{idx+1}/{total_parts}）：{composition_tag}"
 
-                def inject_hint(prompt: Any) -> str:
-                    base = _as_text(prompt).strip()
+                def _split_no_text_suffix(s: str) -> (str, str):
+                    base = (s or "").strip()
                     if not base:
-                        return ""
-                    if visual_hint in base:
-                        return base
+                        return "", ""
                     m = re.search(r"\bno[-_ ]?text\b", base, flags=re.IGNORECASE)
-                    if m:
-                        before = base[:m.start()].rstrip(" ,，;；")
-                        after = base[m.start():].lstrip()
-                        sep = "；" if before else ""
-                        return f"{before}{sep}{visual_hint}，{after}".strip()
-                    return f"{base}；{visual_hint}".strip()
+                    if not m:
+                        return base, ""
+                    before = base[:m.start()].rstrip(" ,，;；")
+                    after = base[m.start():].lstrip()
+                    return before, after
 
+                def _rewrite_split_part_prompt(prompt: Any) -> str:
+                    """Rewrite split-part frame prompt to reduce coupling across parts.
+
+                    Keep core style/scene phrases, but emphasize per-part keyframe focus and camera composition.
+                    """
+                    raw = _as_text(prompt).strip()
+                    if not raw:
+                        # Minimal fallback prompt for a start frame.
+                        tail = "no-text"
+                        if visual_hint:
+                            return f"{visual_hint}，{tail}".strip()
+                        return tail
+
+                    body, no_text_tail = _split_no_text_suffix(raw)
+                    no_text_tail = (no_text_tail or "no-text").strip()
+
+                    # Split into phrases and drop old injected hints if present.
+                    phrases = [p.strip() for p in re.split(r"[，,；;]+", body) if p.strip()]
+                    phrases = [
+                        p for p in phrases
+                        if "镜头要点" not in p and "本段重点" not in p and "关键帧" not in p and "只表现本段" not in p
+                    ]
+
+                    def contains_any(p: str, kws: List[str]) -> bool:
+                        return any(k in p for k in kws)
+
+                    style_kws = ["2D", "3D", "手绘", "动画", "插画", "写实", "电影感", "吉卜力", "高质量", "细腻", "笔触", "光影", "色彩", "质感", "景深", "4K", "HD"]
+                    scene_kws = ["场景", "室内", "室外", "公寓", "厨房", "客厅", "卧室", "走廊", "玄关", "门口", "街道", "医院", "学校", "办公室", "车站", "车厢", "电梯", "楼道"]
+                    env_kws = ["窗外", "雨", "暴雨", "台风", "雨夜", "夜", "清晨", "黄昏", "灯光", "霓虹", "雾", "风", "雪", "城市", "氛围", "冷", "暖", "雨幕", "阴影"]
+                    action_kws = ["进入", "来到", "走", "跑", "推开", "打开", "关上", "脱下", "拿起", "端起", "倒", "煮", "泡", "制作", "准备", "揉", "搅拌", "切", "坐", "站", "望", "看", "转身", "回头", "停下", "伸手", "抬头", "低头"]
+                    detail_kws = ["特写", "细节", "手部", "眼神", "表情", "水滴", "蒸汽", "锅", "杯", "火焰", "炉", "电炉", "道具", "插入镜头", "近景", "浅景深", "姜茶", "茶"]
+
+                    def is_style(p: str) -> bool:
+                        return contains_any(p, style_kws)
+
+                    def is_scene(p: str) -> bool:
+                        return contains_any(p, scene_kws) or bool(re.search(r"\[Element_[A-Za-z0-9_\-]+\]", p))
+
+                    def is_env(p: str) -> bool:
+                        return contains_any(p, env_kws)
+
+                    def is_action(p: str) -> bool:
+                        return contains_any(p, action_kws)
+
+                    def is_detail(p: str) -> bool:
+                        return contains_any(p, detail_kws)
+
+                    always_keep: List[str] = []
+                    for p in phrases:
+                        if re.search(r"\[Element_[A-Za-z0-9_\-]+\]", p):
+                            always_keep.append(p)
+                        elif is_style(p) or is_scene(p):
+                            always_keep.append(p)
+
+                    stage_keep: List[str] = []
+                    for p in phrases:
+                        if p in always_keep:
+                            continue
+                        if idx == 0:
+                            if is_env(p) or is_scene(p) or is_style(p):
+                                stage_keep.append(p)
+                        elif idx == 1:
+                            if is_action(p) or is_scene(p) or is_style(p):
+                                stage_keep.append(p)
+                        elif idx == 2:
+                            if is_detail(p) or is_scene(p) or is_style(p):
+                                stage_keep.append(p)
+                        else:
+                            if is_detail(p) or is_scene(p) or is_style(p):
+                                stage_keep.append(p)
+
+                    # De-dupe while preserving order.
+                    out_phrases: List[str] = []
+                    seen: set = set()
+                    for p in (always_keep + stage_keep):
+                        if not p:
+                            continue
+                        if p in seen:
+                            continue
+                        seen.add(p)
+                        out_phrases.append(p)
+
+                    # Ensure we keep some base context.
+                    min_keep = 4
+                    if len(out_phrases) < min_keep:
+                        for p in phrases:
+                            if p and p not in seen:
+                                seen.add(p)
+                                out_phrases.append(p)
+                            if len(out_phrases) >= min_keep:
+                                break
+
+                    out_phrases = out_phrases[:10]
+                    base2 = "，".join([p for p in out_phrases if p]).strip("，;； ")
+
+                    if base2 and visual_hint:
+                        return f"{base2}；{visual_hint}，{no_text_tail}".strip()
+                    if base2:
+                        return f"{base2}，{no_text_tail}".strip()
+                    if visual_hint:
+                        return f"{visual_hint}，{no_text_tail}".strip()
+                    return no_text_tail
+
+                # Rewrite prompt for split parts so each part has a clearer keyframe focus.
                 if _as_text(ns.get("prompt")).strip():
-                    ns["prompt"] = inject_hint(ns.get("prompt"))
+                    ns["prompt"] = _rewrite_split_part_prompt(ns.get("prompt"))
 
                 # Also differentiate video prompt and description for readability and downstream generation.
                 vp0 = _as_text(ns.get("video_prompt")).strip()
                 if vp0:
                     focus_txt = hint_txt or composition_tag
-                    suffix = f"本段重点：{focus_txt}"
-                    if suffix not in vp0:
+                    if idx == 0:
+                        beat_hint = f"镜头节奏（{idx+1}/{total_parts}）：先交代环境与空间关系，慢平移/缓慢推进到人物"
+                    elif idx == 1:
+                        beat_hint = f"镜头节奏（{idx+1}/{total_parts}）：中景跟随人物动作推进，动作连贯自然"
+                    elif idx == 2:
+                        beat_hint = f"镜头节奏（{idx+1}/{total_parts}）：切入情绪与关键细节特写，浅景深，微推到关键道具"
+                    else:
+                        beat_hint = f"镜头节奏（{idx+1}/{total_parts}）：插入镜头，聚焦道具/环境细节"
+
+                    suffixes = [
+                        beat_hint,
+                        f"本段重点：{focus_txt}" if focus_txt else "",
+                        "只表现本段重点，避免复用其他分段画面",
+                    ]
+                    for suf in [x for x in suffixes if x]:
+                        if suf in vp0:
+                            continue
                         if vp0.endswith(("；", ";")):
-                            ns["video_prompt"] = f"{vp0}{suffix}"
+                            vp0 = f"{vp0}{suf}"
                         else:
-                            ns["video_prompt"] = f"{vp0}；{suffix}"
+                            vp0 = f"{vp0}；{suf}"
+                    ns["video_prompt"] = vp0
 
                 desc0 = _as_text(ns.get("description")).strip()
                 if desc0:
