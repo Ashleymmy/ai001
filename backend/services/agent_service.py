@@ -52,6 +52,128 @@ def _ensure_list(value: Any) -> List[Any]:
     return value if isinstance(value, list) else []
 
 
+def _smart_split_text(
+    text: str,
+    *,
+    max_chars: int,
+    boundaries: str,
+    min_good_ratio: float = 0.6,
+    min_tail_ratio: float = 0.35,
+) -> List[str]:
+    """Smartly split a long text into fewer, more balanced chunks.
+
+    Principles:
+    - If short enough, keep as a whole (do not split on commas by default).
+    - When splitting, prefer punctuation boundaries; if the remaining tail would be too short,
+      pick a more balanced cut (closer to the middle) when possible.
+    """
+    t = (text or "").strip()
+    if not t:
+        return []
+
+    try:
+        mc = int(max_chars)
+    except Exception:
+        mc = 0
+    if mc <= 0:
+        return [t]
+
+    if len(t) <= mc:
+        return [t]
+
+    bset = set(boundaries or "")
+
+    def compute_min_good() -> int:
+        mg = max(6, int(mc * float(min_good_ratio)))
+        return max(1, min(mc, mg))
+
+    def compute_min_tail() -> int:
+        mt = max(6, int(mc * float(min_tail_ratio)))
+        return max(1, min(mc, mt))
+
+    min_good = compute_min_good()
+    min_tail = compute_min_tail()
+
+    out: List[str] = []
+    rest = t
+    while rest and len(rest) > mc:
+        window = rest[: mc + 1]
+        mid = len(rest) // 2
+
+        def tail_len(c: int) -> int:
+            return max(0, len(rest) - int(c))
+
+        def in_range(c: int) -> bool:
+            try:
+                v = int(c)
+            except Exception:
+                return False
+            return 1 <= v <= len(window)
+
+        tail_short_risk = tail_len(mc) < min_tail
+
+        punct_cands: List[int] = []
+        if bset:
+            for i, ch in enumerate(window):
+                if ch in bset:
+                    punct_cands.append(i + 1)
+        punct_cands = sorted({c for c in punct_cands if in_range(c)})
+
+        space_cands: List[int] = []
+        sp = window.rfind(" ")
+        if sp >= 0 and in_range(sp + 1):
+            space_cands = [sp + 1]
+
+        balance_cands: List[int] = []
+        if 1 <= mid <= mc and in_range(mid):
+            balance_cands.append(mid)
+        tail_guard = len(rest) - min_tail
+        if 1 <= tail_guard <= mc and in_range(tail_guard):
+            balance_cands.append(tail_guard)
+        balance_cands = sorted({c for c in balance_cands if in_range(c)})
+
+        def pick(cands: List[int], *, allow_small: bool) -> Optional[int]:
+            if not cands:
+                return None
+
+            if not allow_small:
+                cands = [c for c in cands if c >= min_good]
+                if not cands:
+                    return None
+                good = [c for c in cands if tail_len(c) >= min_tail]
+                return max(good) if good else None
+
+            good = [c for c in cands if tail_len(c) >= min_tail]
+            if good:
+                return max(good)
+            return min(cands, key=lambda c: (abs(c - mid), -c))
+
+        cut = pick(punct_cands, allow_small=tail_short_risk)
+        if cut is None:
+            cut = pick(space_cands, allow_small=tail_short_risk)
+        if cut is None:
+            if not tail_short_risk:
+                cut = mc
+            else:
+                cut = pick(balance_cands, allow_small=True)
+                if cut is None:
+                    cut = max(1, min(mc, max(min_good, min(mc, mid))))
+
+        head = rest[:cut].strip()
+        rest = rest[cut:].strip()
+        if head:
+            out.append(head)
+        else:
+            # Defensive: ensure progress
+            out.append(rest[:mc].strip())
+            rest = rest[mc:].strip()
+
+    if rest:
+        out.append(rest.strip())
+
+    return [x for x in out if x]
+
+
 def _estimate_speech_seconds(text: str, speed: float = 1.0) -> float:
     """Heuristic voice duration estimate for narration/dialogue (seconds).
 
@@ -183,8 +305,8 @@ def _split_narration_sentences(text: str) -> List[str]:
             s = s[len(open_q):-len(close_q)].strip()
             break
 
-    # Preserve punctuation as boundaries (include commas/semicolons to avoid char-hardwrap mid-sentence).
-    boundaries = set("。！？!?；;，,、")
+    # Strong boundaries only (comma-like punctuations are "soft" and handled by `_smart_split_text` when needed).
+    boundaries = set("。！？.!?；;")
     parts: List[str] = []
     buf: List[str] = []
     for ch in s:
@@ -234,29 +356,17 @@ def _split_dialogue_line(line: str, max_chars: int = 26) -> List[str]:
     if not content:
         return [ln]
 
-    # try to split by punctuation first
-    segs: List[str] = []
-    buf: List[str] = []
-    for ch in content:
-        buf.append(ch)
-        if ch in "，,。！？!?；;、":
-            seg = "".join(buf).strip()
-            if seg:
-                segs.append(seg)
-            buf = []
-    tail = "".join(buf).strip()
-    if tail:
-        segs.append(tail)
+    # Short dialogue: keep whole (avoid splitting by commas/short pauses).
+    if len(content) <= int(max_chars or 0):
+        return [ln]
 
-    # if still too long, hard wrap by char count
-    wrapped: List[str] = []
-    for seg in segs or [content]:
-        t = seg.strip()
-        while len(t) > max_chars:
-            wrapped.append(t[:max_chars].strip())
-            t = t[max_chars:].strip()
-        if t:
-            wrapped.append(t)
+    wrapped = _smart_split_text(
+        content,
+        max_chars=max_chars,
+        boundaries="，,；;、。！？.!?…—",
+        min_good_ratio=0.6,
+        min_tail_ratio=0.35,
+    )
 
     if speaker:
         return [f"{speaker}：{t}" for t in wrapped if t]
@@ -2261,37 +2371,6 @@ class AgentService:
             utter = t if role == "narration" else self._dialogue_line_utterance(t)
             return _estimate_speech_seconds(utter, speed=speed_ratio)
 
-        def smart_cut_text(text: str, max_chars: int) -> tuple[str, str]:
-            """Cut long narration at a natural boundary when possible."""
-            t = (text or "").strip()
-            if not t or len(t) <= max_chars:
-                return t, ""
-
-            window = t[: max_chars + 1]
-            min_good = max(6, int(max_chars * 0.6))
-
-            # Prefer cutting at punctuation (keep punctuation in head).
-            cut_idx = -1
-            for i in range(len(window) - 1, -1, -1):
-                if window[i] in "，,；;、。！？!?":
-                    cut_idx = i + 1
-                    break
-            if cut_idx < min_good:
-                # Next: whitespace boundary.
-                sp = window.rfind(" ")
-                if sp >= min_good:
-                    cut_idx = sp + 1
-
-            if cut_idx < 1:
-                cut_idx = max_chars
-
-            head = t[:cut_idx].strip()
-            rest = t[cut_idx:].strip()
-            if not head:
-                head = t[:max_chars].strip()
-                rest = t[max_chars:].strip()
-            return head, rest
-
         for c in chunks:
             dur = chunk_seconds(c)
             # If a single chunk is too long, further hard-wrap by chars (narration) or split dialogue more.
@@ -2299,25 +2378,20 @@ class AgentService:
                 t = c.get("text") or ""
                 # hard wrap by characters (roughly 4 chars/sec)
                 max_chars = max(8, int(soft_limit * 4.0))
-                t2 = t.strip()
-                while len(t2) > max_chars:
-                    head, rest = smart_cut_text(t2, max_chars=max_chars)
-                    if head:
-                        d2 = _estimate_speech_seconds(head, speed=speed_ratio)
-                        if cur and cur_dur + d2 > soft_limit:
-                            groups.append(cur)
-                            cur = []
-                            cur_dur = 0.0
-                        cur.append({"role": "narration", "text": head})
-                        cur_dur += d2
-                    t2 = rest
-                if t2:
-                    d2 = _estimate_speech_seconds(t2, speed=speed_ratio)
+                pieces = _smart_split_text(
+                    t,
+                    max_chars=max_chars,
+                    boundaries="，,；;、。！？.!?…—",
+                    min_good_ratio=0.6,
+                    min_tail_ratio=0.35,
+                )
+                for piece in pieces:
+                    d2 = _estimate_speech_seconds(piece, speed=speed_ratio)
                     if cur and cur_dur + d2 > soft_limit:
                         groups.append(cur)
                         cur = []
                         cur_dur = 0.0
-                    cur.append({"role": "narration", "text": t2})
+                    cur.append({"role": "narration", "text": piece})
                     cur_dur += d2
                 continue
 
