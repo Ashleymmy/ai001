@@ -110,18 +110,17 @@ def _smart_split_text(
                 return False
             return 1 <= v <= len(window)
 
-        tail_short_risk = tail_len(mc) < min_tail
-
         punct_cands: List[int] = []
         if bset:
             for i, ch in enumerate(window):
                 if ch in bset:
                     punct_cands.append(i + 1)
-        punct_cands = sorted({c for c in punct_cands if in_range(c)})
+        # Avoid cutting too early (e.g., very short comma chunk).
+        punct_cands = sorted({c for c in punct_cands if in_range(c) and c >= min_good})
 
         space_cands: List[int] = []
         sp = window.rfind(" ")
-        if sp >= 0 and in_range(sp + 1):
+        if sp >= 0 and in_range(sp + 1) and (sp + 1) >= min_good:
             space_cands = [sp + 1]
 
         balance_cands: List[int] = []
@@ -132,30 +131,21 @@ def _smart_split_text(
             balance_cands.append(tail_guard)
         balance_cands = sorted({c for c in balance_cands if in_range(c)})
 
-        def pick(cands: List[int], *, allow_small: bool) -> Optional[int]:
+        def pick_tail_ok(cands: List[int]) -> Optional[int]:
             if not cands:
                 return None
+            ok = [c for c in cands if tail_len(c) >= min_tail]
+            return max(ok) if ok else None
 
-            if not allow_small:
-                cands = [c for c in cands if c >= min_good]
-                if not cands:
-                    return None
-                good = [c for c in cands if tail_len(c) >= min_tail]
-                return max(good) if good else None
-
-            good = [c for c in cands if tail_len(c) >= min_tail]
-            if good:
-                return max(good)
-            return min(cands, key=lambda c: (abs(c - mid), -c))
-
-        cut = pick(punct_cands, allow_small=tail_short_risk)
+        cut = pick_tail_ok(punct_cands)
         if cut is None:
-            cut = pick(space_cands, allow_small=tail_short_risk)
+            cut = pick_tail_ok(space_cands)
         if cut is None:
-            if not tail_short_risk:
+            if tail_len(mc) >= min_tail:
                 cut = mc
             else:
-                cut = pick(balance_cands, allow_small=True)
+                # If the remaining tail after a hard cut would be too short, pick a more balanced cut.
+                cut = pick_tail_ok(balance_cands)
                 if cut is None:
                     cut = max(1, min(mc, max(min_good, min(mc, mid))))
 
@@ -188,13 +178,15 @@ def _estimate_speech_seconds(text: str, speed: float = 1.0) -> float:
     cjk = len(re.findall(r"[\u4e00-\u9fff]", s))
     words = len(re.findall(r"[A-Za-z0-9']+", s))
 
-    cps = 4.0  # Chinese chars/sec
+    # Calibrated for typical TTS listening speed (includes usual punctuation pauses).
+    cps = 3.75  # Chinese chars/sec
     wps = 2.7  # English words/sec
 
     base = (cjk / cps) if cjk >= max(8, words * 2) else (words / wps if words else (len(s) / 10.0))
-    punct = len(re.findall(r"[，,。\.！!？?；;：:、]", s))
-    pauses = punct * 0.18 + s.count("…") * 0.25 + s.count("—") * 0.12
-    lead = 0.25
+    # Do not add generic punctuation pauses here; cps already reflects perceived speed.
+    # Only keep a light penalty for long pause marks to avoid underestimation.
+    pauses = s.count("…") * 0.12 + s.count("—") * 0.08
+    lead = 0.0
 
     spd = speed if isinstance(speed, (int, float)) and speed > 0 else 1.0
     return max(0.0, (base + pauses + lead) / float(spd))
@@ -2338,6 +2330,16 @@ class AgentService:
         narration = _as_text(shot.get("narration")).strip()
         dialogue_script = _as_text(shot.get("dialogue_script")).strip()
 
+        try:
+            max_sec = float(max_shot_seconds)
+        except Exception:
+            max_sec = 6.0
+        pack_slack = 0.35
+        duration_pad = 0.35
+        soft_limit = max(1.5, float(max_sec) - float(pack_slack))
+        # Split budget in characters, aligned with calibrated TTS speed (3.75 chars/sec).
+        split_max_chars = max(8, int(soft_limit * 3.75))
+
         chunks: List[Dict[str, str]] = []
         for sent in _split_narration_sentences(narration):
             if sent.strip():
@@ -2352,15 +2354,37 @@ class AgentService:
                     if sub.strip():
                         chunks.append({"role": "dialogue", "text": sub.strip()})
 
+        # Dialogue safety: ensure a single dialogue chunk won't exceed max duration.
+        if chunks:
+            safe_chunks: List[Dict[str, str]] = []
+            for c in chunks:
+                role = str(c.get("role") or "dialogue").strip()
+                t = (c.get("text") or "").strip()
+                if not t:
+                    continue
+                if role != "dialogue":
+                    safe_chunks.append({"role": role, "text": t})
+                    continue
+
+                utter = self._dialogue_line_utterance(t)
+                est = _estimate_speech_seconds(utter, speed=speed_ratio)
+                if est > float(max_sec) + 1e-6:
+                    for sub in _split_dialogue_line(t, max_chars=split_max_chars):
+                        st = (sub or "").strip()
+                        if st:
+                            safe_chunks.append({"role": "dialogue", "text": st})
+                else:
+                    safe_chunks.append({"role": "dialogue", "text": t})
+            chunks = safe_chunks
+
         # No audio content: just clamp duration to a sane range.
         if not chunks:
             out = dict(shot)
             d = self._coerce_duration_seconds(out.get("duration"), default=5.0)
-            d = _clamp(d, 2.0, float(max_shot_seconds))
+            d = _clamp(d, 2.0, float(max_sec))
             out["duration"] = str(_ceil_to_half(d) or 2.0)
             return [out]
 
-        soft_limit = max(1.5, float(max_shot_seconds) - 0.6)
         groups: List[List[Dict[str, str]]] = []
         cur: List[Dict[str, str]] = []
         cur_dur = 0.0
@@ -2373,18 +2397,27 @@ class AgentService:
 
         for c in chunks:
             dur = chunk_seconds(c)
-            # If a single chunk is too long, further hard-wrap by chars (narration) or split dialogue more.
-            if dur > soft_limit + 0.2 and c.get("role") == "narration":
+            # If a single narration sentence exceeds the hard limit, split it further by chars.
+            # Otherwise keep whole sentences (avoid comma-fragmentation).
+            if c.get("role") == "narration" and dur > float(max_sec) + 1e-6:
                 t = c.get("text") or ""
-                # hard wrap by characters (roughly 4 chars/sec)
-                max_chars = max(8, int(soft_limit * 4.0))
                 pieces = _smart_split_text(
                     t,
-                    max_chars=max_chars,
+                    max_chars=split_max_chars,
                     boundaries="，,；;、。！？.!?…—",
                     min_good_ratio=0.6,
                     min_tail_ratio=0.35,
                 )
+                # Merge tiny last tails back when possible (avoid 1-2s end fragments).
+                if len(pieces) >= 2:
+                    last = (pieces[-1] or "").strip()
+                    last_est = _estimate_speech_seconds(last, speed=speed_ratio) if last else 0.0
+                    if last and (len(last) < 6 or last_est < 1.2):
+                        prev = (pieces[-2] or "").strip()
+                        merged = (prev + last).strip()
+                        if merged and _estimate_speech_seconds(merged, speed=speed_ratio) <= float(max_sec) + 1e-6:
+                            pieces[-2] = merged
+                            pieces = pieces[:-1]
                 for piece in pieces:
                     d2 = _estimate_speech_seconds(piece, speed=speed_ratio)
                     if cur and cur_dur + d2 > soft_limit:
@@ -2425,7 +2458,7 @@ class AgentService:
                     dlg_lines.append(t)
                 g_dur += chunk_seconds(c)
 
-            dur_s = _ceil_to_half(max(2.0, min(float(max_shot_seconds), g_dur + 0.4))) or 2.0
+            dur_s = _ceil_to_half(max(2.0, min(float(max_sec), g_dur + float(duration_pad)))) or 2.0
             ns = dict(shot)
             if idx == 0:
                 ns["id"] = orig_id

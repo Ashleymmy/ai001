@@ -2293,20 +2293,22 @@ def _estimate_speech_seconds(text: str, speed: float = 1.0) -> float:
     """Heuristic duration estimate for TTS/voiceover (seconds)."""
     if not isinstance(text, str):
         return 0.0
-    s = re.sub(r"\\s+", " ", text).strip()
+    s = re.sub(r"\s+", " ", text).strip()
     if not s:
         return 0.0
 
-    cjk = len(re.findall(r"[\\u4e00-\\u9fff]", s))
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", s))
     words = len(re.findall(r"[A-Za-z0-9']+", s))
 
-    cps = 4.0  # Chinese chars/sec
+    # Calibrated for typical TTS listening speed (includes usual punctuation pauses).
+    cps = 3.75  # Chinese chars/sec
     wps = 2.7  # English words/sec
 
     base = (cjk / cps) if cjk >= max(8, words * 2) else (words / wps if words else (len(s) / 10.0))
-    punct = len(re.findall(r"[，,。\\.！!？?；;：:、]", s))
-    pauses = punct * 0.18 + s.count("…") * 0.25 + s.count("—") * 0.12
-    lead = 0.25
+    # Do not add generic punctuation pauses here; cps already reflects perceived speed.
+    # Only keep a light penalty for long pause marks to avoid underestimation.
+    pauses = s.count("…") * 0.12 + s.count("—") * 0.08
+    lead = 0.0
 
     spd = speed if isinstance(speed, (int, float)) and speed > 0 else 1.0
     return max(0.0, (base + pauses + lead) / spd)
