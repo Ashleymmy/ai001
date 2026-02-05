@@ -176,12 +176,20 @@ def _split_narration_sentences(text: str) -> List[str]:
     s = (text or "").strip()
     if not s:
         return []
-    # preserve punctuation as sentence boundary
+
+    # Strip wrapping quotes to avoid splitting across “ ... ” and leaving dangling quote-only chunks.
+    for open_q, close_q in (("“", "”"), ("‘", "’"), ("\"", "\""), ("'", "'")):
+        if s.startswith(open_q) and s.endswith(close_q) and len(s) > (len(open_q) + len(close_q) + 1):
+            s = s[len(open_q):-len(close_q)].strip()
+            break
+
+    # Preserve punctuation as boundaries (include commas/semicolons to avoid char-hardwrap mid-sentence).
+    boundaries = set("。！？!?；;，,、")
     parts: List[str] = []
     buf: List[str] = []
     for ch in s:
         buf.append(ch)
-        if ch in "。！？!?":
+        if ch in boundaries:
             seg = "".join(buf).strip()
             if seg:
                 parts.append(seg)
@@ -189,11 +197,22 @@ def _split_narration_sentences(text: str) -> List[str]:
     tail = "".join(buf).strip()
     if tail:
         parts.append(tail)
-    # fallback: split by newlines if no punctuation boundaries
+
+    # Fallback: split by newlines if no punctuation boundaries
     flat: List[str] = []
     for p in parts or [s]:
         flat.extend([x.strip() for x in p.splitlines() if x.strip()])
-    return flat
+
+    # Merge standalone quote-only chunks back to previous part.
+    merged: List[str] = []
+    for seg in flat:
+        if not seg:
+            continue
+        if merged and re.fullmatch(r"[\"“”'‘’]+", seg):
+            merged[-1] = (merged[-1] + seg).strip()
+        else:
+            merged.append(seg)
+    return merged
 
 
 def _split_dialogue_line(line: str, max_chars: int = 26) -> List[str]:
@@ -287,6 +306,38 @@ SHOT_PROMPT_TEMPLATE = """请为以下镜头生成详细的视频生成提示词
 }}
 ```
 """
+
+REFINE_SPLIT_VISUALS_PROMPT_TEMPLATE = """你是资深分镜导演与提示词工程师。下面给你一个项目的“拆分镜头组”（同一镜头因为音频较长被拆成多个 part）。请为每个 part 生成更清晰且彼此有明显差异的画面设计与提示词，减少起始帧重复。
+
+项目视觉风格：
+{visual_style}
+
+涉及元素（用于一致性引用；请继续使用 [Element_XXX]，不要把 Element ID 替换成名字）：
+{elements_json}
+
+拆分镜头组（按时间顺序；每个 part 的 narration/dialogue_script 就是该段对应的台词/旁白）：
+{shots_json}
+
+你必须遵守：
+1) 不允许修改任何 shot_id；只输出这些 shot_id 的结果，不要新增/删除。
+2) 保持角色/场景/道具一致性：继续使用原本的 [Element_XXX] 引用。
+3) 每个 part 的画面必须与该 part 的 narration/dialogue_script 匹配，并且各 part 之间要有可感知差异（至少在“景别/构图/关注点/动作/镜头运动”中的两项不同）。
+4) prompt 与 video_prompt 使用中文，清晰描述画面；prompt 必须包含 no-text（避免画面文字/水印/字幕）。
+5) 输出必须是严格 JSON：只输出一个 ```json 代码块，不要任何额外文字。
+
+输出格式（示例）：
+```json
+{{
+  "shots": [
+    {{
+      "shot_id": "Shot_XXX",
+      "description": "新的镜头描述（更具体、可画）",
+      "prompt": "新的起始帧提示词（含 no-text）",
+      "video_prompt": "新的动态提示词（与该段音频匹配）"
+    }}
+  ]
+}}
+```"""
 
 
 class AgentService:
@@ -1837,10 +1888,21 @@ class AgentService:
             return {"success": False, "error": str(e)}
 
     def _find_target_duration_seconds(self, user_request: str, brief_duration: Any) -> Optional[float]:
-        # Prefer explicit duration mentioned by user; fall back to model's creative_brief.duration.
+        # Prefer explicit duration mentioned by user; fall back to persisted targetDurationSeconds (if any).
         t = _parse_duration_seconds(user_request)
         if t is None:
-            t = _parse_duration_seconds(brief_duration)
+            if isinstance(brief_duration, (int, float)):
+                t = float(brief_duration)
+            elif isinstance(brief_duration, str) and brief_duration.strip():
+                raw = brief_duration.strip()
+                # targetDurationSeconds might be a numeric string (seconds)
+                if re.fullmatch(r"\d+(?:\.\d+)?", raw):
+                    try:
+                        t = float(raw)
+                    except Exception:
+                        t = None
+                else:
+                    t = _parse_duration_seconds(raw)
         if t is None:
             return None
         try:
@@ -2023,7 +2085,7 @@ class AgentService:
             brief = {}
             plan["creative_brief"] = brief
 
-        target_seconds = self._find_target_duration_seconds(user_request, brief.get("duration"))
+        target_seconds = self._find_target_duration_seconds(user_request, brief.get("targetDurationSeconds"))
         if not target_seconds:
             return plan
 
@@ -2115,6 +2177,53 @@ class AgentService:
             return tail.strip()
         return ln
 
+    def _normalize_frame_prompt_key(self, prompt: Any) -> str:
+        """Normalize a shot prompt for de-duplication in start-frame generation (planning side)."""
+        s = _as_text(prompt)
+        if not s:
+            return ""
+        s = s.lower()
+        s = re.sub(r"\bno[-_ ]?text\b", "", s)
+        s = re.sub(r"\[element_[a-z0-9_\-]+\]", "[element]", s, flags=re.IGNORECASE)
+        s = re.sub(r"[\"“”‘’]", "", s)
+        s = re.sub(r"[，,。.!?;；:：、]+", " ", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    def _compact_frame_hint_text(self, text: Any, max_len: int = 60) -> str:
+        """Compact text into a short, model-friendly hint to reduce duplicated frames."""
+        s = _as_text(text).replace("\r", " ").replace("\n", " ").strip()
+        if not s:
+            return ""
+        s = s.strip(" \"“”'‘’")
+        s = re.sub(r"^(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"\[Element_[A-Za-z0-9_\-]+\]", "", s)
+        # Avoid leading punctuation like "：：我..." after removing element refs / prefixes.
+        s = s.lstrip(" :：，,;；-—").strip()
+        s = re.sub(r"\s+", " ", s).strip()
+        parts = re.split(r"[。！？.!?]", s, maxsplit=1)
+        if parts and parts[0].strip():
+            s = parts[0].strip()
+        if len(s) > max_len:
+            s = s[:max_len].rstrip(" ,，。.!?;；:：-")
+        return s
+
+    def _build_frame_prompt_hint(self, shot: Dict[str, Any], max_len: int = 60) -> str:
+        if not isinstance(shot, dict):
+            return ""
+        hint_parts: List[str] = []
+        name = _as_text(shot.get("name")).strip()
+        if name:
+            hint_parts.append(name)
+        narration_hint = self._compact_frame_hint_text(shot.get("narration"), max_len=max_len)
+        if narration_hint:
+            hint_parts.append(narration_hint)
+        if not narration_hint:
+            desc_hint = self._compact_frame_hint_text(shot.get("description"), max_len=max_len)
+            if desc_hint:
+                hint_parts.append(desc_hint)
+        return "；".join([p for p in hint_parts if p])
+
     def _split_shot_by_audio(self, shot: Dict[str, Any], speed_ratio: float, max_shot_seconds: float) -> List[Dict[str, Any]]:
         narration = _as_text(shot.get("narration")).strip()
         dialogue_script = _as_text(shot.get("dialogue_script")).strip()
@@ -2152,6 +2261,37 @@ class AgentService:
             utter = t if role == "narration" else self._dialogue_line_utterance(t)
             return _estimate_speech_seconds(utter, speed=speed_ratio)
 
+        def smart_cut_text(text: str, max_chars: int) -> tuple[str, str]:
+            """Cut long narration at a natural boundary when possible."""
+            t = (text or "").strip()
+            if not t or len(t) <= max_chars:
+                return t, ""
+
+            window = t[: max_chars + 1]
+            min_good = max(6, int(max_chars * 0.6))
+
+            # Prefer cutting at punctuation (keep punctuation in head).
+            cut_idx = -1
+            for i in range(len(window) - 1, -1, -1):
+                if window[i] in "，,；;、。！？!?":
+                    cut_idx = i + 1
+                    break
+            if cut_idx < min_good:
+                # Next: whitespace boundary.
+                sp = window.rfind(" ")
+                if sp >= min_good:
+                    cut_idx = sp + 1
+
+            if cut_idx < 1:
+                cut_idx = max_chars
+
+            head = t[:cut_idx].strip()
+            rest = t[cut_idx:].strip()
+            if not head:
+                head = t[:max_chars].strip()
+                rest = t[max_chars:].strip()
+            return head, rest
+
         for c in chunks:
             dur = chunk_seconds(c)
             # If a single chunk is too long, further hard-wrap by chars (narration) or split dialogue more.
@@ -2161,7 +2301,7 @@ class AgentService:
                 max_chars = max(8, int(soft_limit * 4.0))
                 t2 = t.strip()
                 while len(t2) > max_chars:
-                    head = t2[:max_chars].strip()
+                    head, rest = smart_cut_text(t2, max_chars=max_chars)
                     if head:
                         d2 = _estimate_speech_seconds(head, speed=speed_ratio)
                         if cur and cur_dur + d2 > soft_limit:
@@ -2170,7 +2310,7 @@ class AgentService:
                             cur_dur = 0.0
                         cur.append({"role": "narration", "text": head})
                         cur_dur += d2
-                    t2 = t2[max_chars:].strip()
+                    t2 = rest
                 if t2:
                     d2 = _estimate_speech_seconds(t2, speed=speed_ratio)
                     if cur and cur_dur + d2 > soft_limit:
@@ -2220,8 +2360,84 @@ class AgentService:
                 ns["id"] = f"{orig_id}_P{idx+1}"
                 ns["name"] = f"{orig_name}（{idx+1}/{total_parts}）"
             ns["duration"] = str(dur_s)
-            ns["narration"] = "\n".join(narr_parts).strip()
+            ns["narration"] = "".join(narr_parts).strip()
             ns["dialogue_script"] = "\n".join(dlg_lines).strip()
+
+            # If we split one shot into multiple parts, strengthen visual differentiation signals
+            # (prompt/video_prompt/description) so parts don't collapse to the same start frame.
+            if total_parts > 1:
+                hint_src = ns.get("narration") or ns.get("dialogue_script") or ns.get("description") or ns.get("name")
+                hint_txt = self._compact_frame_hint_text(hint_src, max_len=48)
+
+                if idx == 0:
+                    composition_tag = "建立场景（远景/全景）"
+                elif idx == 1:
+                    composition_tag = "人物动作推进（中景）"
+                elif idx == 2:
+                    composition_tag = "情绪与关键细节（特写）"
+                else:
+                    composition_tag = "道具/环境细节插入（插入镜头/特写）"
+
+                if hint_txt:
+                    visual_hint = f"镜头要点（{idx+1}/{total_parts}）：{composition_tag}；{hint_txt}"
+                else:
+                    visual_hint = f"镜头要点（{idx+1}/{total_parts}）：{composition_tag}"
+
+                def inject_hint(prompt: Any) -> str:
+                    base = _as_text(prompt).strip()
+                    if not base:
+                        return ""
+                    if visual_hint in base:
+                        return base
+                    m = re.search(r"\bno[-_ ]?text\b", base, flags=re.IGNORECASE)
+                    if m:
+                        before = base[:m.start()].rstrip(" ,，;；")
+                        after = base[m.start():].lstrip()
+                        sep = "；" if before else ""
+                        return f"{before}{sep}{visual_hint}，{after}".strip()
+                    return f"{base}；{visual_hint}".strip()
+
+                if _as_text(ns.get("prompt")).strip():
+                    ns["prompt"] = inject_hint(ns.get("prompt"))
+
+                # Also differentiate video prompt and description for readability and downstream generation.
+                vp0 = _as_text(ns.get("video_prompt")).strip()
+                if vp0:
+                    focus_txt = hint_txt or composition_tag
+                    suffix = f"本段重点：{focus_txt}"
+                    if suffix not in vp0:
+                        if vp0.endswith(("；", ";")):
+                            ns["video_prompt"] = f"{vp0}{suffix}"
+                        else:
+                            ns["video_prompt"] = f"{vp0}；{suffix}"
+
+                desc0 = _as_text(ns.get("description")).strip()
+                if desc0:
+                    short_txt = self._compact_frame_hint_text(hint_src, max_len=24)
+                    if short_txt:
+                        tail = f"（{idx+1}/{total_parts}：{short_txt}）"
+                        if tail not in desc0:
+                            ns["description"] = f"{desc0}{tail}"
+
+                # Defensive: do not inherit existing media assets for new split parts.
+                if idx > 0:
+                    for k in (
+                        "start_image_url",
+                        "cached_start_image_url",
+                        "start_image_history",
+                        "video_url",
+                        "cached_video_url",
+                        "video_source_url",
+                        "video_task_id",
+                        "voice_audio_url",
+                        "voice_audio_duration_ms",
+                        "narration_audio_url",
+                        "narration_audio_duration_ms",
+                        "dialogue_audio_url",
+                        "dialogue_audio_duration_ms",
+                    ):
+                        ns.pop(k, None)
+                    ns["status"] = "pending"
             out_shots.append(ns)
 
         return out_shots
@@ -2261,6 +2477,65 @@ class AgentService:
                     next_shots.append(ns)
             seg["shots"] = next_shots
 
+    def _dedupe_plan_start_frame_prompts(self, plan: Dict[str, Any]) -> None:
+        """Reduce duplicated start-frame prompts by appending per-shot hints.
+
+        This helps when audio-driven splitting (or LLM output) produces many shots with identical `prompt`,
+        causing repeated start frames even if narration differs.
+        """
+        if not isinstance(plan, dict):
+            return
+        segs = plan.get("segments") or []
+        if not isinstance(segs, list):
+            return
+
+        shots: List[Dict[str, Any]] = []
+        for seg in segs:
+            if not isinstance(seg, dict):
+                continue
+            for shot in seg.get("shots") or []:
+                if isinstance(shot, dict):
+                    shots.append(shot)
+
+        if not shots:
+            return
+
+        key_counts: Dict[str, int] = {}
+        for s in shots:
+            k = self._normalize_frame_prompt_key(s.get("prompt"))
+            if k:
+                key_counts[k] = key_counts.get(k, 0) + 1
+
+        dup_keys = {k for k, c in key_counts.items() if c > 1}
+        if not dup_keys:
+            return
+
+        def inject(prompt: str, hint: str) -> str:
+            base = (prompt or "").strip()
+            if not base or not hint:
+                return base
+            if hint in base:
+                return base
+            m = re.search(r"\bno[-_ ]?text\b", base, flags=re.IGNORECASE)
+            if m:
+                before = base[:m.start()].rstrip(" ,，;；")
+                after = base[m.start():].lstrip()
+                sep = "；" if before else ""
+                return f"{before}{sep}{hint}，{after}".strip()
+            return f"{base}；{hint}".strip()
+
+        for s in shots:
+            k = self._normalize_frame_prompt_key(s.get("prompt"))
+            if not k or k not in dup_keys:
+                continue
+            prompt = _as_text(s.get("prompt")).strip()
+            if not prompt:
+                continue
+            hint = self._build_frame_prompt_hint(s, max_len=60)
+            if not hint:
+                continue
+            s["prompt"] = inject(prompt, hint)
+
     def _postprocess_audio_driven_plan(self, plan: Dict[str, Any], user_request: str) -> Dict[str, Any]:
         if not isinstance(plan, dict):
             return plan
@@ -2269,7 +2544,7 @@ class AgentService:
             brief = {}
             plan["creative_brief"] = brief
 
-        target_seconds = self._find_target_duration_seconds(user_request, brief.get("duration"))
+        target_seconds = self._find_target_duration_seconds(user_request, brief.get("targetDurationSeconds"))
         speed_ratio = 1.0
         if target_seconds:
             speed_ratio = self._pick_speed_ratio_for_target(plan, target_seconds, max_shot_seconds=6.0)
@@ -2282,6 +2557,9 @@ class AgentService:
         # If we have a target and are shorter, try to distribute slack by extending shots up to 6s.
         if target_seconds:
             self._distribute_duration_slack(plan, target_seconds=float(target_seconds), max_shot_seconds=6.0)
+
+        # After splitting, de-duplicate start-frame prompts to reduce repeated frames.
+        self._dedupe_plan_start_frame_prompts(plan)
         return plan
     
     async def script_doctor(self, project: Dict[str, Any], mode: str = "expand") -> Dict[str, Any]:
@@ -2427,6 +2705,158 @@ class AgentService:
                 "success": True,
                 "updates": {"elements": elements, "segments": segments},
                 "added_elements": added,
+                "raw": data,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def refine_split_visuals(self, project: Dict[str, Any], parent_shot_id: str) -> Dict[str, Any]:
+        """Refine visuals for a split-shot group (parent + _P parts) with ONE LLM call.
+
+        - Must not change shot IDs.
+        - Only updates: description/prompt/video_prompt
+        """
+        if not self._ensure_client():
+            return {"success": False, "error": "未配置 LLM API Key"}
+        parent = _as_text(parent_shot_id).strip()
+        if not parent:
+            return {"success": False, "error": "parentShotId 不能为空"}
+
+        segments = project.get("segments") or []
+        if not isinstance(segments, list):
+            return {"success": False, "error": "项目 segments 结构无效"}
+
+        pat = re.compile(rf"^{re.escape(parent)}(?:_P\\d+)?$")
+        target_seg_index: Optional[int] = None
+        target_shots: List[Dict[str, Any]] = []
+
+        for i, seg in enumerate(segments):
+            if not isinstance(seg, dict):
+                continue
+            shots = seg.get("shots") or []
+            if not isinstance(shots, list):
+                continue
+            has_parent = any(isinstance(s, dict) and _as_text(s.get("id")).strip() == parent for s in shots)
+            if not has_parent:
+                continue
+            target_seg_index = i
+            for s in shots:
+                sid = _as_text(s.get("id")).strip() if isinstance(s, dict) else ""
+                if sid and pat.match(sid) and isinstance(s, dict):
+                    target_shots.append(s)
+            break
+
+        if target_seg_index is None:
+            return {"success": False, "error": "未找到 parentShotId 对应的镜头"}
+        if not target_shots:
+            return {"success": False, "error": "未找到可精修的拆分镜头组"}
+
+        # Gather only referenced elements for consistency context.
+        elements = project.get("elements") if isinstance(project.get("elements"), dict) else {}
+        referenced_ids: List[str] = []
+        for s in target_shots:
+            blob = " ".join([
+                _as_text(s.get("prompt")),
+                _as_text(s.get("video_prompt")),
+                _as_text(s.get("description")),
+            ])
+            for m in re.finditer(r"\[Element_([A-Za-z0-9_\\-]+)\\]", blob):
+                referenced_ids.append(f"Element_{m.group(1)}")
+        referenced_ids = list(dict.fromkeys([rid for rid in referenced_ids if rid]))
+
+        elements_out: List[Dict[str, Any]] = []
+        for eid in referenced_ids:
+            elem = elements.get(eid)
+            if isinstance(elem, dict):
+                elements_out.append({
+                    "id": _as_text(elem.get("id")).strip() or eid,
+                    "name": _as_text(elem.get("name")).strip(),
+                    "type": _as_text(elem.get("type")).strip(),
+                    "description": _as_text(elem.get("description")).strip(),
+                })
+
+        shots_out: List[Dict[str, Any]] = []
+        for s in target_shots:
+            shots_out.append({
+                "shot_id": _as_text(s.get("id")).strip(),
+                "name": _as_text(s.get("name")).strip(),
+                "type": _as_text(s.get("type")).strip(),
+                "duration": s.get("duration"),
+                "narration": _as_text(s.get("narration")).strip(),
+                "dialogue_script": _as_text(s.get("dialogue_script")).strip(),
+                "description": _as_text(s.get("description")).strip(),
+                "prompt": _as_text(s.get("prompt")).strip(),
+                "video_prompt": _as_text(s.get("video_prompt")).strip(),
+            })
+
+        brief = project.get("creative_brief") if isinstance(project.get("creative_brief"), dict) else {}
+        visual_style = _as_text(brief.get("visualStyle") or brief.get("visual_style")).strip() or "吉卜力动画风格"
+
+        prompt = self._format_prompt_safe(
+            self._get_prompt("agent.refine_split_visuals_prompt", REFINE_SPLIT_VISUALS_PROMPT_TEMPLATE),
+            visual_style=visual_style,
+            elements_json=json.dumps(elements_out, ensure_ascii=False, indent=2),
+            shots_json=json.dumps(shots_out, ensure_ascii=False, indent=2),
+        )
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self._get_prompt("agent.system_prompt", DEFAULT_AGENT_SYSTEM_PROMPT)},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.4,
+                max_tokens=3500,
+            )
+            reply = response.choices[0].message.content or ""
+            data = self._extract_json_from_reply(reply)
+
+            items: List[Dict[str, Any]] = []
+            if isinstance(data, dict) and isinstance(data.get("shots"), list):
+                items = [x for x in data.get("shots") if isinstance(x, dict)]
+            elif isinstance(data, list):
+                items = [x for x in data if isinstance(x, dict)]
+            elif isinstance(data, dict):
+                # mapping form: { "Shot_XXX": { ... }, ... }
+                for k, v in data.items():
+                    if isinstance(k, str) and isinstance(v, dict):
+                        items.append({"shot_id": k, **v})
+
+            if not items:
+                return {"success": False, "error": "无法解析精修输出", "raw": reply}
+
+            allowed_ids = {s.get("id") for s in target_shots if isinstance(s, dict) and isinstance(s.get("id"), str)}
+            patch_by_id: Dict[str, Dict[str, str]] = {}
+            for it in items:
+                sid = _as_text(it.get("shot_id") or it.get("id")).strip()
+                if not sid or sid not in allowed_ids:
+                    continue
+                patch: Dict[str, str] = {}
+                for key in ("description", "prompt", "video_prompt", "videoPrompt"):
+                    val = it.get(key)
+                    if isinstance(val, str) and val.strip():
+                        norm_key = "video_prompt" if key == "videoPrompt" else key
+                        patch[norm_key] = val.strip()
+                if patch:
+                    patch_by_id[sid] = patch
+
+            if not patch_by_id:
+                return {"success": False, "error": "精修输出不包含任何可应用的镜头字段", "raw": reply}
+
+            next_segments = copy.deepcopy(segments)
+            target_seg = next_segments[target_seg_index] if 0 <= int(target_seg_index) < len(next_segments) else None
+            if isinstance(target_seg, dict):
+                for shot in (target_seg.get("shots") or []):
+                    if not isinstance(shot, dict):
+                        continue
+                    sid = shot.get("id")
+                    if isinstance(sid, str) and sid in patch_by_id:
+                        shot.update(patch_by_id[sid])
+
+            return {
+                "success": True,
+                "updates": {"segments": next_segments},
                 "raw": data,
             }
         except Exception as e:
@@ -3966,6 +4396,21 @@ class AgentExecutor:
                     prev_shot_by_id[sid] = prev
                 prev = s if isinstance(s, dict) else None
 
+        try:
+            from collections import Counter
+            prompt_key_counts = Counter()
+            for _, s in all_shots:
+                if not isinstance(s, dict):
+                    continue
+                p0 = _as_text(s.get("prompt")).strip()
+                if not p0:
+                    p0 = _as_text(s.get("description")).strip()
+                k = self._normalize_frame_prompt_key(p0)
+                if k:
+                    prompt_key_counts[k] += 1
+        except Exception:
+            prompt_key_counts = {}
+
         total = len(all_shots)
         generated = 0
         failed = 0
@@ -4009,19 +4454,40 @@ class AgentExecutor:
                         reference_images.append(u)
 
                 # 叠加上一镜头的起始帧作为“场景参考”（同一段落内）
-                prev_shot = prev_shot_by_id.get(shot.get("id"))
-                if isinstance(prev_shot, dict):
-                    prev_frame = prev_shot.get("start_image_url")
-                    if isinstance(prev_frame, str) and prev_frame and prev_frame not in reference_images and (prev_frame.startswith("http") or prev_frame.startswith("/api/uploads/")):
-                        reference_images.append(prev_frame)
+                prompt_key = self._normalize_frame_prompt_key(prompt)
+                is_prompt_dup = False
+                try:
+                    is_prompt_dup = bool(prompt_key) and int(prompt_key_counts.get(prompt_key, 0)) > 1
+                except Exception:
+                    is_prompt_dup = False
+
+                if not is_prompt_dup:
+                    prev_shot = prev_shot_by_id.get(shot.get("id"))
+                    if isinstance(prev_shot, dict):
+                        def parent_id(sid: Any) -> str:
+                            s = _as_text(sid).strip()
+                            if not s:
+                                return ""
+                            return re.sub(r"_P\\d+$", "", s)
+
+                        # Avoid chaining prev-frame references within the same split-shot group.
+                        if parent_id(prev_shot.get("id")) != parent_id(shot_id):
+                            prev_frame = prev_shot.get("start_image_url")
+                            if isinstance(prev_frame, str) and prev_frame and prev_frame not in reference_images and (prev_frame.startswith("http") or prev_frame.startswith("/api/uploads/")):
+                                reference_images.append(prev_frame)
 
                 reference_images = self._filter_reference_images(reference_images, limit=10)
 
                 # 收集镜头中涉及的角色，构建角色一致性提示
                 character_consistency = self._build_character_consistency_prompt(prompt, project.elements)
+                is_split_part = bool(re.search(r"_P\\d+$", str(shot_id)))
+                extra_hint = self._build_frame_prompt_hint(shot) if (is_prompt_dup or is_split_part) else ""
                 
                 # 添加风格、角色一致性和质量关键词
-                full_prompt = f"{resolved_prompt}, {character_consistency}, {visual_style}, cinematic composition, consistent character design, same art style throughout, high quality, detailed"
+                if extra_hint:
+                    full_prompt = f"{resolved_prompt}, ({extra_hint}), {character_consistency}, {visual_style}, cinematic composition, consistent character design, same art style throughout, high quality, detailed"
+                else:
+                    full_prompt = f"{resolved_prompt}, {character_consistency}, {visual_style}, cinematic composition, consistent character design, same art style throughout, high quality, detailed"
                 
                 # 生成图片，传入角色参考图
                 image_result = await self.image_service.generate(
@@ -4175,18 +4641,31 @@ class AgentExecutor:
                         if isinstance(s, dict) and s.get("id") == shot_id and idx > 0:
                             prev = seg_shots[idx - 1]
                             if isinstance(prev, dict):
-                                prev_frame = prev.get("start_image_url")
-                                if isinstance(prev_frame, str) and prev_frame and prev_frame not in reference_images and (prev_frame.startswith("http") or prev_frame.startswith("/api/uploads/")):
-                                    reference_images.append(prev_frame)
+                                def parent_id(sid: Any) -> str:
+                                    s = _as_text(sid).strip()
+                                    if not s:
+                                        return ""
+                                    return re.sub(r"_P\\d+$", "", s)
+
+                                # Avoid chaining prev-frame references within the same split-shot group.
+                                if parent_id(prev.get("id")) != parent_id(shot_id):
+                                    prev_frame = prev.get("start_image_url")
+                                    if isinstance(prev_frame, str) and prev_frame and prev_frame not in reference_images and (prev_frame.startswith("http") or prev_frame.startswith("/api/uploads/")):
+                                        reference_images.append(prev_frame)
                             break
 
             reference_images = self._filter_reference_images(reference_images, limit=10)
 
             # 收集镜头中涉及的角色，构建角色一致性提示
             character_consistency = self._build_character_consistency_prompt(prompt, project.elements)
+
+            extra_hint = self._build_frame_prompt_hint(target_shot) if isinstance(target_shot, dict) else ""
             
             # 添加风格、角色一致性和质量关键词
-            full_prompt = f"{resolved_prompt}, {character_consistency}, {visual_style}, cinematic composition, consistent character design, same art style throughout, high quality, detailed"
+            if extra_hint:
+                full_prompt = f"{resolved_prompt}, ({extra_hint}), {character_consistency}, {visual_style}, cinematic composition, consistent character design, same art style throughout, high quality, detailed"
+            else:
+                full_prompt = f"{resolved_prompt}, {character_consistency}, {visual_style}, cinematic composition, consistent character design, same art style throughout, high quality, detailed"
             
             # 生成图片，传入角色参考图
             image_result = await self.image_service.generate(
@@ -4715,6 +5194,52 @@ class AgentExecutor:
         if consistency_parts:
             return f"maintaining character consistency: {'; '.join(consistency_parts)}"
         return ""
+
+    def _normalize_frame_prompt_key(self, prompt: Any) -> str:
+        """Normalize a shot prompt for de-duplication in start-frame generation."""
+        s = _as_text(prompt)
+        if not s:
+            return ""
+        s = s.lower()
+        s = re.sub(r"\bno[-_ ]?text\b", "", s)
+        s = re.sub(r"\[element_[a-z0-9_\-]+\]", "[element]", s, flags=re.IGNORECASE)
+        s = re.sub(r"[\"“”‘’]", "", s)
+        s = re.sub(r"[，,。.!?;；:：、]+", " ", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    def _compact_frame_hint_text(self, text: Any, max_len: int = 60) -> str:
+        s = _as_text(text).replace("\r", " ").replace("\n", " ").strip()
+        if not s:
+            return ""
+        s = s.strip(" \"“”'‘’")
+        s = re.sub(r"^(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"\[Element_[A-Za-z0-9_\-]+\]", "", s)
+        # Avoid leading punctuation like "：：我..." after removing element refs / prefixes.
+        s = s.lstrip(" :：，,;；-—").strip()
+        s = re.sub(r"\s+", " ", s).strip()
+        parts = re.split(r"[。！？.!?]", s, maxsplit=1)
+        if parts and parts[0].strip():
+            s = parts[0].strip()
+        if len(s) > max_len:
+            s = s[:max_len].rstrip(" ,，。.!?;；:：-")
+        return s
+
+    def _build_frame_prompt_hint(self, shot: Dict[str, Any], max_len: int = 60) -> str:
+        if not isinstance(shot, dict):
+            return ""
+        hint_parts: List[str] = []
+        name = _as_text(shot.get("name")).strip()
+        if name:
+            hint_parts.append(name)
+        narration_hint = self._compact_frame_hint_text(shot.get("narration"), max_len=max_len)
+        if narration_hint:
+            hint_parts.append(narration_hint)
+        if not narration_hint:
+            desc_hint = self._compact_frame_hint_text(shot.get("description"), max_len=max_len)
+            if desc_hint:
+                hint_parts.append(desc_hint)
+        return "；".join([p for p in hint_parts if p])
     
     def _collect_element_reference_images(self, prompt: Any, elements: Dict[str, Dict]) -> List[str]:
         """收集镜头中涉及的元素参考图

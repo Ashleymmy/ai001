@@ -13,11 +13,12 @@ import {
   createAgentProject, getAgentProject, updateAgentProject, listAgentProjects,
   applyAgentOperator,
   scriptDoctorAgentProject, completeAssetsAgentProject, audioCheckAgentProject,
+  refineAgentSplitVisuals,
   generateImage, generateVideo, checkVideoTaskStatus,
   generateProjectElementsStream,
   generateProjectFramesStream, generateProjectVideosStream,
-   executeProjectPipeline,
-   executeProjectPipelineV2,
+    executeProjectPipeline,
+    executeProjectPipelineV2,
    generateAgentAudio,
    getAgentAudioTimeline,
    clearAgentAudio,
@@ -234,6 +235,7 @@ export default function AgentPage() {
   const [isScriptDoctoring, setIsScriptDoctoring] = useState(false)
   const [isCompletingAssets, setIsCompletingAssets] = useState(false)
   const [isAudioChecking, setIsAudioChecking] = useState(false)
+  const [refiningSplitVisualsParentId, setRefiningSplitVisualsParentId] = useState<string | null>(null)
 
   // 生成进度状态
   const [generationProgress, setGenerationProgress] = useState<{
@@ -3029,6 +3031,43 @@ ${result.success
     }
   }
 
+  const handleRefineSplitVisuals = async (parentShotId: string) => {
+    if (!projectId) {
+      addMessage('assistant', '⚠️ 请先保存/加载 Agent 项目后再进行「AI 精修本组画面」')
+      return
+    }
+    const base = String(parentShotId || '').trim().replace(/_P\d+$/, '')
+    if (!base) {
+      addMessage('assistant', '⚠️ parentShotId 无效')
+      return
+    }
+
+    const ok = window.confirm(
+      `将调用 AI 精修「拆分镜头组」的画面提示词（description/prompt/video_prompt）。\n\n镜头组：${base}\n\n精修后需要重生成起始帧/视频才能生效。\n\n确认继续？`
+    )
+    if (!ok) return
+
+    setRefiningSplitVisualsParentId(base)
+    try {
+      const result = await refineAgentSplitVisuals(projectId, base)
+      if (!result.success || !result.project) {
+        addMessage('assistant', `❌ 精修失败：${result.error || '未知错误'}`)
+        return
+      }
+      setSegments(result.project.segments || [])
+      setHasUnsavedChanges(false)
+      addMessage('assistant', `✅ 已完成镜头组 ${base} 的画面精修。\n\n请重生成起始帧/视频以应用更新。`)
+    } catch (error) {
+      const message =
+        (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        (error as Error)?.message ||
+        '未知错误'
+      addMessage('assistant', `❌ 精修失败：${message}`)
+    } finally {
+      setRefiningSplitVisualsParentId(null)
+    }
+  }
+
   const handleAudioCheck = async (apply: boolean) => {
     if (!projectId) {
       addMessage('assistant', '⚠️ 请先保存/加载 Agent 项目后再进行「音频对齐检查」')
@@ -4202,6 +4241,8 @@ ${result.success
               onClearShotAudio={handleClearShotVoiceAudio}
               clearingAudioShotId={clearingAudioShotId}
               onOpenImportShotRefs={openImportShotRefsModal}
+              onRefineSplitVisuals={handleRefineSplitVisuals}
+              refiningSplitVisualsParentId={refiningSplitVisualsParentId}
             />
           )}
 

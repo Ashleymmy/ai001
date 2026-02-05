@@ -1054,6 +1054,18 @@ export async function completeAssetsAgentProject(
   return response.data
 }
 
+export async function refineAgentSplitVisuals(
+  projectId: string,
+  parentShotId: string
+): Promise<{ success: boolean; project?: AgentProject; error?: string }> {
+  const response = await api.post(
+    `/api/agent/projects/${projectId}/refine-split-visuals`,
+    { parentShotId },
+    { timeout: 300000 }
+  )
+  return response.data
+}
+
 export async function audioCheckAgentProject(
   projectId: string,
   options?: { includeNarration?: boolean; includeDialogue?: boolean; speed?: number; apply?: boolean }

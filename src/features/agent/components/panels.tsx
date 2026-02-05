@@ -676,7 +676,9 @@ export function StoryboardPanel({
   regeneratingAudioShotId,
   onClearShotAudio,
   clearingAudioShotId,
-  onOpenImportShotRefs
+  onOpenImportShotRefs,
+  onRefineSplitVisuals,
+  refiningSplitVisualsParentId
 }: {
   segments: AgentSegment[]
   expandedSegments: Set<string>
@@ -704,6 +706,8 @@ export function StoryboardPanel({
   onClearShotAudio?: (shotId: string) => void
   clearingAudioShotId?: string | null
   onOpenImportShotRefs?: (shotId: string) => void
+  onRefineSplitVisuals?: (parentShotId: string) => void
+  refiningSplitVisualsParentId?: string | null
 }) {
   const allShots = segments.flatMap(seg => seg.shots)
   const framesCompleted = allShots.filter(s => s.cached_start_image_url || (s.start_image_url && !isProbablyExpiredSignedUrl(s.start_image_url))).length
@@ -790,8 +794,16 @@ export function StoryboardPanel({
         </div>
       ) : (
         <>
-          {segments.map((segment) => (
-            <div key={segment.id} id={`segment-${segment.id}`} className="glass-card overflow-hidden">
+          {segments.map((segment) => {
+            const groupCounts: Record<string, number> = {}
+            for (const s of segment.shots || []) {
+              const base = String(s.id || '').replace(/_P\d+$/, '')
+              if (!base) continue
+              groupCounts[base] = (groupCounts[base] || 0) + 1
+            }
+
+            return (
+              <div key={segment.id} id={`segment-${segment.id}`} className="glass-card overflow-hidden">
               <button onClick={() => toggleSegment(segment.id)} className="w-full px-4 py-3 flex items-center gap-2 hover:bg-white/5 transition-apple">
                 {expandedSegments.has(segment.id) ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
                 <span className="font-medium text-sm flex-1 text-left">{segment.name}</span>
@@ -801,34 +813,42 @@ export function StoryboardPanel({
               {expandedSegments.has(segment.id) && (
                 <div className="px-4 pb-4 space-y-3">
                   <p className="text-sm text-gray-400">{segment.description}</p>
-                  {segment.shots.map((shot) => (
-                    <ShotCard 
-                      key={shot.id} 
-                      shot={shot} 
-                      segmentId={segment.id}
-                      elements={elements}
-                      onRetryFrame={onRetryFrame}
-                      onRetryVideo={onRetryVideo}
-                      onFavoriteImage={onFavoriteShotImage}
-                      onPreviewImage={onPreviewImage}
-                      isRetrying={retryingShot === shot.id}
-                      onUpdateShotText={onUpdateShotText}
-                      visualStyle={visualStyle}
-                      focus={focusShotRequest && focusShotRequest.shotId === shot.id ? focusShotRequest : null}
-                      onRegenerateAudio={onRegenerateShotAudio}
-                      regeneratingAudio={Boolean(regeneratingAudioShotId && regeneratingAudioShotId === shot.id)}
-                      onClearAudio={onClearShotAudio}
-                      clearingAudio={Boolean(clearingAudioShotId && clearingAudioShotId === shot.id)}
-                      onOpenImportShotRefs={onOpenImportShotRefs}
-                    />
-                  ))}
+                  {segment.shots.map((shot) => {
+                    const base = String(shot.id || '').replace(/_P\d+$/, '')
+                    const showRefine = Boolean(base && (groupCounts[base] || 0) > 1)
+                    return (
+                      <ShotCard 
+                        key={shot.id} 
+                        shot={shot} 
+                        segmentId={segment.id}
+                        elements={elements}
+                        onRetryFrame={onRetryFrame}
+                        onRetryVideo={onRetryVideo}
+                        onFavoriteImage={onFavoriteShotImage}
+                        onPreviewImage={onPreviewImage}
+                        isRetrying={retryingShot === shot.id}
+                        onUpdateShotText={onUpdateShotText}
+                        visualStyle={visualStyle}
+                        focus={focusShotRequest && focusShotRequest.shotId === shot.id ? focusShotRequest : null}
+                        onRegenerateAudio={onRegenerateShotAudio}
+                        regeneratingAudio={Boolean(regeneratingAudioShotId && regeneratingAudioShotId === shot.id)}
+                        onClearAudio={onClearShotAudio}
+                        clearingAudio={Boolean(clearingAudioShotId && clearingAudioShotId === shot.id)}
+                        onOpenImportShotRefs={onOpenImportShotRefs}
+                        onRefineSplitVisuals={onRefineSplitVisuals}
+                        refineSplitVisualsParentShotId={showRefine ? base : null}
+                        refiningSplitVisualsParentId={refiningSplitVisualsParentId}
+                      />
+                    )
+                  })}
                   <button className="w-full p-3 glass border border-dashed border-white/20 rounded-xl text-gray-500 hover:text-white text-sm flex items-center justify-center gap-2">
                     <Plus size={16} />添加镜头
                   </button>
                 </div>
               )}
             </div>
-          ))}
+            )
+          })}
           <button onClick={onAddSegment} className="w-full p-4 glass-card border border-dashed border-white/20 rounded-xl text-gray-500 hover:text-white transition-apple flex items-center justify-center gap-2">
             <Plus size={18} />添加段落
           </button>
@@ -855,7 +875,10 @@ export function ShotCard({
   regeneratingAudio,
   onClearAudio,
   clearingAudio,
-  onOpenImportShotRefs
+  onOpenImportShotRefs,
+  onRefineSplitVisuals,
+  refineSplitVisualsParentShotId,
+  refiningSplitVisualsParentId
 }: { 
   shot: AgentShot
   segmentId: string
@@ -873,6 +896,9 @@ export function ShotCard({
   onClearAudio?: (shotId: string) => void
   clearingAudio?: boolean
   onOpenImportShotRefs?: (shotId: string) => void
+  onRefineSplitVisuals?: (parentShotId: string) => void
+  refineSplitVisualsParentShotId?: string | null
+  refiningSplitVisualsParentId?: string | null
 }) {
   const [expanded, setExpanded] = useState(false)
   const [editingText, setEditingText] = useState(false)
@@ -994,6 +1020,21 @@ export function ShotCard({
           <p className="text-xs text-gray-500">{shot.description}</p>
 
           <div className="flex items-center justify-end gap-2">
+            {onRefineSplitVisuals && refineSplitVisualsParentShotId && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  onRefineSplitVisuals(refineSplitVisualsParentShotId)
+                }}
+                disabled={Boolean(refiningSplitVisualsParentId && refiningSplitVisualsParentId === refineSplitVisualsParentShotId)}
+                className="px-3 py-1.5 glass-button rounded-lg text-xs text-cyan-200 disabled:opacity-50"
+                title="AI 一键精修该拆分镜头组的画面提示词（需要重生成起始帧/视频生效）"
+              >
+                {refiningSplitVisualsParentId && refiningSplitVisualsParentId === refineSplitVisualsParentShotId ? '精修中...' : 'AI 精修本组画面'}
+              </button>
+            )}
             {onClearAudio && Boolean((shot as { voice_audio_url?: string }).voice_audio_url) && (
               <button
                 type="button"

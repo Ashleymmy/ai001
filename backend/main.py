@@ -2146,6 +2146,10 @@ class AgentAssetCompletionRequest(BaseModel):
     apply: bool = True
 
 
+class AgentRefineSplitVisualsRequest(BaseModel):
+    parentShotId: str
+
+
 class AgentAudioCheckRequest(BaseModel):
     includeNarration: bool = True
     includeDialogue: bool = True
@@ -2615,6 +2619,26 @@ async def complete_assets_project(project_id: str, request: AgentAssetCompletion
         "updates": updates,
         "project": updated_project,
     }
+
+
+@app.post("/api/agent/projects/{project_id}/refine-split-visuals")
+async def refine_split_visuals_project(project_id: str, request: AgentRefineSplitVisualsRequest):
+    """一键精修“拆分镜头组”的画面提示词（LLM）：仅更新 description/prompt/video_prompt，不改 shot id。"""
+    service = get_agent_service()
+    project = storage.get_agent_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    result = await service.refine_split_visuals(project, parent_shot_id=request.parentShotId)
+    if not result.get("success"):
+        return {"success": False, "error": result.get("error", "精修失败")}
+
+    updates = result.get("updates") or {}
+    if not isinstance(updates, dict) or not updates:
+        return {"success": False, "error": "精修未产生可应用的更新"}
+
+    updated_project = storage.update_agent_project(project_id, updates)
+    return {"success": True, "project": updated_project}
 
 
 @app.post("/api/agent/projects/{project_id}/audio-check")
@@ -3247,6 +3271,19 @@ async def generate_project_frames_stream(
                 if isinstance(shot, dict) and isinstance(shot.get("id"), str) and shot.get("id"):
                     all_shots.append((seg_id, shot))
 
+        try:
+            from collections import Counter
+            prompt_key_counts = Counter()
+            for _, s in all_shots:
+                prompt0 = s.get("prompt") if isinstance(s.get("prompt"), str) else ""
+                if not prompt0.strip():
+                    prompt0 = s.get("description") if isinstance(s.get("description"), str) else ""
+                k = executor._normalize_frame_prompt_key(prompt0)
+                if k:
+                    prompt_key_counts[k] += 1
+        except Exception:
+            prompt_key_counts = {}
+
         total = len(all_shots)
         generated = 0
         failed = 0
@@ -3312,7 +3349,18 @@ async def generate_project_frames_stream(
                 character_consistency = executor._build_character_consistency_prompt(prompt, project.elements)
 
                 # 添加风格和质量关键词
-                full_prompt = f"{resolved_prompt}, {character_consistency}, {visualStyle}, cinematic composition, consistent character design, same art style throughout, high quality, detailed"
+                prompt_key = executor._normalize_frame_prompt_key(prompt)
+                extra_hint = ""
+                try:
+                    if prompt_key and int(prompt_key_counts.get(prompt_key, 0)) > 1:
+                        extra_hint = executor._build_frame_prompt_hint(shot)
+                except Exception:
+                    extra_hint = ""
+
+                if extra_hint:
+                    full_prompt = f"{resolved_prompt}, ({extra_hint}), {character_consistency}, {visualStyle}, cinematic composition, consistent character design, same art style throughout, high quality, detailed"
+                else:
+                    full_prompt = f"{resolved_prompt}, {character_consistency}, {visualStyle}, cinematic composition, consistent character design, same art style throughout, high quality, detailed"
 
                 # 发送图片生成阶段事件
                 yield f"data: {json.dumps({'type': 'generating', 'shot_id': shot_id, 'shot_name': shot_name, 'current': current, 'total': total, 'percent': overall_percent, 'stage': 'image', 'reference_count': len(reference_images)})}\n\n"
