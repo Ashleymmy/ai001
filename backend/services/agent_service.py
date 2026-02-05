@@ -2611,6 +2611,40 @@ class AgentService:
                 # Also differentiate video prompt and description for readability and downstream generation.
                 vp0 = _as_text(ns.get("video_prompt")).strip()
                 if vp0:
+                    # Some plans put full narration text inside `video_prompt` (e.g., "旁白：[...]" or "narration: ..."),
+                    # which increases coupling and can cause reused visuals. Strip it and keep only visual guidance.
+                    def _strip_voiceover_from_video_prompt(s: str) -> str:
+                        txt = (s or "").strip()
+                        if not txt:
+                            return ""
+                        # Prefer removing quoted/bracketed voiceover blocks.
+                        for pat in (
+                            r"(?:旁白|narration|voiceover)\s*[:：]\s*\[[^\]]{0,2000}\]\s*",
+                            r"(?:旁白|narration|voiceover)\s*[:：]\s*【[^】]{0,2000}】\s*",
+                            r"(?:旁白|narration|voiceover)\s*[:：]\s*（[^）]{0,2000}）\s*",
+                            r"(?:旁白|narration|voiceover)\s*[:：]\s*\([^)]{0,2000}\)\s*",
+                            r"(?:旁白|narration|voiceover)\s*[:：]\s*“[^”]{0,2000}”\s*",
+                            r"(?:旁白|narration|voiceover)\s*[:：]\s*\"[^\"]{0,2000}\"\s*",
+                            r"(?:旁白|narration|voiceover)\s*[:：]\s*'[^']{0,2000}'\s*",
+                        ):
+                            txt = re.sub(pat, "", txt, flags=re.IGNORECASE)
+
+                        # Fallback: if still present, remove from prefix until `no-text` (keep `no-text`).
+                        txt = re.sub(
+                            r"(?:旁白|narration|voiceover)\s*[:：]\s*.*?(?=\bno[-_ ]?text\b|$)",
+                            "",
+                            txt,
+                            flags=re.IGNORECASE,
+                        )
+
+                        # Cleanup separators introduced by deletion.
+                        txt = re.sub(r"[，,;；]\s*(?=\bno[-_ ]?text\b)", "，", txt, flags=re.IGNORECASE)
+                        txt = re.sub(r"[，,;；]{2,}", "，", txt)
+                        txt = re.sub(r"\s+", " ", txt).strip(" ，,;；")
+                        return txt
+
+                    vp0 = _strip_voiceover_from_video_prompt(vp0)
+
                     focus_txt = hint_txt or composition_tag
                     if idx == 0:
                         beat_hint = f"镜头节奏（{idx+1}/{total_parts}）：先交代环境与空间关系，慢平移/缓慢推进到人物"
