@@ -535,11 +535,11 @@ class AgentService:
         text = (message or "").lower()
 
         tech_keywords = [
-            "报错", "错误", "失败", "异常", "bug", "issue", "debug", "日志", "log", "trace",
-            "接口", "api", "请求", "响应", "sse", "跨域", "cors", "端口", "8000", "5173",
-            "前端", "后端", "fastapi", "uvicorn", "react", "electron", "node", "python",
-            "怎么改", "如何修", "修复", "排查", "定位"
-        ]
+	            "报错", "错误", "失败", "异常", "bug", "issue", "debug", "日志", "log", "trace",
+	            "接口", "api", "请求", "响应", "sse", "跨域", "cors", "端口", "8001", "8000", "5174", "5173",
+	            "前端", "后端", "fastapi", "uvicorn", "react", "electron", "node", "python",
+	            "怎么改", "如何修", "修复", "排查", "定位"
+	        ]
         prompt_keywords = [
             "提示词", "prompt", "negative", "seed", "模型", "model", "分辨率", "画质", "风格", "一致性"
         ]
@@ -2490,6 +2490,19 @@ class AgentService:
                 else:
                     visual_hint = f"镜头要点（{idx+1}/{total_parts}）：{composition_tag}"
 
+                # Encourage visual diversity: map split parts to distinct shot types (wide → standard → closeup).
+                part_type_map = {0: "wide", 1: "standard", 2: "closeup"}
+                ns["type"] = part_type_map.get(idx, _as_text(ns.get("type")).strip() or "standard")
+
+                if idx == 0:
+                    beat_hint = f"镜头节奏（{idx+1}/{total_parts}）：先交代环境与空间关系，慢平移/缓慢推进到人物"
+                elif idx == 1:
+                    beat_hint = f"镜头节奏（{idx+1}/{total_parts}）：中景跟随人物动作推进，动作连贯自然"
+                elif idx == 2:
+                    beat_hint = f"镜头节奏（{idx+1}/{total_parts}）：切入情绪与关键细节特写，浅景深，微推到关键道具"
+                else:
+                    beat_hint = f"镜头节奏（{idx+1}/{total_parts}）：插入镜头，聚焦道具/环境细节"
+
                 def _split_no_text_suffix(s: str) -> (str, str):
                     base = (s or "").strip()
                     if not base:
@@ -2523,6 +2536,11 @@ class AgentService:
                         p for p in phrases
                         if "镜头要点" not in p and "本段重点" not in p and "关键帧" not in p and "只表现本段" not in p
                     ]
+                    # Drop motion/camera-move phrases from a static keyframe prompt.
+                    phrases = [
+                        p for p in phrases
+                        if not re.search(r"镜头.*(?:移动|推进|推|拉|摇|平移|跟随|转场|切入|切出)", p)
+                    ]
 
                     def contains_any(p: str, kws: List[str]) -> bool:
                         return any(k in p for k in kws)
@@ -2548,29 +2566,51 @@ class AgentService:
                     def is_detail(p: str) -> bool:
                         return contains_any(p, detail_kws)
 
+                    camera_prefix_re = re.compile(r"^(?:大?远景|全景|远景|中景|近景|特写|插入镜头)\s*[:：]?", flags=re.IGNORECASE)
+
+                    def strip_camera_distance(p: str) -> str:
+                        s2 = (p or "").strip()
+                        if not s2:
+                            return ""
+                        s2 = camera_prefix_re.sub("", s2).strip()
+                        s2 = re.sub(r"^镜头\s*[:：]?", "", s2).strip()
+                        s2 = re.sub(r"\s+", " ", s2).strip(" ，,;；")
+                        return s2
+
                     always_keep: List[str] = []
+                    always_keep_set: set = set()
                     for p in phrases:
-                        if re.search(r"\[Element_[A-Za-z0-9_\-]+\]", p):
-                            always_keep.append(p)
-                        elif is_style(p) or is_scene(p):
-                            always_keep.append(p)
+                        pc = strip_camera_distance(p)
+                        if not pc:
+                            continue
+                        if re.search(r"\[Element_[A-Za-z0-9_\-]+\]", p) or is_style(p) or is_scene(p):
+                            if pc in always_keep_set:
+                                continue
+                            always_keep_set.add(pc)
+                            always_keep.append(pc)
 
                     stage_keep: List[str] = []
+                    stage_keep_set: set = set()
                     for p in phrases:
-                        if p in always_keep:
+                        pc = strip_camera_distance(p)
+                        if not pc or pc in always_keep_set or pc in stage_keep_set:
                             continue
                         if idx == 0:
                             if is_env(p) or is_scene(p) or is_style(p):
-                                stage_keep.append(p)
+                                stage_keep.append(pc)
+                                stage_keep_set.add(pc)
                         elif idx == 1:
                             if is_action(p) or is_scene(p) or is_style(p):
-                                stage_keep.append(p)
+                                stage_keep.append(pc)
+                                stage_keep_set.add(pc)
                         elif idx == 2:
                             if is_detail(p) or is_scene(p) or is_style(p):
-                                stage_keep.append(p)
+                                stage_keep.append(pc)
+                                stage_keep_set.add(pc)
                         else:
                             if is_detail(p) or is_scene(p) or is_style(p):
-                                stage_keep.append(p)
+                                stage_keep.append(pc)
+                                stage_keep_set.add(pc)
 
                     # De-dupe while preserving order.
                     out_phrases: List[str] = []
@@ -2584,16 +2624,43 @@ class AgentService:
                         out_phrases.append(p)
 
                     # Ensure we keep some base context.
-                    min_keep = 4
+                    min_keep = 3
                     if len(out_phrases) < min_keep:
                         for p in phrases:
-                            if p and p not in seen:
-                                seen.add(p)
-                                out_phrases.append(p)
+                            pc = strip_camera_distance(p)
+                            if not pc or pc in seen:
+                                continue
+                            if idx == 0:
+                                # Establishing shot: prefer scene/env/style; avoid closeup-only cues.
+                                if not (is_env(p) or is_scene(p) or is_style(p)):
+                                    continue
+                                if "特写" in p or "近景" in p or "插入镜头" in p:
+                                    continue
+                            elif idx == 1:
+                                if not (is_action(p) or is_scene(p) or is_style(p)):
+                                    continue
+                            elif idx == 2:
+                                if not (is_detail(p) or is_scene(p) or is_style(p)):
+                                    continue
+                            else:
+                                if not (is_detail(p) or is_scene(p) or is_style(p)):
+                                    continue
+                            seen.add(pc)
+                            out_phrases.append(pc)
                             if len(out_phrases) >= min_keep:
                                 break
 
-                    out_phrases = out_phrases[:10]
+                    # Final fallback: keep a couple more phrases to avoid losing all context.
+                    if len(out_phrases) < min_keep:
+                        for p in phrases:
+                            pc = strip_camera_distance(p)
+                            if pc and pc not in seen:
+                                seen.add(pc)
+                                out_phrases.append(pc)
+                            if len(out_phrases) >= min_keep:
+                                break
+
+                    out_phrases = out_phrases[:8]
                     base2 = "，".join([p for p in out_phrases if p]).strip("，;； ")
 
                     if base2 and visual_hint:
@@ -2605,69 +2672,125 @@ class AgentService:
                     return no_text_tail
 
                 # Rewrite prompt for split parts so each part has a clearer keyframe focus.
-                if _as_text(ns.get("prompt")).strip():
-                    ns["prompt"] = _rewrite_split_part_prompt(ns.get("prompt"))
+                # Use description as fallback to ensure all split parts have a usable keyframe prompt.
+                prompt_src = ns.get("prompt") or ns.get("description") or ""
+                ns["prompt"] = _rewrite_split_part_prompt(prompt_src)
 
-                # Also differentiate video prompt and description for readability and downstream generation.
-                vp0 = _as_text(ns.get("video_prompt")).strip()
-                if vp0:
-                    # Some plans put full narration text inside `video_prompt` (e.g., "旁白：[...]" or "narration: ..."),
-                    # which increases coupling and can cause reused visuals. Strip it and keep only visual guidance.
-                    def _strip_voiceover_from_video_prompt(s: str) -> str:
-                        txt = (s or "").strip()
-                        if not txt:
+                # Also differentiate video prompt for split parts (avoid narration text + reduce coupling with start frame).
+                def _strip_voiceover_from_video_prompt(s: str) -> str:
+                    txt = (s or "").strip()
+                    if not txt:
+                        return ""
+                    # Prefer removing quoted/bracketed voiceover blocks.
+                    for pat in (
+                        r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*\[[^\]]{0,2000}\]\s*",
+                        r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*【[^】]{0,2000}】\s*",
+                        r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*（[^）]{0,2000}）\s*",
+                        r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*\([^)]{0,2000}\)\s*",
+                        r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*“[^”]{0,2000}”\s*",
+                        r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*\"[^\"]{0,2000}\"\s*",
+                        r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*'[^']{0,2000}'\s*",
+                    ):
+                        txt = re.sub(pat, "", txt, flags=re.IGNORECASE)
+
+                    # Fallback: if still present, remove from prefix until `no-text` (keep `no-text`).
+                    txt = re.sub(
+                        r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*.*?(?=\bno[-_ ]?text\b|$)",
+                        "",
+                        txt,
+                        flags=re.IGNORECASE,
+                    )
+
+                    # Cleanup separators introduced by deletion.
+                    txt = re.sub(r"[，,;；]\s*(?=\bno[-_ ]?text\b)", "，", txt, flags=re.IGNORECASE)
+                    txt = re.sub(r"[，,;；]{2,}", "，", txt)
+                    txt = re.sub(r"\s+", " ", txt).strip(" ，,;；")
+                    return txt
+
+                def _rewrite_split_part_video_prompt(src: str) -> str:
+                    raw_vp = (src or "").strip()
+                    if not raw_vp:
+                        return ""
+                    body, no_text_tail = _split_no_text_suffix(raw_vp)
+                    no_text_tail = (no_text_tail or "no subtitles, no captions, no on-screen text, no watermarks").strip()
+                    body = _strip_voiceover_from_video_prompt(body)
+
+                    drop_kws = [
+                        "镜头要点", "镜头节奏", "本段重点", "只表现本段", "避免复用", "对齐旁白",
+                        "旁白同步", "旁白", "narration", "voiceover", "对白脚本",
+                        "narratorvoiceprofile", "旁白音色", "角色音色", "音频规则",
+                    ]
+
+                    def contains_any(p: str, kws: List[str]) -> bool:
+                        return any(k in p for k in kws)
+
+                    style_kws = ["2D", "3D", "手绘", "动画", "插画", "写实", "电影感", "吉卜力", "高质量", "细腻", "笔触", "光影", "色彩", "质感", "景深", "4K", "HD"]
+                    scene_kws = ["场景", "室内", "室外", "公寓", "厨房", "客厅", "卧室", "走廊", "玄关", "门口", "街道", "医院", "学校", "办公室", "车站", "车厢", "电梯", "楼道"]
+                    env_kws = ["窗外", "雨", "暴雨", "台风", "雨夜", "夜", "清晨", "黄昏", "灯光", "霓虹", "雾", "风", "雪", "城市", "氛围", "冷", "暖", "雨幕", "阴影"]
+
+                    camera_prefix_re = re.compile(r"^(?:大?远景|全景|远景|中景|近景|特写|插入镜头)\s*[:：]?", flags=re.IGNORECASE)
+
+                    def strip_camera_distance(p: str) -> str:
+                        s2 = (p or "").strip()
+                        if not s2:
                             return ""
-                        # Prefer removing quoted/bracketed voiceover blocks.
-                        for pat in (
-                            r"(?:旁白|narration|voiceover)\s*[:：]\s*\[[^\]]{0,2000}\]\s*",
-                            r"(?:旁白|narration|voiceover)\s*[:：]\s*【[^】]{0,2000}】\s*",
-                            r"(?:旁白|narration|voiceover)\s*[:：]\s*（[^）]{0,2000}）\s*",
-                            r"(?:旁白|narration|voiceover)\s*[:：]\s*\([^)]{0,2000}\)\s*",
-                            r"(?:旁白|narration|voiceover)\s*[:：]\s*“[^”]{0,2000}”\s*",
-                            r"(?:旁白|narration|voiceover)\s*[:：]\s*\"[^\"]{0,2000}\"\s*",
-                            r"(?:旁白|narration|voiceover)\s*[:：]\s*'[^']{0,2000}'\s*",
-                        ):
-                            txt = re.sub(pat, "", txt, flags=re.IGNORECASE)
+                        s2 = camera_prefix_re.sub("", s2).strip()
+                        s2 = re.sub(r"^镜头\s*[:：]?", "", s2).strip()
+                        s2 = re.sub(r"\s+", " ", s2).strip(" ，,;；")
+                        return s2
 
-                        # Fallback: if still present, remove from prefix until `no-text` (keep `no-text`).
-                        txt = re.sub(
-                            r"(?:旁白|narration|voiceover)\s*[:：]\s*.*?(?=\bno[-_ ]?text\b|$)",
-                            "",
-                            txt,
-                            flags=re.IGNORECASE,
-                        )
+                    phrases = [p.strip() for p in re.split(r"[，,；;]+", body) if p.strip()]
+                    keep: List[str] = []
+                    for p in phrases:
+                        pl = p.lower()
+                        if any(k.lower() in pl for k in drop_kws):
+                            continue
+                        # Avoid carrying long narration blocks into video prompts.
+                        if len(p) > 220:
+                            continue
+                        if re.search(r"\[Element_[A-Za-z0-9_\-]+\]", p) or contains_any(p, style_kws) or contains_any(p, scene_kws) or contains_any(p, env_kws):
+                            keep.append(p)
 
-                        # Cleanup separators introduced by deletion.
-                        txt = re.sub(r"[，,;；]\s*(?=\bno[-_ ]?text\b)", "，", txt, flags=re.IGNORECASE)
-                        txt = re.sub(r"[，,;；]{2,}", "，", txt)
-                        txt = re.sub(r"\s+", " ", txt).strip(" ，,;；")
-                        return txt
-
-                    vp0 = _strip_voiceover_from_video_prompt(vp0)
+                    scene_parts: List[str] = []
+                    seen_scene: set = set()
+                    for p in keep:
+                        pc = strip_camera_distance(p)
+                        if not pc or pc in seen_scene:
+                            continue
+                        seen_scene.add(pc)
+                        scene_parts.append(pc)
+                    scene_parts = scene_parts[:8]
+                    scene_core = "，".join(scene_parts).strip("，;； ")
 
                     focus_txt = hint_txt or composition_tag
                     if idx == 0:
-                        beat_hint = f"镜头节奏（{idx+1}/{total_parts}）：先交代环境与空间关系，慢平移/缓慢推进到人物"
+                        motion = "镜头运动：全景/远景建立环境与空间关系，慢平移/缓慢推进到人物"
                     elif idx == 1:
-                        beat_hint = f"镜头节奏（{idx+1}/{total_parts}）：中景跟随人物动作推进，动作连贯自然"
+                        motion = "镜头运动：中景跟随人物动作推进，动作连贯自然"
                     elif idx == 2:
-                        beat_hint = f"镜头节奏（{idx+1}/{total_parts}）：切入情绪与关键细节特写，浅景深，微推到关键道具"
+                        motion = "镜头运动：特写情绪与关键细节，浅景深，微推到关键道具"
                     else:
-                        beat_hint = f"镜头节奏（{idx+1}/{total_parts}）：插入镜头，聚焦道具/环境细节"
+                        motion = "镜头运动：插入镜头，特写道具/环境细节"
 
-                    suffixes = [
+                    continuity = "保持角色/场景与起始帧一致，但动作与镜头运动只围绕本段重点"
+
+                    parts = [
+                        scene_core,
+                        motion,
+                        continuity,
                         beat_hint,
                         f"本段重点：{focus_txt}" if focus_txt else "",
                         "只表现本段重点，避免复用其他分段画面",
+                        no_text_tail,
                     ]
-                    for suf in [x for x in suffixes if x]:
-                        if suf in vp0:
-                            continue
-                        if vp0.endswith(("；", ";")):
-                            vp0 = f"{vp0}{suf}"
-                        else:
-                            vp0 = f"{vp0}；{suf}"
-                    ns["video_prompt"] = vp0
+                    return "；".join([p for p in parts if p]).strip()
+
+                vp_src = _as_text(ns.get("video_prompt")).strip()
+                if not vp_src:
+                    vp_src = _as_text(ns.get("prompt")).strip() or _as_text(ns.get("description")).strip()
+                vp_new = _rewrite_split_part_video_prompt(vp_src)
+                if vp_new:
+                    ns["video_prompt"] = vp_new
 
                 desc0 = _as_text(ns.get("description")).strip()
                 if desc0:
@@ -2710,6 +2833,31 @@ class AgentService:
             shots = seg.get("shots") or []
             if not isinstance(shots, list):
                 continue
+
+            # Idempotence guard: if a plan/segment already contains split parts (Shot_X + Shot_X_P2...),
+            # avoid splitting again to prevent shot count explosion when postprocess is applied multiple times.
+            split_base_ids: set = set()
+            for s in shots:
+                if not isinstance(s, dict):
+                    continue
+                sid = _as_text(s.get("id")).strip()
+                m = re.match(r"^(.*)_P\d+$", sid)
+                if m:
+                    split_base_ids.add(m.group(1))
+
+            def is_already_split(s: Dict[str, Any]) -> bool:
+                sid0 = _as_text(s.get("id")).strip()
+                if not sid0:
+                    return False
+                if sid0 in split_base_ids:
+                    return True
+                if re.match(r"^.+_P\d+$", sid0):
+                    return True
+                name0 = _as_text(s.get("name")).strip()
+                if name0 and re.search(r"[（(]\d+/\d+[）)]", name0):
+                    return True
+                return False
+
             next_shots: List[Dict[str, Any]] = []
             used_ids: set = set()
             for shot in shots:
@@ -2719,7 +2867,10 @@ class AgentService:
                 declared = self._coerce_duration_seconds(shot.get("duration"), default=5.0)
                 shot["duration"] = str(_ceil_to_half(_clamp(declared, 2.0, max_shot_seconds)) or 2.0)
 
-                for ns in self._split_shot_by_audio(shot, speed_ratio=speed_ratio, max_shot_seconds=max_shot_seconds):
+                split_iter = [dict(shot)] if is_already_split(shot) else self._split_shot_by_audio(
+                    shot, speed_ratio=speed_ratio, max_shot_seconds=max_shot_seconds
+                )
+                for ns in split_iter:
                     sid = _as_text(ns.get("id")).strip()
                     if not sid:
                         sid = f"Shot_{uuid.uuid4().hex[:8].upper()}"
@@ -2794,6 +2945,170 @@ class AgentService:
                 continue
             s["prompt"] = inject(prompt, hint)
 
+    def _decouple_plan_video_prompts(self, plan: Dict[str, Any]) -> None:
+        """Reduce coupling between `prompt` (start frame) and `video_prompt` (video motion).
+
+        - Strip any embedded voiceover/narration text from `video_prompt` (it's already in `narration`).
+        - If `video_prompt` is missing or overly similar to `prompt`, synthesize a concise motion-focused video_prompt.
+        """
+        if not isinstance(plan, dict):
+            return
+        segs = plan.get("segments") or []
+        if not isinstance(segs, list):
+            return
+
+        def normalize_key(s: str) -> str:
+            t = (s or "").lower()
+            t = re.sub(r"\bno[-_ ]?text\b", "", t)
+            t = re.sub(r"no subtitles?,?\s*no captions?,?\s*no on-screen text,?\s*no watermarks?", "", t)
+            t = re.sub(r"\[element_[a-z0-9_-]+\]", "[element]", t, flags=re.IGNORECASE)
+            t = re.sub(r"[\"“”‘’']", "", t)
+            t = re.sub(r"[，,。.!?;；:：、]+", " ", t)
+            t = re.sub(r"\s+", " ", t).strip()
+            return t
+
+        def strip_voiceover_blocks(s: str) -> str:
+            txt = (s or "").strip()
+            if not txt:
+                return ""
+            for pat in (
+                r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*\[[^\]]{0,2000}\]\s*",
+                r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*【[^】]{0,2000}】\s*",
+                r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*（[^）]{0,2000}）\s*",
+                r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*\([^)]{0,2000}\)\s*",
+                r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*“[^”]{0,2000}”\s*",
+                r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*\"[^\"]{0,2000}\"\s*",
+                r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*'[^']{0,2000}'\s*",
+                r"对齐旁白\s*[:：]\s*“[^”]{0,2000}”\s*",
+                r"对齐旁白\s*[:：]\s*\"[^\"]{0,2000}\"\s*",
+                r"对齐旁白\s*[:：]\s*'[^']{0,2000}'\s*",
+            ):
+                txt = re.sub(pat, "", txt, flags=re.IGNORECASE | re.DOTALL)
+
+            txt = re.sub(
+                r"(?:旁白同步|旁白|narration|voiceover|对齐旁白)\s*[:：]\s*.*?(?=\bno[-_ ]?text\b|$)",
+                "",
+                txt,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            txt = re.sub(r"[，,;；]{2,}", "，", txt)
+            txt = re.sub(r"\s+", " ", txt).strip(" ，,;；")
+            return txt
+
+        def ensure_no_text_tail(s: str) -> str:
+            txt = (s or "").strip()
+            if not txt:
+                return ""
+            if re.search(r"\bno[-_ ]?text\b", txt, flags=re.IGNORECASE):
+                return txt
+            if re.search(r"\bno subtitles\b", txt, flags=re.IGNORECASE):
+                return txt
+            tail = "no subtitles, no captions, no on-screen text, no watermarks"
+            return f"{txt}；{tail}".strip()
+
+        def contains_any(p: str, kws: List[str]) -> bool:
+            return any(k in p for k in kws)
+
+        style_kws = ["2D", "3D", "手绘", "动画", "插画", "写实", "电影感", "吉卜力", "高质量", "细腻", "笔触", "光影", "色彩", "质感", "景深", "4K", "HD"]
+        scene_kws = ["场景", "室内", "室外", "公寓", "厨房", "客厅", "卧室", "走廊", "玄关", "门口", "街道", "医院", "学校", "办公室", "车站", "车厢", "电梯", "楼道"]
+        env_kws = ["窗外", "雨", "暴雨", "台风", "雨夜", "夜", "清晨", "黄昏", "灯光", "霓虹", "雾", "风", "雪", "城市", "氛围", "冷", "暖", "雨幕", "阴影"]
+
+        camera_prefix_re = re.compile(r"^(?:大?远景|全景|远景|中景|近景|特写|插入镜头)\s*[:：]?", flags=re.IGNORECASE)
+
+        def strip_camera_distance(p: str) -> str:
+            s2 = (p or "").strip()
+            if not s2:
+                return ""
+            s2 = camera_prefix_re.sub("", s2).strip()
+            s2 = re.sub(r"^镜头\s*[:：]?", "", s2).strip()
+            s2 = re.sub(r"\s+", " ", s2).strip(" ，,;；")
+            return s2
+
+        motion_map = {
+            "standard": "自然流畅的角色动作与轻微镜头运动，避免突兀跳切",
+            "quick": "节奏更快的动作与镜头移动，但保持画面稳定不眩晕",
+            "closeup": "以角色表情与细节为主，轻微推拉或微摇镜头",
+            "wide": "展示环境与空间关系，缓慢平移/推进镜头，氛围感强",
+            "montage": "更强的节奏感与剪辑感，多段动作连贯但不杂乱",
+        }
+
+        for seg in segs:
+            if not isinstance(seg, dict):
+                continue
+            shots = seg.get("shots") or []
+            if not isinstance(shots, list):
+                continue
+            for shot in shots:
+                if not isinstance(shot, dict):
+                    continue
+
+                prompt_src = _as_text(shot.get("prompt")).strip() or _as_text(shot.get("description")).strip()
+                vp_raw = _as_text(shot.get("video_prompt") or shot.get("videoPrompt")).strip()
+
+                vp_clean = ensure_no_text_tail(strip_voiceover_blocks(vp_raw)) if vp_raw else ""
+
+                # If video_prompt is missing, or too close to the keyframe prompt, synthesize a motion-focused one.
+                need_synth = False
+                if not vp_clean:
+                    need_synth = True
+                elif prompt_src:
+                    nk_vp = normalize_key(vp_clean)
+                    nk_pr = normalize_key(prompt_src)
+                    if nk_vp and nk_pr:
+                        if nk_vp == nk_pr:
+                            need_synth = True
+                        else:
+                            a, b = nk_vp, nk_pr
+                            if (a in b or b in a) and (min(len(a), len(b)) / max(len(a), len(b)) > 0.88):
+                                need_synth = True
+
+                if need_synth:
+                    scene_src = _as_text(shot.get("description")).strip() or prompt_src or _as_text(shot.get("name")).strip()
+                    # Remove any lingering no-text for scene extraction.
+                    scene_src = re.sub(r"\bno[-_ ]?text\b", "", scene_src, flags=re.IGNORECASE).strip(" ，,;；")
+                    phrases = [p.strip() for p in re.split(r"[，,；;]+", scene_src) if p.strip()]
+
+                    keep: List[str] = []
+                    for p in phrases:
+                        if len(p) > 220:
+                            continue
+                        if re.search(r"\[Element_[A-Za-z0-9_-]+\]", p) or contains_any(p, style_kws) or contains_any(p, scene_kws) or contains_any(p, env_kws):
+                            keep.append(p)
+
+                    scene_parts: List[str] = []
+                    seen_scene: set = set()
+                    for p in keep:
+                        pc = strip_camera_distance(p)
+                        if not pc or pc in seen_scene:
+                            continue
+                        seen_scene.add(pc)
+                        scene_parts.append(pc)
+                    scene_core = "，".join(scene_parts[:8]).strip("，;； ")
+
+                    focus_src = (
+                        shot.get("narration")
+                        or shot.get("dialogue_script")
+                        or shot.get("description")
+                        or shot.get("name")
+                    )
+                    focus = self._compact_frame_hint_text(focus_src, max_len=48)
+
+                    shot_type = _as_text(shot.get("type")).strip() or "standard"
+                    motion = motion_map.get(shot_type, "自然流畅的动作与适度镜头运动")
+
+                    parts = [
+                        scene_core,
+                        f"镜头运动：{motion}",
+                        f"本段重点：{focus}" if focus else "",
+                        "保持角色/场景一致性，画面动作与镜头运动只围绕本段重点",
+                        "避免与其他镜头画面重复",
+                        "no subtitles, no captions, no on-screen text, no watermarks",
+                    ]
+                    shot["video_prompt"] = "；".join([p for p in parts if p]).strip()
+                else:
+                    if vp_clean and vp_clean != vp_raw:
+                        shot["video_prompt"] = vp_clean
+
     def _postprocess_audio_driven_plan(self, plan: Dict[str, Any], user_request: str) -> Dict[str, Any]:
         if not isinstance(plan, dict):
             return plan
@@ -2818,6 +3133,8 @@ class AgentService:
 
         # After splitting, de-duplicate start-frame prompts to reduce repeated frames.
         self._dedupe_plan_start_frame_prompts(plan)
+        # Also keep video prompts motion-focused and avoid embedding voiceover text.
+        self._decouple_plan_video_prompts(plan)
         return plan
     
     async def script_doctor(self, project: Dict[str, Any], mode: str = "expand") -> Dict[str, Any]:
@@ -4324,9 +4641,37 @@ class AgentExecutor:
         """
         explicit = shot.get("video_prompt") or shot.get("videoPrompt")
         if isinstance(explicit, str) and explicit.strip():
-            return explicit.strip()
+            vp = explicit.strip()
 
-        base_scene = shot.get("prompt") or shot.get("description") or ""
+            # Defensive cleanup: avoid embedding full narration/voiceover text in video prompts.
+            try:
+                for pat in (
+                    r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*\[[^\]]{0,2000}\]\s*",
+                    r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*【[^】]{0,2000}】\s*",
+                    r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*（[^）]{0,2000}）\s*",
+                    r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*\([^)]{0,2000}\)\s*",
+                    r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*“[^”]{0,2000}”\s*",
+                    r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*\"[^\"]{0,2000}\"\s*",
+                    r"(?:旁白同步|旁白|narration|voiceover)\s*[:：]\s*'[^']{0,2000}'\s*",
+                    r"对齐旁白\s*[:：]\s*“[^”]{0,2000}”\s*",
+                    r"对齐旁白\s*[:：]\s*\"[^\"]{0,2000}\"\s*",
+                    r"对齐旁白\s*[:：]\s*'[^']{0,2000}'\s*",
+                ):
+                    vp = re.sub(pat, "", vp, flags=re.IGNORECASE | re.DOTALL)
+                vp = re.sub(
+                    r"(?:旁白同步|旁白|narration|voiceover|对齐旁白)\s*[:：]\s*.*?(?=\bno[-_ ]?text\b|$)",
+                    "",
+                    vp,
+                    flags=re.IGNORECASE | re.DOTALL,
+                )
+                vp = re.sub(r"\s+", " ", vp).strip(" ，,;；")
+            except Exception:
+                vp = explicit.strip()
+
+            return vp
+
+        # Prefer description for video prompts (keyframe `prompt` tends to be more static / more coupled).
+        base_scene = shot.get("description") or shot.get("prompt") or ""
         if not isinstance(base_scene, str):
             base_scene = ""
 
@@ -4430,8 +4775,9 @@ class AgentExecutor:
         no_text = "no subtitles, no captions, no on-screen text, no watermarks"
 
         sync_hint = ""
-        if mode == "video_dialogue" and narration.strip():
-            sync_hint = f"视觉节奏与旁白同步（旁白由 TTS 生成，不在视频里朗读）：{narration.strip()}"
+        if narration.strip():
+            # Do NOT embed full narration text here; it causes prompt duplication and can confuse video generation.
+            sync_hint = "视觉节奏与旁白长度匹配（旁白由 TTS 生成，不在视频里朗读）"
 
         parts = [p for p in [
             resolved_scene.strip(),

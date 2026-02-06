@@ -135,7 +135,7 @@ go run main.go
 ```
 
 启动后访问：
-- 主项目前端: http://localhost:5173
+- 主项目前端: http://localhost:5174
 - Huobao Drama: http://localhost:5678
 
 ## 🔧 故障排除

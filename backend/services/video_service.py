@@ -901,7 +901,12 @@ class VideoService:
                 f.write(content)
             
             # 返回本地文件路径（需要后端提供静态文件服务）
-            return f"http://localhost:8000/api/videos/ref/{filename}"
+            port_raw = os.getenv("AI_STORYBOARDER_PORT") or os.getenv("BACKEND_PORT") or os.getenv("PORT") or "8001"
+            try:
+                port = int(port_raw)
+            except Exception:
+                port = 8001
+            return f"http://localhost:{port}/api/videos/ref/{filename}"
         except Exception as e:
             print(f"[VideoService] 保存图片失败: {e}")
             return image_data

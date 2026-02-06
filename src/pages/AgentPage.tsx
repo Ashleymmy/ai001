@@ -104,14 +104,14 @@ function resolveMediaUrl(url?: string | null) {
   if (!u) return ''
   if (/^(data:|blob:)/i.test(u)) return u
   if (/^https?:/i.test(u)) return isProbablyExpiredSignedUrl(u) ? '' : u
-  if (u.startsWith('/api/')) return `http://localhost:8000${u}`
+  if (u.startsWith('/api/')) return `http://localhost:8001${u}`
   return u
 }
 
 function canonicalizeMediaUrl(url: string) {
   const u = (url || '').trim()
   if (!u) return ''
-  return u.replace(/^https?:\/\/(?:localhost|127\.0\.0\.1):8000(?=\/api\/)/i, '')
+  return u.replace(/^https?:\/\/(?:localhost|127\.0\.0\.1):8001(?=\/api\/)/i, '')
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

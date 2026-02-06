@@ -82,7 +82,7 @@ npm run start
 # 或者：手动分别启动
 # 终端 1 - 启动后端
 cd backend
-python -m uvicorn main:app --reload --port 8000
+python -m uvicorn main:app --reload --port 8001
 
 # 终端 2 - 启动前端
 npm run dev
@@ -93,7 +93,7 @@ npm run dev
 npm run electron:dev
 ```
 
-访问 http://localhost:5173 开始使用
+访问 http://localhost:5174 开始使用
 
 ## 📁 项目结构
 

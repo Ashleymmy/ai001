@@ -20,7 +20,7 @@ function resolveMediaUrl(url?: string | null) {
   if (!u) return ''
   if (/^(data:|blob:)/i.test(u)) return u
   if (/^https?:/i.test(u)) return u
-  if (u.startsWith('/api/')) return `http://localhost:8000${u}`
+  if (u.startsWith('/api/')) return `http://localhost:8001${u}`
   return u
 }
 

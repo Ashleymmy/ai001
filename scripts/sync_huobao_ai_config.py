@@ -268,7 +268,7 @@ def _upsert_one(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Sync AI Storyboarder settings into Huobao Drama demo (preload only).")
-    parser.add_argument("--main", dest="main_base", default="http://localhost:8000", help="Main backend base URL")
+    parser.add_argument("--main", dest="main_base", default="http://localhost:8001", help="Main backend base URL")
     parser.add_argument("--demo", dest="demo_base", default="http://localhost:5678", help="Demo (Huobao) base URL")
     parser.add_argument("--timeout", dest="timeout", type=float, default=20.0, help="Health check timeout seconds")
     args = parser.parse_args()
@@ -390,4 +390,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

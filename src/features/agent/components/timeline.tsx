@@ -29,7 +29,7 @@ export function TimelinePanel({
     const u = (url || '').trim()
     if (!u) return ''
     if (/^(https?:|data:|blob:)/i.test(u)) return u
-    if (u.startsWith('/api/')) return `http://localhost:8000${u}`
+    if (u.startsWith('/api/')) return `http://localhost:8001${u}`
     return u
   }
 

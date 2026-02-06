@@ -5187,4 +5187,9 @@ async def get_project_generation_status(project_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port_raw = os.getenv("AI_STORYBOARDER_PORT") or os.getenv("BACKEND_PORT") or os.getenv("PORT") or "8001"
+    try:
+        port = int(port_raw)
+    except Exception:
+        port = 8001
+    uvicorn.run(app, host="0.0.0.0", port=port)

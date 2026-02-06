@@ -54,7 +54,7 @@ function createWindow() {
 
   // 开发环境加载 Vite 服务器，生产环境加载打包文件
   if (process.env.NODE_ENV === 'development' || !app.isPackaged) {
-    mainWindow.loadURL('http://localhost:5173')
+    mainWindow.loadURL('http://localhost:5174')
     mainWindow.webContents.openDevTools()
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
@@ -76,7 +76,8 @@ function createWindow() {
 function startPythonBackend() {
   return new Promise((resolve, reject) => {
     let pythonPath, args, cwd
-
+    const backendPort = process.env.AI_STORYBOARDER_PORT || process.env.BACKEND_PORT || '8001'
+    
     if (app.isPackaged) {
       // 打包后使用 PyInstaller 生成的 exe
       const exePath = path.join(process.resourcesPath, 'backend', 'backend-server.exe')
@@ -87,12 +88,12 @@ function startPythonBackend() {
       } else {
         // 如果没有 exe，尝试使用 Python
         pythonPath = 'python'
-        args = ['-m', 'uvicorn', 'main:app', '--port', '8000']
+        args = ['-m', 'uvicorn', 'main:app', '--port', backendPort]
         cwd = path.join(process.resourcesPath, 'backend')
       }
     } else {
       pythonPath = 'python'
-      args = ['-m', 'uvicorn', 'main:app', '--port', '8000']
+      args = ['-m', 'uvicorn', 'main:app', '--port', backendPort]
       cwd = path.join(__dirname, '../backend')
     }
 

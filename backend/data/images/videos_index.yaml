@@ -1,4 +1,28 @@
 videos:
+- id: '85547922'
+  task_id: cgt-20260205180006-pg6mg
+  source_image: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021770285493601b4352c6bd7f3c350e703a707efabdbce679acc_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260205%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260205T095833Z&X-Tos-Expires=86400&X-Tos-Signature=322be702468e85b5fc0b57525c5945c8e26ccfd939c645a31e18333f6835771b&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  prompt: 窗外雨丝斜飘；镜头运动：中景跟随人物动作推进，动作连贯自然；保持角色/场景与起始帧一致，但动作与镜头运动只围绕本段重点；镜头节奏（2/2）：中景跟随人物动作推进，动作连贯自然；本段重点：张楠刚下夜班，正揉着酸胀的肩膀煮姜茶；只表现本段重点，避免复用其他分段画面；no-text
+  video_url: https://ark-content-generation-cn-beijing.tos-cn-beijing.volces.com/doubao-seedance-1-5-pro/02177028560745800000000000000000000ffffac15af9c5fe71b.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260205%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260205T100045Z&X-Tos-Expires=86400&X-Tos-Signature=97442e9af8f8df99613f2f446cbf180595122a6ebdb900af9b87bb6033b8eeb9&X-Tos-SignedHeaders=host
+  status: completed
+  provider: custom_ca16b98f
+  model: doubao-seedance-1-5-pro-251215
+  duration: 5.0
+  seed: 0
+  created_at: '2026-02-05T18:00:06.902701'
+  updated_at: '2026-02-05T18:00:46.260591'
+- id: fa7d838d
+  task_id: cgt-20260205175850-4cbpv
+  source_image: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217702854757314db6a13687dd28312818ff47c869db0ac236d6_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260205%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260205T095809Z&X-Tos-Expires=86400&X-Tos-Signature=f9990d2238b6caad6eb7e66454b6f3516180a2c360b141a579b477f1e6c05c7f&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFya192MS5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUscF8xMTY%3D%2Cx_102%2Cy_102
+  prompt: 窗外雨丝斜飘；镜头运动：全景/远景建立环境与空间关系，慢平移/缓慢推进到人物；保持角色/场景与起始帧一致，但动作与镜头运动只围绕本段重点；镜头节奏（1/2）：先交代环境与空间关系，慢平移/缓慢推进到人物；本段重点：台风过境的暴雨夜，整座城市被裹在密不透风的雨幕里；只表现本段重点，避免复用其他分段画面；no-text
+  video_url: https://ark-content-generation-cn-beijing.tos-cn-beijing.volces.com/doubao-seedance-1-5-pro/02177028553210000000000000000000000ffffac15af9c322b0b.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260205%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260205T095950Z&X-Tos-Expires=86400&X-Tos-Signature=f62687de769bdf434fb339659872cf537056064146ea6d124ad2721dccb0310f&X-Tos-SignedHeaders=host
+  status: completed
+  provider: custom_ca16b98f
+  model: doubao-seedance-1-5-pro-251215
+  duration: 6.0
+  seed: 0
+  created_at: '2026-02-05T17:58:51.023231'
+  updated_at: '2026-02-05T17:59:53.523960'
 - id: 632ee265
   task_id: cgt-20260203085804-25dmv
   source_image: /api/images/video_src_632ee265.jpg
@@ -913,4 +937,4 @@ videos:
   seed: 0
   created_at: '2026-01-02T18:16:07.655581'
   updated_at: '2026-01-02T18:18:23.918478'
-updated_at: '2026-02-03T08:58:02.385723'
+updated_at: '2026-02-05T18:00:06.902701'

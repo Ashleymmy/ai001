@@ -167,12 +167,12 @@ export function ElementsPanel({
   const [uploadingNewElement, setUploadingNewElement] = useState(false)
 
   const resolveMediaUrl = (url?: string | null) => {
-    const u = (url || '').trim()
-    if (!u) return ''
-    if (/^(https?:|data:|blob:)/i.test(u)) return isProbablyExpiredSignedUrl(u) ? '' : u
-    if (u.startsWith('/api/')) return `http://localhost:8000${u}`
-    return u
-  }
+	    const u = (url || '').trim()
+	    if (!u) return ''
+	    if (/^(https?:|data:|blob:)/i.test(u)) return isProbablyExpiredSignedUrl(u) ? '' : u
+	    if (u.startsWith('/api/')) return `http://localhost:8001${u}`
+	    return u
+	  }
   
   return (
     <div className="space-y-4">
@@ -934,12 +934,12 @@ export function ShotCard({
   const shotRefs = Array.isArray(shot.reference_images) ? shot.reference_images : []
 
   const resolveMediaUrl = (url?: string | null) => {
-    const u = (url || '').trim()
-    if (!u) return ''
-    if (/^(https?:|data:|blob:)/i.test(u)) return isProbablyExpiredSignedUrl(u) ? '' : u
-    if (u.startsWith('/api/')) return `http://localhost:8000${u}`
-    return u
-  }
+	    const u = (url || '').trim()
+	    if (!u) return ''
+	    if (/^(https?:|data:|blob:)/i.test(u)) return isProbablyExpiredSignedUrl(u) ? '' : u
+	    if (u.startsWith('/api/')) return `http://localhost:8001${u}`
+	    return u
+	  }
 
   const startFrameHistory = Array.isArray(shot.start_image_history) ? shot.start_image_history : []
   const startFrameCandidates = [shot.cached_start_image_url, shot.start_image_url, startFrameHistory[0]?.url]

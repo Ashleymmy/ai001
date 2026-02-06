@@ -44,20 +44,20 @@ echo  ════════════════════════�
 echo   启动服务中...
 echo  ═══════════════════════════════════════════════════════════════
 echo.
-echo   前端: http://localhost:5173
-echo   后端: http://localhost:8000
-echo   API:  http://localhost:8000/docs
+echo   前端: http://localhost:5174
+echo   后端: http://localhost:8001
+echo   API:  http://localhost:8001/docs
 echo.
 
 :: 启动后端（后台运行，输出到当前窗口）
 echo  [启动] 后端服务...
-start /b cmd /c "cd /d "%~dp0backend" && python -m uvicorn main:app --reload --port 8000 --host 0.0.0.0"
+start /b cmd /c "cd /d "%~dp0backend" && python -m uvicorn main:app --reload --port 8001 --host 0.0.0.0"
 
 :: 等待后端启动
 timeout /t 2 /nobreak >nul
 
 :: 启动浏览器（6秒后）
-start /b cmd /c "timeout /t 6 /nobreak >nul && start http://localhost:5173"
+start /b cmd /c "timeout /t 6 /nobreak >nul && start http://localhost:5174"
 
 :: 启动前端（前台运行）
 echo  [启动] 前端服务...

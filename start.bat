@@ -86,8 +86,8 @@ echo ═════════════════════════
 echo.
 
 :: 启动后端 (新窗口，带标题)
-echo [启动] 正在启动后端服务 (端口 8000)...
-start "🔧 AI Storyboarder - 后端服务" cmd /k "cd /d "%PROJECT_DIR%backend" && color 0E && echo. && echo  ╔═══════════════════════════════════════╗ && echo  ║  🔧 后端服务 - FastAPI + Uvicorn     ║ && echo  ║  端口: 8000                           ║ && echo  ╚═══════════════════════════════════════╝ && echo. && python -m uvicorn main:app --reload --port 8000 --host 0.0.0.0"
+echo [启动] 正在启动后端服务 (端口 8001)...
+start "🔧 AI Storyboarder - 后端服务" cmd /k "cd /d "%PROJECT_DIR%backend" && color 0E && echo. && echo  ╔═══════════════════════════════════════╗ && echo  ║  🔧 后端服务 - FastAPI + Uvicorn     ║ && echo  ║  端口: 8001                           ║ && echo  ╚═══════════════════════════════════════╝ && echo. && python -m uvicorn main:app --reload --port 8001 --host 0.0.0.0"
 
 :: 等待后端启动
 echo [等待] 等待后端服务启动...
@@ -101,8 +101,8 @@ if "%HUOBAO_ENABLED%"=="1" (
 )
 
 :: 启动前端 (新窗口，带标题)
-echo [启动] 正在启动前端服务 (端口 5173)...
-start "🎨 AI Storyboarder - 前端服务" cmd /k "cd /d "%PROJECT_DIR%" && color 0A && echo. && echo  ╔═══════════════════════════════════════╗ && echo  ║  🎨 前端服务 - Vite + React           ║ && echo  ║  端口: 5173                           ║ && echo  ╚═══════════════════════════════════════╝ && echo. && npm run dev"
+echo [启动] 正在启动前端服务 (端口 5174)...
+start "🎨 AI Storyboarder - 前端服务" cmd /k "cd /d "%PROJECT_DIR%" && color 0A && echo. && echo  ╔═══════════════════════════════════════╗ && echo  ║  🎨 前端服务 - Vite + React           ║ && echo  ║  端口: 5174                           ║ && echo  ╚═══════════════════════════════════════╝ && echo. && npm run dev"
 
 :: 等待前端启动
 echo [等待] 等待前端服务启动...
@@ -111,7 +111,7 @@ timeout /t 5 /nobreak >nul
 if "%HUOBAO_ENABLED%"=="1" (
     echo.
     echo [同步] 预加载主项目 API 配置到 demo（默认禁用，可在 demo 的 AI配置 页面启用）...
-    python "scripts\\sync_huobao_ai_config.py" --main http://localhost:8000 --demo http://localhost:5678
+    python "scripts\\sync_huobao_ai_config.py" --main http://localhost:8001 --demo http://localhost:5678
 )
 
 echo.
@@ -119,9 +119,9 @@ echo ═════════════════════════
 echo  ✅ 服务已启动！
 echo ══════════════════════════════════════════════════════════════
 echo.
-echo  📌 前端地址: http://localhost:5173
-echo  📌 后端地址: http://localhost:8000
-echo  📌 API 文档: http://localhost:8000/docs
+echo  📌 前端地址: http://localhost:5174
+echo  📌 后端地址: http://localhost:8001
+echo  📌 API 文档: http://localhost:8001/docs
 if "%HUOBAO_ENABLED%"=="1" echo  📌 demo Go:  http://localhost:5678
 echo.
 echo  💡 提示:
@@ -134,7 +134,7 @@ echo.
 pause >nul
 
 :: 打开浏览器
-start http://localhost:5173
+start http://localhost:5174
 
 echo.
 echo  🎉 浏览器已打开，祝你创作愉快！

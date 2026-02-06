@@ -131,7 +131,7 @@ Write-Host ""
 # 启动后端
 Write-ColorText "[启动] 后端服务 (FastAPI)..." "Yellow"
 $backendScript = @"
-`$Host.UI.RawUI.WindowTitle = '🔧 后端服务 - Port 8000'
+`$Host.UI.RawUI.WindowTitle = '🔧 后端服务 - Port 8001'
 `$Host.UI.RawUI.BackgroundColor = 'DarkBlue'
 Clear-Host
 Write-Host ''
@@ -139,16 +139,16 @@ Write-Host '  ╔═════════════════════
 Write-Host '  ║                                                           ║' -ForegroundColor Cyan
 Write-Host '  ║   🔧 AI Storyboarder 后端服务                             ║' -ForegroundColor Cyan
 Write-Host '  ║                                                           ║' -ForegroundColor Cyan
-Write-Host '  ║   端口: 8000                                              ║' -ForegroundColor Cyan
+Write-Host '  ║   端口: 8001                                              ║' -ForegroundColor Cyan
 Write-Host '  ║   框架: FastAPI + Uvicorn                                 ║' -ForegroundColor Cyan
-Write-Host '  ║   API文档: http://localhost:8000/docs                     ║' -ForegroundColor Cyan
+Write-Host '  ║   API文档: http://localhost:8001/docs                     ║' -ForegroundColor Cyan
 Write-Host '  ║                                                           ║' -ForegroundColor Cyan
 Write-Host '  ╚═══════════════════════════════════════════════════════════╝' -ForegroundColor Cyan
 Write-Host ''
 Write-Host '  [状态] 服务启动中...' -ForegroundColor Yellow
 Write-Host ''
 Set-Location '$ProjectDir\backend'
-python -m uvicorn main:app --reload --port 8000 --host 0.0.0.0
+python -m uvicorn main:app --reload --port 8001 --host 0.0.0.0
 "@
 
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendScript
@@ -178,7 +178,7 @@ go run main.go
 # 启动前端
 Write-ColorText "[启动] 前端服务 (Vite)..." "Yellow"
 $frontendScript = @"
-`$Host.UI.RawUI.WindowTitle = '🎨 前端服务 - Port 5173'
+`$Host.UI.RawUI.WindowTitle = '🎨 前端服务 - Port 5174'
 `$Host.UI.RawUI.BackgroundColor = 'DarkGreen'
 Clear-Host
 Write-Host ''
@@ -186,9 +186,9 @@ Write-Host '  ╔═════════════════════
 Write-Host '  ║                                                           ║' -ForegroundColor Green
 Write-Host '  ║   🎨 AI Storyboarder 前端服务                             ║' -ForegroundColor Green
 Write-Host '  ║                                                           ║' -ForegroundColor Green
-Write-Host '  ║   端口: 5173                                              ║' -ForegroundColor Green
+Write-Host '  ║   端口: 5174                                              ║' -ForegroundColor Green
 Write-Host '  ║   框架: Vite + React + TypeScript                         ║' -ForegroundColor Green
-Write-Host '  ║   地址: http://localhost:5173                             ║' -ForegroundColor Green
+Write-Host '  ║   地址: http://localhost:5174                             ║' -ForegroundColor Green
 Write-Host '  ║                                                           ║' -ForegroundColor Green
 Write-Host '  ╚═══════════════════════════════════════════════════════════╝' -ForegroundColor Green
 Write-Host ''
@@ -216,17 +216,17 @@ $huobaoReady = $false
 while ($waited -lt $maxWait -and (-not $backendReady -or -not $frontendReady -or ($huobaoEnabled -and -not $huobaoReady))) {
     # 检查后端
     if (-not $backendReady) {
-        if (Test-Port 8000) {
+        if (Test-Port 8001) {
             $backendReady = $true
-            Write-ColorText "  ✓ 后端服务已就绪 (http://localhost:8000)" "Green"
+            Write-ColorText "  ✓ 后端服务已就绪 (http://localhost:8001)" "Green"
         }
     }
 
     # 检查前端
     if (-not $frontendReady) {
-        if (Test-Port 5173) {
+        if (Test-Port 5174) {
             $frontendReady = $true
-            Write-ColorText "  ✓ 前端服务已就绪 (http://localhost:5173)" "Green"
+            Write-ColorText "  ✓ 前端服务已就绪 (http://localhost:5174)" "Green"
         }
     }
 
@@ -252,9 +252,9 @@ if ($backendReady -and $frontendReady -and (-not $huobaoEnabled -or $huobaoReady
     Write-ColorText "  ✅ 所有服务已启动！" "Green"
     Write-ColorText "═══════════════════════════════════════════════════════════════════" "DarkGray"
     Write-Host ""
-    Write-ColorText "  📌 前端地址: http://localhost:5173" "Cyan"
-    Write-ColorText "  📌 后端地址: http://localhost:8000" "Cyan"
-    Write-ColorText "  📌 API 文档: http://localhost:8000/docs" "Cyan"
+    Write-ColorText "  📌 前端地址: http://localhost:5174" "Cyan"
+    Write-ColorText "  📌 后端地址: http://localhost:8001" "Cyan"
+    Write-ColorText "  📌 API 文档: http://localhost:8001/docs" "Cyan"
     if ($huobaoEnabled) {
         Write-ColorText "  📌 demo Go:  http://localhost:5678" "Cyan"
     }
@@ -262,7 +262,7 @@ if ($backendReady -and $frontendReady -and (-not $huobaoEnabled -or $huobaoReady
         Write-Host ""
         Write-ColorText "[同步] 预加载主项目 API 配置到 demo（默认禁用，可在 demo 的 AI配置 页面启用）..." "Yellow"
         try {
-            python scripts/sync_huobao_ai_config.py --main http://localhost:8000 --demo http://localhost:5678
+            python scripts/sync_huobao_ai_config.py --main http://localhost:8001 --demo http://localhost:5678
         } catch {
             Write-ColorText "  ⚠️ 同步失败：$($_.Exception.Message)" "Yellow"
         }
@@ -282,7 +282,7 @@ if ($backendReady -and $frontendReady -and (-not $huobaoEnabled -or $huobaoReady
     $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 
     if ($key.Character -ne 'q' -and $key.Character -ne 'Q') {
-        Start-Process "http://localhost:5173"
+        Start-Process "http://localhost:5174"
         Write-ColorText "  🎉 浏览器已打开！" "Green"
     }
 } else {
