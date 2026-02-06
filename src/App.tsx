@@ -36,16 +36,20 @@ function RequireVisited({ children }: { children: React.ReactNode }) {
 // 需要保持状态的页面列表
 const KEEP_ALIVE_ROUTES = ['/home/script', '/home/image', '/home/storyboard', '/home/video']
 
+function getKeepAliveKey(pathname: string): string | null {
+  return KEEP_ALIVE_ROUTES.find((route) => pathname.startsWith(route)) || null
+}
+
 // 页面缓存组件
 function KeepAliveOutlet() {
   const location = useLocation()
   const [visitedRoutes, setVisitedRoutes] = useState<Set<string>>(new Set())
 
   useEffect(() => {
-    const path = location.pathname
-    // 只缓存需要保持状态的页面
-    if (KEEP_ALIVE_ROUTES.some(route => path.startsWith(route))) {
-      setVisitedRoutes(prev => new Set([...prev, path]))
+    const routeKey = getKeepAliveKey(location.pathname)
+    // 只缓存需要保持状态的页面（按路由 key 缓存，避免 /storyboard/:id 缓存失效）
+    if (routeKey) {
+      setVisitedRoutes(prev => new Set([...prev, routeKey]))
     }
   }, [location.pathname])
 

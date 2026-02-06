@@ -1,18 +1,29 @@
 import axios from 'axios'
 import type { ModelConfig } from '../store/settingsStore'
 
-const API_BASE = 'http://localhost:8001'
+const runtimeHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost'
+const backendPort = import.meta.env.VITE_BACKEND_PORT || '8001'
+const API_BASE = import.meta.env.VITE_API_BASE || `http://${runtimeHost}:${backendPort}`
 
 const api = axios.create({
   baseURL: API_BASE,
   timeout: 180000
 })
 
+function inferRuntimeScope(): 'module' | 'agent' {
+  if (typeof window === 'undefined') return 'module'
+  const hash = (window.location.hash || '').toLowerCase()
+  return hash.startsWith('#/agent') ? 'agent' : 'module'
+}
+
 export interface GenerateParams {
   referenceImage: string | null
   storyText: string
   style: string
   count: number
+  llm?: ModelConfig
+  storyboard?: ModelConfig
+  local?: FullSettings['local']
 }
 
 export interface StoryboardResult {
@@ -98,13 +109,13 @@ export interface TestConnectionResult {
 
 // 更新设置
 export async function updateSettings(settings: FullSettings): Promise<void> {
-  await api.post('/api/settings', settings)
+  await api.post('/api/module/settings', settings)
 }
 
 // 获取已保存的设置
 export async function getSavedSettings(): Promise<FullSettings | null> {
   try {
-    const response = await api.get('/api/settings')
+    const response = await api.get('/api/module/settings')
     if (response.data.status === 'not_configured') {
       return null
     }
@@ -194,9 +205,10 @@ export async function generateStoryboards(
 export async function parseStory(
   storyText: string,
   count: number,
-  style: string
+  style: string,
+  llm?: ModelConfig
 ): Promise<string[]> {
-  const response = await api.post('/api/parse-story', { storyText, count, style })
+  const response = await api.post('/api/parse-story', { storyText, count, style, llm })
   return response.data.prompts
 }
 
@@ -204,12 +216,18 @@ export async function parseStory(
 export async function regenerateImage(
   prompt: string,
   referenceImage: string | null,
-  style: string
+  style: string,
+  options?: {
+    storyboard?: ModelConfig
+    local?: FullSettings['local']
+  }
 ): Promise<string> {
   const response = await api.post('/api/regenerate', {
     prompt,
     referenceImage,
-    style
+    style,
+    storyboard: options?.storyboard,
+    local: options?.local
   })
   return response.data.imageUrl
 }
@@ -269,21 +287,29 @@ export async function generateImage(
   prompt: string,
   negativePrompt?: string,
   options?: {
+    projectId?: string
+    scope?: 'module' | 'agent'
     width?: number
     height?: number
     steps?: number
     seed?: number
     style?: string
+    imageConfig?: ModelConfig
+    local?: FullSettings['local']
   }
 ): Promise<{ imageUrl: string; seed: number; width: number; height: number; steps: number }> {
   const response = await api.post('/api/generate-image', {
     prompt,
+    projectId: options?.projectId,
+    scope: options?.scope || inferRuntimeScope(),
     negativePrompt,
     width: options?.width || 1024,
     height: options?.height || 576,
     steps: options?.steps || 25,
     seed: options?.seed,
-    style: options?.style
+    style: options?.style,
+    image: options?.imageConfig,
+    local: options?.local
   })
   return response.data
 }
@@ -298,30 +324,56 @@ export async function healthCheck(): Promise<boolean> {
   }
 }
 
-// AI 对话 - 支持取消
-let chatAbortController: AbortController | null = null
+interface ChatWithAIOptions {
+  scope?: string
+  llm?: ModelConfig
+}
+
+// AI 对话 - 按 scope 独立取消，避免不同模块互相中断
+const chatAbortControllers = new Map<string, AbortController>()
 
 export async function chatWithAI(
   message: string,
-  context?: string
+  context?: string,
+  options?: ChatWithAIOptions
 ): Promise<string> {
-  // 取消之前的请求
-  if (chatAbortController) {
-    chatAbortController.abort()
+  const scope = options?.scope || 'default'
+  const previous = chatAbortControllers.get(scope)
+  if (previous) {
+    previous.abort()
   }
-  chatAbortController = new AbortController()
-  
-  const response = await api.post('/api/chat', { message, context }, {
-    signal: chatAbortController.signal
-  })
-  return response.data.reply
+
+  const controller = new AbortController()
+  chatAbortControllers.set(scope, controller)
+
+  try {
+    const response = await api.post(
+      '/api/chat',
+      { message, context, llm: options?.llm },
+      { signal: controller.signal }
+    )
+    return response.data.reply
+  } finally {
+    if (chatAbortControllers.get(scope) === controller) {
+      chatAbortControllers.delete(scope)
+    }
+  }
 }
 
-export function stopChatGeneration() {
-  if (chatAbortController) {
-    chatAbortController.abort()
-    chatAbortController = null
+export function stopChatGeneration(scope?: string) {
+  if (scope) {
+    const controller = chatAbortControllers.get(scope)
+    if (controller) {
+      controller.abort()
+      chatAbortControllers.delete(scope)
+    }
+    return
   }
+
+  for (const controller of chatAbortControllers.values()) {
+    controller.abort()
+  }
+  chatAbortControllers.clear()
 }
 
 // 生成视频（从图片）
@@ -329,6 +381,8 @@ export async function generateVideo(
   imageUrl: string,
   prompt: string,
   options?: {
+    projectId?: string
+    scope?: 'module' | 'agent'
     duration?: number
     motionStrength?: number
     seed?: number
@@ -337,6 +391,7 @@ export async function generateVideo(
     cameraFixed?: boolean
     watermark?: boolean
     generateAudio?: boolean
+    videoConfig?: ModelConfig
   }
 ): Promise<{
   taskId: string
@@ -348,6 +403,8 @@ export async function generateVideo(
 }> {
   const response = await api.post('/api/generate-video', {
     imageUrl,
+    projectId: options?.projectId,
+    scope: options?.scope || inferRuntimeScope(),
     prompt,
     duration: options?.duration || 5,
     motionStrength: options?.motionStrength || 0.5,
@@ -356,7 +413,8 @@ export async function generateVideo(
     ratio: options?.ratio || '16:9',
     cameraFixed: options?.cameraFixed || false,
     watermark: options?.watermark || false,
-    generateAudio: options?.generateAudio !== false
+    generateAudio: options?.generateAudio !== false,
+    video: options?.videoConfig
   })
   return response.data
 }
@@ -376,6 +434,7 @@ export async function checkVideoTaskStatus(taskId: string): Promise<{
 // 获取视频历史
 export interface GeneratedVideo {
   id: string
+  project_id?: string
   task_id: string
   source_image: string
   prompt: string
@@ -389,8 +448,13 @@ export interface GeneratedVideo {
   updated_at: string
 }
 
-export async function getVideoHistory(limit = 50): Promise<GeneratedVideo[]> {
-  const response = await api.get('/api/videos/history', { params: { limit } })
+export async function getVideoHistory(limit = 50, projectId?: string): Promise<GeneratedVideo[]> {
+  const response = await api.get('/api/videos/history', { params: { limit, project_id: projectId } })
+  return response.data.videos
+}
+
+export async function getAgentVideoHistory(limit = 50, projectId?: string): Promise<GeneratedVideo[]> {
+  const response = await api.get('/api/agent/videos/history', { params: { limit, project_id: projectId } })
   return response.data.videos
 }
 
@@ -557,6 +621,7 @@ export async function deleteScript(scriptId: string): Promise<void> {
 
 export interface GeneratedImage {
   id: string
+  project_id?: string
   prompt: string
   negative_prompt?: string
   image_url: string
@@ -570,8 +635,13 @@ export interface GeneratedImage {
   created_at: string
 }
 
-export async function getImageHistory(limit = 100): Promise<GeneratedImage[]> {
-  const response = await api.get('/api/images/history', { params: { limit } })
+export async function getImageHistory(limit = 100, projectId?: string): Promise<GeneratedImage[]> {
+  const response = await api.get('/api/images/history', { params: { limit, project_id: projectId } })
+  return response.data.images
+}
+
+export async function getAgentImageHistory(limit = 100, projectId?: string): Promise<GeneratedImage[]> {
+  const response = await api.get('/api/agent/images/history', { params: { limit, project_id: projectId } })
   return response.data.images
 }
 
@@ -648,9 +718,12 @@ export async function getScriptHistory(
 }
 
 export async function listChatSessions(
+  module?: string | number,
   limit = 50
 ): Promise<Array<{ session_id: string; message_count: number; created_at: string; updated_at: string }>> {
-  const response = await api.get('/api/chat/sessions', { params: { limit } })
+  const moduleParam = typeof module === 'string' ? module : undefined
+  const limitParam = typeof module === 'number' ? module : limit
+  const response = await api.get('/api/chat/sessions', { params: { module: moduleParam, limit: limitParam } })
   return response.data.sessions
 }
 
@@ -1612,6 +1685,15 @@ export interface CustomProvider {
 export async function listCustomProviders(
   category?: string
 ): Promise<CustomProvider[]> {
+  const response = await api.get('/api/module/custom-providers', {
+    params: category ? { category } : {}
+  })
+  return response.data.providers
+}
+
+export async function listGlobalCustomProviders(
+  category?: string
+): Promise<CustomProvider[]> {
   const response = await api.get('/api/custom-providers', {
     params: category ? { category } : {}
   })
@@ -1628,7 +1710,7 @@ export async function addCustomProvider(
     models?: string[]
   }
 ): Promise<CustomProvider> {
-  const response = await api.post('/api/custom-providers', {
+  const response = await api.post('/api/module/custom-providers', {
     name,
     category,
     ...config
@@ -1646,12 +1728,12 @@ export async function updateCustomProvider(
     models?: string[]
   }
 ): Promise<CustomProvider> {
-  const response = await api.put(`/api/custom-providers/${providerId}`, updates)
+  const response = await api.put(`/api/module/custom-providers/${providerId}`, updates)
   return response.data
 }
 
 export async function deleteCustomProvider(providerId: string): Promise<void> {
-  await api.delete(`/api/custom-providers/${providerId}`)
+  await api.delete(`/api/module/custom-providers/${providerId}`)
 }
 
 // ========== Agent Video Task Polling ==========

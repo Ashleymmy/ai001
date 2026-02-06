@@ -16,6 +16,7 @@ import {
   listChatSessions
 } from '../services/api'
 import ChatInput from './ChatInput'
+import { useSettingsStore } from '../store/settingsStore'
 
 interface Message {
   id: string
@@ -36,6 +37,7 @@ interface ModuleChatProps {
   placeholder?: string
   systemPrompt?: string
   context?: string
+  className?: string
 }
 
 const MODULE_CONFIG = {
@@ -69,8 +71,10 @@ function generateSessionId(moduleType: string): string {
 export default function ModuleChat({
   moduleType,
   placeholder,
-  context
+  context,
+  className = ''
 }: ModuleChatProps) {
+  const { settings } = useSettingsStore()
   const config = MODULE_CONFIG[moduleType]
   const [sessionId, setSessionId] = useState(() =>
     generateSessionId(moduleType)
@@ -127,11 +131,7 @@ export default function ModuleChat({
   const loadSessions = async () => {
     setLoadingSessions(true)
     try {
-      const allSessions = await listChatSessions(50)
-      // 过滤当前模块的会话
-      const moduleSessions = allSessions.filter((s) =>
-        s.session_id.startsWith(moduleType)
-      )
+      const moduleSessions = await listChatSessions(moduleType, 50)
       setSessions(moduleSessions)
     } catch (error) {
       console.error('加载会话列表失败:', error)
@@ -184,7 +184,10 @@ export default function ModuleChat({
 
     try {
       const moduleContext = `[${config.title}模式] ${context || ''}`
-      const response = await chatWithAI(messageContent, moduleContext)
+      const response = await chatWithAI(messageContent, moduleContext, {
+        scope: `${moduleType}:${sessionId}`,
+        llm: settings.llm
+      })
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -221,7 +224,7 @@ export default function ModuleChat({
   }
 
   const handleStop = () => {
-    stopChatGeneration()
+    stopChatGeneration(`${moduleType}:${sessionId}`)
     setIsLoading(false)
   }
 
@@ -251,7 +254,7 @@ export default function ModuleChat({
   }
 
   return (
-    <div className="flex flex-col h-full bg-[#1a1a1a] rounded-xl border border-gray-800 relative">
+    <div className={`flex flex-col h-full min-h-0 bg-[#1a1a1a] rounded-xl border border-gray-800 relative ${className}`}>
       {/* 头部 */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
         <div className="flex items-center gap-2">
@@ -338,7 +341,7 @@ export default function ModuleChat({
       )}
 
       {/* 消息列表 */}
-      <div className="flex-1 overflow-auto p-4 space-y-3">
+      <div className="flex-1 min-h-0 overflow-auto p-4 space-y-3">
         {messages.map((msg) => (
           <div
             key={msg.id}
@@ -384,7 +387,7 @@ export default function ModuleChat({
       </div>
 
       {/* 输入区 */}
-      <div className="p-3 border-t border-gray-800">
+      <div className="p-3 border-t border-gray-800 shrink-0">
         <ChatInput
           value={input}
           onChange={setInput}

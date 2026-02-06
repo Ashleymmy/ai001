@@ -1,4 +1,31 @@
 images:
+- id: fbca7cb0
+  prompt: Vintage local evening newspaper front-page clipping from 10 years ago, yellowed
+    aged paper with minor creases, faint tears, cropped edges and subtle water stains;
+    front-page features a portrait of a young girl with round cheeks, bright beaming
+    smile, soft innocent features, wearing casual kid's clothing, large bold headline
+    reads "Young Girl Killed in Hit-and-Run Accident on Rainy Storm Night", small
+    print text describing accident location and time below the headline. 2D hand-drawn
+    anime style, delicate clean lines, soft block colors, Japanese healing anime aesthetic;
+    warm dim diffused ambient light, translucent water droplets on the newspaper surface,
+    hazy misty rainy night atmosphere with transparent watercolor tones, gentle glow
+    from distant streetlights reflecting on the wet paper, subtle paper sheen; highly
+    detailed, sharp focus, 8K resolution, cinematic lighting, realistic paper aging
+    texture, smooth rendering, professional anime illustration, expressive facial
+    details
+  negative_prompt: 3D rendering, photorealistic style, messy rough lines, harsh contrast
+    colors, over-saturated hues, blurry illegible text, severely torn or burnt paper,
+    distorted character features, pixelated, low resolution, grainy, ugly, disfigured,
+    flat lighting
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217703412116754a1893a7016da6ddb77c20742a6044e985ae6e_0.?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260206%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260206T012706Z&X-Tos-Expires=86400&X-Tos-Signature=4470ee6897f114af08102afd5e9747f8aa6a596bf8ce68f8ec9e78e4b49cf27d&X-Tos-SignedHeaders=host
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1606368443
+  style: null
+  created_at: '2026-02-06T09:27:05.554211'
 - id: edc11e11
   prompt: 2D anime style, Chinese classical aesthetics, black leather hardcover diary
     with rusted lock, worn and peeling cover, dented deformed corners, yellowed inner
@@ -1053,4 +1080,4 @@ images:
   seed: 1545869874
   style: ''
   created_at: '2026-01-07T17:35:45.571061'
-updated_at: '2026-02-03T14:44:02.207755'
+updated_at: '2026-02-06T09:27:05.554211'

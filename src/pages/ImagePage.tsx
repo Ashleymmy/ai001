@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   Image,
+  Video as VideoIcon,
   Download,
   RefreshCw,
   Trash2,
@@ -18,11 +19,22 @@ import {
   Copy,
   Filter,
   Shuffle,
-  ZoomIn
+  ZoomIn,
+  PanelRightClose,
+  PanelRightOpen
 } from 'lucide-react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import ModuleChat from '../components/ModuleChat'
+import ModuleModelSwitcher from '../components/ModuleModelSwitcher'
 import ProjectBackButton from '../components/ProjectBackButton'
-import { generateImage, getImageHistory, deleteImageHistory, deleteImagesHistoryBatch } from '../services/api'
+import {
+  generateImage,
+  getImageHistory,
+  getAgentImageHistory,
+  deleteImageHistory,
+  deleteImagesHistoryBatch
+} from '../services/api'
+import { IMAGE_PROVIDERS, useSettingsStore } from '../store/settingsStore'
 
 interface GeneratedImage {
   id: string
@@ -65,14 +77,21 @@ const STYLE_PRESETS = [
 const FAVORITES_KEY = 'storyboarder-image-favorites'
 
 export default function ImagePage() {
+  const { settings, updateImage, syncToBackend } = useSettingsStore()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const projectId = new URLSearchParams(location.search).get('project') || undefined
   const [prompt, setPrompt] = useState('')
   const [negativePrompt, setNegativePrompt] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [images, setImages] = useState<GeneratedImage[]>([])
+  const [agentImages, setAgentImages] = useState<GeneratedImage[]>([])
+  const [activeHistoryTab, setActiveHistoryTab] = useState<'module' | 'agent'>('module')
   const [isGenerating, setIsGenerating] = useState(false)
   const [selectedImage, setSelectedImage] = useState<GeneratedImage | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [chatCollapsed, setChatCollapsed] = useState(false)
   
   // 高级参数
   const [width, setWidth] = useState(1024)
@@ -97,9 +116,26 @@ export default function ImagePage() {
   const [favorites, setFavorites] = useState<Set<string>>(new Set())
 
   useEffect(() => {
-    loadHistory()
+    setIsLoading(true)
+    Promise.all([loadHistory(), loadAgentHistory()]).finally(() => setIsLoading(false))
     loadFavorites()
-  }, [])
+  }, [projectId])
+
+  useEffect(() => {
+    if (activeHistoryTab === 'agent') {
+      setSelectMode(false)
+      setSelectedIds(new Set())
+    }
+  }, [activeHistoryTab])
+
+  const applyImageModel = async (updates: Partial<typeof settings.image>) => {
+    updateImage(updates)
+    try {
+      await syncToBackend()
+    } catch (error) {
+      console.error('同步图像模型设置失败:', error)
+    }
+  }
 
   const loadFavorites = () => {
     try {
@@ -119,7 +155,7 @@ export default function ImagePage() {
 
   const loadHistory = async () => {
     try {
-      const history = await getImageHistory(100)
+      const history = await getImageHistory(100, projectId)
       const loadedImages: GeneratedImage[] = history.map((img) => ({
         id: img.id,
         prompt: img.prompt,
@@ -136,8 +172,28 @@ export default function ImagePage() {
       setImages(loadedImages)
     } catch (err) {
       console.error('加载历史记录失败:', err)
-    } finally {
-      setIsLoading(false)
+    }
+  }
+
+  const loadAgentHistory = async () => {
+    try {
+      const history = await getAgentImageHistory(100, projectId)
+      const loadedImages: GeneratedImage[] = history.map((img) => ({
+        id: img.id,
+        prompt: img.prompt,
+        url: img.image_url,
+        negativePrompt: img.negative_prompt,
+        status: 'done' as const,
+        createdAt: img.created_at,
+        width: img.width,
+        height: img.height,
+        steps: img.steps,
+        seed: img.seed,
+        style: img.style
+      }))
+      setAgentImages(loadedImages)
+    } catch (err) {
+      console.error('加载 Agent 图片历史失败:', err)
     }
   }
 
@@ -160,7 +216,14 @@ export default function ImagePage() {
 
     try {
       const result = await generateImage(prompt, negativePrompt || undefined, {
-        width, height, steps, seed, style: style || undefined
+        projectId,
+        width,
+        height,
+        steps,
+        seed,
+        style: style || undefined,
+        imageConfig: settings.image,
+        local: settings.local
       })
       setImages((prev) =>
         prev.map((img) =>
@@ -195,7 +258,15 @@ export default function ImagePage() {
       const result = await generateImage(
         img.prompt,
         img.negativePrompt || undefined,
-        { width: img.width, height: img.height, steps: img.steps, style: img.style }
+        {
+          projectId,
+          width: img.width,
+          height: img.height,
+          steps: img.steps,
+          style: img.style,
+          imageConfig: settings.image,
+          local: settings.local
+        }
       )
       setImages((prev) =>
         prev.map((i) =>
@@ -298,6 +369,26 @@ export default function ImagePage() {
     saveFavorites(newFavorites)
   }
 
+  const handleSendToVideo = (img: GeneratedImage) => {
+    const key = `storyboarder:video:pending:${projectId || 'global'}`
+    const queued = (() => {
+      try {
+        const raw = sessionStorage.getItem(key)
+        const parsed = raw ? JSON.parse(raw) : []
+        return Array.isArray(parsed) ? parsed : []
+      } catch {
+        return []
+      }
+    })()
+    queued.unshift({
+      sourceImage: img.url,
+      prompt: img.prompt,
+      createdAt: new Date().toISOString()
+    })
+    sessionStorage.setItem(key, JSON.stringify(queued.slice(0, 20)))
+    navigate(projectId ? `/home/video?project=${encodeURIComponent(projectId)}` : '/home/video')
+  }
+
   const copyPrompt = (text: string) => {
     navigator.clipboard.writeText(text)
   }
@@ -312,7 +403,8 @@ export default function ImagePage() {
   }
 
   // 筛选图片
-  const filteredImages = images.filter(img => {
+  const activeImages = activeHistoryTab === 'agent' ? agentImages : images
+  const filteredImages = activeImages.filter(img => {
     if (filterFavorites && !favorites.has(img.id)) return false
     if (searchQuery) {
       const query = searchQuery.toLowerCase()
@@ -323,14 +415,14 @@ export default function ImagePage() {
   })
 
   return (
-    <div className="flex flex-col h-full animate-fadeIn">
+    <div className="flex flex-col h-full overflow-hidden animate-fadeIn">
       {/* 项目返回按钮 */}
       <div className="px-4 pt-3">
         <ProjectBackButton />
       </div>
       
-      <div className="flex-1 flex">
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 min-h-0 flex">
+      <div className="flex-1 min-h-0 min-w-0 flex flex-col">
         {/* 顶部工具栏 */}
         <div className="flex items-center justify-between px-6 py-4 glass-dark border-b border-white/5 animate-fadeInDown">
           <div className="flex items-center gap-3">
@@ -340,6 +432,31 @@ export default function ImagePage() {
             <h1 className="text-lg font-semibold">图像生成</h1>
           </div>
           <div className="flex items-center gap-2">
+            <ModuleModelSwitcher
+              category="image"
+              title="图像模型"
+              config={settings.image}
+              providers={IMAGE_PROVIDERS}
+              onApply={applyImageModel}
+            />
+            <div className="flex items-center gap-1 p-1 rounded-lg bg-white/5 border border-white/10">
+              <button
+                onClick={() => setActiveHistoryTab('module')}
+                className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
+                  activeHistoryTab === 'module' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-white'
+                }`}
+              >
+                模块历史
+              </button>
+              <button
+                onClick={() => setActiveHistoryTab('agent')}
+                className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
+                  activeHistoryTab === 'agent' ? 'bg-violet-500/20 text-violet-300' : 'text-gray-400 hover:text-white'
+                }`}
+              >
+                Agent历史
+              </button>
+            </div>
             {/* 搜索 */}
             <div className="relative">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
@@ -359,12 +476,14 @@ export default function ImagePage() {
               <Filter size={16} />
             </button>
             {/* 批量选择 */}
-            <button
-              onClick={() => { setSelectMode(!selectMode); setSelectedIds(new Set()) }}
-              className={`glass-button px-3 py-1.5 rounded-lg text-sm ${selectMode ? 'bg-purple-500/20' : ''}`}
-            >
-              {selectMode ? '取消选择' : '批量操作'}
-            </button>
+            {activeHistoryTab === 'module' && (
+              <button
+                onClick={() => { setSelectMode(!selectMode); setSelectedIds(new Set()) }}
+                className={`glass-button px-3 py-1.5 rounded-lg text-sm ${selectMode ? 'bg-purple-500/20' : ''}`}
+              >
+                {selectMode ? '取消选择' : '批量操作'}
+              </button>
+            )}
             <div className="text-sm text-gray-400 glass-button px-3 py-1.5 rounded-full">
               <History size={14} className="inline mr-1" />
               {filteredImages.filter((i) => i.status === 'done').length} 张
@@ -388,7 +507,7 @@ export default function ImagePage() {
         )}
 
         {/* 批量操作栏 */}
-        {selectMode && (
+        {activeHistoryTab === 'module' && selectMode && (
           <div className="px-6 py-3 glass-dark border-b border-white/5 flex items-center gap-3 animate-fadeInDown">
             <span className="text-sm text-gray-400">已选 {selectedIds.size} 项</span>
             <button onClick={selectAll} className="glass-button px-3 py-1 rounded-lg text-sm">全选</button>
@@ -573,7 +692,7 @@ export default function ImagePage() {
 
         {/* 图像展示区 */}
         <div 
-          className="flex-1 p-6 overflow-y-auto"
+          className="flex-1 min-h-0 p-6 overflow-y-auto"
           style={{ overscrollBehavior: 'contain' }}
         >
           {isLoading ? (
@@ -602,17 +721,18 @@ export default function ImagePage() {
                   key={img.id}
                   img={img}
                   index={index}
-                  selectMode={selectMode}
+                  selectMode={activeHistoryTab === 'module' && selectMode}
                   isSelected={selectedIds.has(img.id)}
                   isFavorite={favorites.has(img.id)}
                   isHighlighted={selectedImage?.id === img.id}
                   onSelect={() => toggleSelect(img.id)}
-                  onClick={() => !selectMode && img.status === 'done' && setSelectedImage(img)}
+                  onClick={() => !(activeHistoryTab === 'module' && selectMode) && img.status === 'done' && setSelectedImage(img)}
                   onPreview={() => setPreviewImage(img)}
                   onDownload={() => handleDownload(img)}
                   onRegenerate={() => handleRegenerate(img)}
                   onDelete={() => handleDelete(img.id)}
                   onToggleFavorite={() => toggleFavorite(img.id)}
+                  readOnly={activeHistoryTab === 'agent'}
                 />
               ))}
             </div>
@@ -633,6 +753,13 @@ export default function ImagePage() {
               >
                 <Copy size={14} />
               </button>
+              <button
+                onClick={() => handleSendToVideo(selectedImage)}
+                className="glass-button p-1.5 rounded-lg text-emerald-300"
+                title="发送到视频模块"
+              >
+                <VideoIcon size={14} />
+              </button>
               {selectedImage.seed && (
                 <span className="text-xs text-gray-500">种子: {selectedImage.seed}</span>
               )}
@@ -645,12 +772,43 @@ export default function ImagePage() {
       </div>
 
       {/* 右侧 AI 对话 */}
-      <div className="w-96 border-l border-white/5 flex flex-col glass-dark animate-slideInRight">
-        <ModuleChat
-          moduleType="image"
-          placeholder="描述画面，或让 AI 帮你优化提示词..."
-          context={prompt ? `当前提示词：${prompt}` : undefined}
-        />
+      <div
+        className={`border-l border-white/5 glass-dark animate-slideInRight relative overflow-hidden transition-[width] duration-300 ease-out ${
+          chatCollapsed ? 'w-12' : 'w-96'
+        }`}
+      >
+        <div
+          className={`absolute inset-0 flex items-start justify-center pt-3 transition-opacity duration-200 ${
+            chatCollapsed ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          }`}
+        >
+          <button
+            onClick={() => setChatCollapsed(false)}
+            className="p-2 glass-button rounded-lg text-gray-300 hover:text-white transition-transform duration-200 hover:scale-105"
+            title="展开聊天"
+          >
+            <PanelRightOpen size={16} />
+          </button>
+        </div>
+        <div
+          className={`h-full flex flex-col min-h-0 transition-all duration-300 ${
+            chatCollapsed ? 'opacity-0 translate-x-2 pointer-events-none' : 'opacity-100 translate-x-0'
+          }`}
+        >
+          <button
+            onClick={() => setChatCollapsed(true)}
+            className="absolute top-2 left-2 z-10 p-1.5 glass-button rounded-lg text-gray-300 hover:text-white transition-transform duration-200 hover:scale-105"
+            title="收起聊天"
+          >
+            <PanelRightClose size={14} />
+          </button>
+          <ModuleChat
+            moduleType="image"
+            placeholder="描述画面，或让 AI 帮你优化提示词..."
+            context={prompt ? `当前提示词：${prompt}` : undefined}
+            className="flex-1 min-h-0 m-2"
+          />
+        </div>
       </div>
 
       {/* 图片预览弹窗 */}
@@ -675,6 +833,7 @@ export default function ImagePage() {
             setShowAdvanced(true)
             setPreviewImage(null)
           }}
+          readOnly={activeHistoryTab === 'agent'}
         />
       )}
       </div>
@@ -687,6 +846,7 @@ interface ImageCardProps {
   img: GeneratedImage
   index: number
   selectMode: boolean
+  readOnly: boolean
   isSelected: boolean
   isFavorite: boolean
   isHighlighted: boolean
@@ -700,7 +860,7 @@ interface ImageCardProps {
 }
 
 function ImageCard({
-  img, index, selectMode, isSelected, isFavorite, isHighlighted,
+  img, index, selectMode, readOnly, isSelected, isFavorite, isHighlighted,
   onSelect, onClick, onPreview, onDownload, onRegenerate, onDelete, onToggleFavorite
 }: ImageCardProps) {
   return (
@@ -740,12 +900,14 @@ function ImageCard({
         <div className="w-full aspect-square flex flex-col items-center justify-center text-red-400 bg-red-500/5">
           <AlertCircle size={32} className="mb-2" />
           <span className="text-sm">生成失败</span>
-          <button
-            onClick={(e) => { e.stopPropagation(); onRegenerate() }}
-            className="mt-2 text-xs text-gray-400 hover:text-white glass-button px-3 py-1 rounded-lg"
-          >
-            重试
-          </button>
+          {!readOnly && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onRegenerate() }}
+              className="mt-2 text-xs text-gray-400 hover:text-white glass-button px-3 py-1 rounded-lg"
+            >
+              重试
+            </button>
+          )}
         </div>
       ) : (
         <>
@@ -762,12 +924,16 @@ function ImageCard({
               <button onClick={(e) => { e.stopPropagation(); onDownload() }} className="p-2 glass-button rounded-lg hover:bg-white/20" title="下载">
                 <Download size={14} />
               </button>
-              <button onClick={(e) => { e.stopPropagation(); onRegenerate() }} className="p-2 glass-button rounded-lg hover:bg-white/20" title="重新生成">
-                <RefreshCw size={14} />
-              </button>
-              <button onClick={(e) => { e.stopPropagation(); onDelete() }} className="p-2 glass-button rounded-lg hover:bg-red-500/50" title="删除">
-                <Trash2 size={14} />
-              </button>
+              {!readOnly && (
+                <button onClick={(e) => { e.stopPropagation(); onRegenerate() }} className="p-2 glass-button rounded-lg hover:bg-white/20" title="重新生成">
+                  <RefreshCw size={14} />
+                </button>
+              )}
+              {!readOnly && (
+                <button onClick={(e) => { e.stopPropagation(); onDelete() }} className="p-2 glass-button rounded-lg hover:bg-red-500/50" title="删除">
+                  <Trash2 size={14} />
+                </button>
+              )}
             </div>
           </div>
           {isHighlighted && (
@@ -783,6 +949,7 @@ function ImageCard({
 interface ImagePreviewModalProps {
   image: GeneratedImage
   isFavorite: boolean
+  readOnly: boolean
   onClose: () => void
   onDownload: () => void
   onRegenerate: () => void
@@ -793,7 +960,7 @@ interface ImagePreviewModalProps {
 }
 
 function ImagePreviewModal({
-  image, isFavorite, onClose, onDownload, onRegenerate, onDelete, onToggleFavorite, onCopyPrompt, onUseParams
+  image, isFavorite, readOnly, onClose, onDownload, onRegenerate, onDelete, onToggleFavorite, onCopyPrompt, onUseParams
 }: ImagePreviewModalProps) {
   return (
     <div
@@ -892,13 +1059,17 @@ function ImagePreviewModal({
               <button onClick={onDownload} className="flex-1 glass-button py-2 rounded-lg text-sm flex items-center justify-center gap-1">
                 <Download size={14} /> 下载
               </button>
-              <button onClick={onRegenerate} className="flex-1 glass-button py-2 rounded-lg text-sm flex items-center justify-center gap-1">
-                <RefreshCw size={14} /> 重新生成
-              </button>
+              {!readOnly && (
+                <button onClick={onRegenerate} className="flex-1 glass-button py-2 rounded-lg text-sm flex items-center justify-center gap-1">
+                  <RefreshCw size={14} /> 重新生成
+                </button>
+              )}
             </div>
-            <button onClick={onDelete} className="w-full glass-button py-2 rounded-lg text-sm flex items-center justify-center gap-1 text-red-400 hover:bg-red-500/20">
-              <Trash2 size={14} /> 删除
-            </button>
+            {!readOnly && (
+              <button onClick={onDelete} className="w-full glass-button py-2 rounded-lg text-sm flex items-center justify-center gap-1 text-red-400 hover:bg-red-500/20">
+                <Trash2 size={14} /> 删除
+              </button>
+            )}
           </div>
         </div>
       </div>

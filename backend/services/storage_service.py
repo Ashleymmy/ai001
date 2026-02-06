@@ -17,8 +17,12 @@ CHAT_DIR = os.path.join(DATA_DIR, "chat")
 EXPORT_DIR = os.path.join(DATA_DIR, "exports")
 SETTINGS_TEMPLATE_FILE = os.path.join(DATA_DIR, "settings.yaml")
 SETTINGS_LOCAL_FILE = os.path.join(DATA_DIR, "settings.local.yaml")
+MODULE_SETTINGS_TEMPLATE_FILE = os.path.join(DATA_DIR, "module.settings.yaml")
+MODULE_SETTINGS_LOCAL_FILE = os.path.join(DATA_DIR, "module.settings.local.yaml")
 CUSTOM_PROVIDERS_TEMPLATE_FILE = os.path.join(DATA_DIR, "custom_providers.yaml")
 CUSTOM_PROVIDERS_LOCAL_FILE = os.path.join(DATA_DIR, "custom_providers.local.yaml")
+MODULE_CUSTOM_PROVIDERS_TEMPLATE_FILE = os.path.join(DATA_DIR, "module.custom_providers.yaml")
+MODULE_CUSTOM_PROVIDERS_LOCAL_FILE = os.path.join(DATA_DIR, "module.custom_providers.local.yaml")
 PROMPTS_TEMPLATE_FILE = os.path.join(DATA_DIR, "prompts.yaml")
 PROMPTS_LOCAL_FILE = os.path.join(DATA_DIR, "prompts.local.yaml")
 
@@ -68,6 +72,20 @@ class StorageService:
             return _load_yaml(SETTINGS_TEMPLATE_FILE)
         return None
 
+    def save_module_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        """保存独立模块设置（与 Agent 设置隔离）"""
+        settings['updated_at'] = _now()
+        _save_yaml(MODULE_SETTINGS_LOCAL_FILE, settings)
+        return settings
+
+    def get_module_settings(self) -> Optional[Dict[str, Any]]:
+        """获取独立模块设置（优先 local，其次 template）"""
+        if os.path.exists(MODULE_SETTINGS_LOCAL_FILE):
+            return _load_yaml(MODULE_SETTINGS_LOCAL_FILE)
+        if os.path.exists(MODULE_SETTINGS_TEMPLATE_FILE):
+            return _load_yaml(MODULE_SETTINGS_TEMPLATE_FILE)
+        return None
+
     # ==================== Prompt 配置管理 ====================
 
     def _prompts_file(self) -> str:
@@ -85,67 +103,54 @@ class StorageService:
         if os.path.exists(CUSTOM_PROVIDERS_LOCAL_FILE):
             return CUSTOM_PROVIDERS_LOCAL_FILE
         return CUSTOM_PROVIDERS_TEMPLATE_FILE
-    
-    def list_custom_providers(self, category: str = None) -> List[Dict[str, Any]]:
-        """获取自定义配置列表
-        
-        Args:
-            category: 可选，筛选类别 (llm/image/storyboard/video)
-        """
-        data = _load_yaml(self._custom_providers_file())
+
+    def _module_custom_providers_file(self) -> str:
+        if os.path.exists(MODULE_CUSTOM_PROVIDERS_LOCAL_FILE):
+            return MODULE_CUSTOM_PROVIDERS_LOCAL_FILE
+        return MODULE_CUSTOM_PROVIDERS_TEMPLATE_FILE
+
+    def _list_custom_providers_by_file(self, filepath: str, category: str = None) -> List[Dict[str, Any]]:
+        data = _load_yaml(filepath)
         providers = data.get('providers', [])
-        
         if category:
             providers = [p for p in providers if p.get('category') == category]
-        
         return providers
-    
-    def add_custom_provider(self, name: str, category: str, config: Dict[str, Any]) -> Dict[str, Any]:
-        """添加自定义配置预设
-        
-        Args:
-            name: 预设名称（如 "通义万相-文生图" 或 "自定义配置1"）
-            category: 类别 (llm/image/storyboard/video)
-            config: 配置内容 {apiKey, baseUrl, model, models}
-        """
-        data = _load_yaml(self._custom_providers_file())
+
+    def _add_custom_provider_by_file(self, filepath: str, name: str, category: str, config: Dict[str, Any]) -> Dict[str, Any]:
+        data = _load_yaml(filepath)
         if 'providers' not in data:
             data['providers'] = []
-        
-        provider_id = f"custom_{_gen_id()}"  # 以 custom_ 前缀标识用户自定义
+
+        provider_id = f"custom_{_gen_id()}"
         now = _now()
-        
+
         provider = {
             "id": provider_id,
             "name": name,
             "category": category,
-            "isCustom": True,  # 标识为用户自定义配置
+            "isCustom": True,
             "apiKey": config.get('apiKey', ''),
             "baseUrl": config.get('baseUrl', ''),
             "model": config.get('model', ''),
-            "models": config.get('models', []),  # 支持多个模型选项
+            "models": config.get('models', []),
             "created_at": now,
             "updated_at": now
         }
-        
+
         data['providers'].append(provider)
         data['updated_at'] = now
-        _save_yaml(self._custom_providers_file(), data)
-        
+        _save_yaml(filepath, data)
         return provider
-    
-    def get_custom_provider(self, provider_id: str) -> Optional[Dict[str, Any]]:
-        """获取单个自定义配置"""
-        data = _load_yaml(self._custom_providers_file())
+
+    def _get_custom_provider_by_file(self, filepath: str, provider_id: str) -> Optional[Dict[str, Any]]:
+        data = _load_yaml(filepath)
         for p in data.get('providers', []):
             if p.get('id') == provider_id:
                 return p
         return None
-    
-    def update_custom_provider(self, provider_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """更新自定义配置预设"""
-        data = _load_yaml(self._custom_providers_file())
-        
+
+    def _update_custom_provider_by_file(self, filepath: str, provider_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        data = _load_yaml(filepath)
         for p in data.get('providers', []):
             if p.get('id') == provider_id:
                 allowed_fields = ['name', 'apiKey', 'baseUrl', 'model', 'models']
@@ -154,24 +159,71 @@ class StorageService:
                         p[key] = value
                 p['updated_at'] = _now()
                 data['updated_at'] = _now()
-                _save_yaml(self._custom_providers_file(), data)
+                _save_yaml(filepath, data)
                 return p
-        
         return None
-    
-    def delete_custom_provider(self, provider_id: str) -> bool:
-        """删除自定义配置预设"""
-        data = _load_yaml(self._custom_providers_file())
+
+    def _delete_custom_provider_by_file(self, filepath: str, provider_id: str) -> bool:
+        data = _load_yaml(filepath)
         providers = data.get('providers', [])
-        
         original_len = len(providers)
         data['providers'] = [p for p in providers if p.get('id') != provider_id]
-        
         if len(data['providers']) < original_len:
             data['updated_at'] = _now()
-            _save_yaml(self._custom_providers_file(), data)
+            _save_yaml(filepath, data)
             return True
         return False
+
+    def list_custom_providers(self, category: str = None) -> List[Dict[str, Any]]:
+        """获取全局自定义配置列表（Agent 侧）。"""
+        return self._list_custom_providers_by_file(self._custom_providers_file(), category)
+
+    def add_custom_provider(self, name: str, category: str, config: Dict[str, Any]) -> Dict[str, Any]:
+        """添加全局自定义配置预设（Agent 侧）。"""
+        return self._add_custom_provider_by_file(self._custom_providers_file(), name, category, config)
+
+    def get_custom_provider(self, provider_id: str) -> Optional[Dict[str, Any]]:
+        """获取单个全局自定义配置（Agent 侧）。"""
+        return self._get_custom_provider_by_file(self._custom_providers_file(), provider_id)
+
+    def update_custom_provider(self, provider_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """更新全局自定义配置预设（Agent 侧）。"""
+        return self._update_custom_provider_by_file(self._custom_providers_file(), provider_id, updates)
+
+    def delete_custom_provider(self, provider_id: str) -> bool:
+        """删除全局自定义配置预设（Agent 侧）。"""
+        return self._delete_custom_provider_by_file(self._custom_providers_file(), provider_id)
+
+    def list_module_custom_providers(self, category: str = None) -> List[Dict[str, Any]]:
+        """获取独立模块自定义配置列表（合并模块侧与全局侧，模块侧优先）。"""
+        module_list = self._list_custom_providers_by_file(self._module_custom_providers_file(), category)
+        global_list = self._list_custom_providers_by_file(self._custom_providers_file(), category)
+        merged: Dict[str, Dict[str, Any]] = {}
+        for provider in global_list:
+            pid = provider.get("id")
+            if isinstance(pid, str) and pid:
+                merged[pid] = provider
+        for provider in module_list:
+            pid = provider.get("id")
+            if isinstance(pid, str) and pid:
+                merged[pid] = provider
+        return list(merged.values())
+
+    def add_module_custom_provider(self, name: str, category: str, config: Dict[str, Any]) -> Dict[str, Any]:
+        """添加独立模块自定义配置预设。"""
+        return self._add_custom_provider_by_file(self._module_custom_providers_file(), name, category, config)
+
+    def get_module_custom_provider(self, provider_id: str) -> Optional[Dict[str, Any]]:
+        """获取单个独立模块自定义配置。"""
+        return self._get_custom_provider_by_file(self._module_custom_providers_file(), provider_id)
+
+    def update_module_custom_provider(self, provider_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """更新独立模块自定义配置预设。"""
+        return self._update_custom_provider_by_file(self._module_custom_providers_file(), provider_id, updates)
+
+    def delete_module_custom_provider(self, provider_id: str) -> bool:
+        """删除独立模块自定义配置预设。"""
+        return self._delete_custom_provider_by_file(self._module_custom_providers_file(), provider_id)
     
     # ==================== 项目管理 ====================
     
@@ -478,7 +530,7 @@ class StorageService:
     def save_generated_image(self, prompt: str, image_url: str, 
                              negative_prompt: str = "", provider: str = "", model: str = "",
                              width: int = 1024, height: int = 576, steps: int = 25,
-                             seed: int = 0, style: str = None) -> Dict[str, Any]:
+                             seed: int = 0, style: str = None, project_id: Optional[str] = None) -> Dict[str, Any]:
         """保存生成的图像记录"""
         index = _load_yaml(self._images_index_file())
         if 'images' not in index:
@@ -489,6 +541,7 @@ class StorageService:
         
         image_record = {
             "id": image_id,
+            "project_id": project_id,
             "prompt": prompt,
             "negative_prompt": negative_prompt,
             "image_url": image_url,
@@ -509,10 +562,12 @@ class StorageService:
         _save_yaml(self._images_index_file(), index)
         return image_record
     
-    def list_generated_images(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+    def list_generated_images(self, limit: int = 100, offset: int = 0, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """获取图像历史"""
         index = _load_yaml(self._images_index_file())
         images = index.get('images', [])
+        if project_id is not None:
+            images = [img for img in images if img.get('project_id') == project_id]
         return images[offset:offset + limit]
     
     def delete_generated_image(self, image_id: str) -> bool:
@@ -569,7 +624,7 @@ class StorageService:
                              video_url: str = None, task_id: str = "",
                              status: str = "processing", provider: str = "",
                              model: str = "", duration: float = 5.0,
-                             seed: int = 0) -> Dict[str, Any]:
+                             seed: int = 0, project_id: Optional[str] = None) -> Dict[str, Any]:
         """保存生成的视频记录"""
         index = _load_yaml(self._videos_index_file())
         if 'videos' not in index:
@@ -612,6 +667,7 @@ class StorageService:
         
         video_record = {
             "id": video_id,
+            "project_id": project_id,
             "task_id": task_id,
             "source_image": saved_source_image,
             "prompt": prompt,
@@ -648,10 +704,12 @@ class StorageService:
         
         return False
     
-    def list_generated_videos(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    def list_generated_videos(self, limit: int = 50, offset: int = 0, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """获取视频历史"""
         index = _load_yaml(self._videos_index_file())
         videos = index.get('videos', [])
+        if project_id is not None:
+            videos = [vid for vid in videos if vid.get('project_id') == project_id]
         return videos[offset:offset + limit]
     
     def delete_generated_video(self, video_id: str) -> bool:
@@ -743,8 +801,8 @@ class StorageService:
         
         return messages[-limit:]
     
-    def list_chat_sessions(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """获取所有对话会话列表"""
+    def list_chat_sessions(self, limit: int = 50, module: Optional[str] = None) -> List[Dict[str, Any]]:
+        """获取对话会话列表（可按模块过滤）"""
         sessions = []
         if not os.path.exists(CHAT_DIR):
             return []
@@ -752,11 +810,21 @@ class StorageService:
             if filename.endswith('.yaml'):
                 chat = _load_yaml(os.path.join(CHAT_DIR, filename))
                 if chat:
+                    messages = chat.get("messages", [])
+                    session_updated_at = chat.get("updated_at")
+                    message_count = len(messages)
+                    if module:
+                        module_messages = [m for m in messages if m.get("module") == module]
+                        if not module_messages:
+                            continue
+                        message_count = len(module_messages)
+                        # 模块维度下按最后一条该模块消息时间排序更符合预期
+                        session_updated_at = module_messages[-1].get("created_at") or session_updated_at
                     sessions.append({
                         "session_id": chat.get("session_id", filename[:-5]),
-                        "message_count": len(chat.get("messages", [])),
+                        "message_count": message_count,
                         "created_at": chat.get("created_at"),
-                        "updated_at": chat.get("updated_at")
+                        "updated_at": session_updated_at
                     })
         
         sessions.sort(key=lambda x: x.get('updated_at', ''), reverse=True)
@@ -996,6 +1064,234 @@ class StorageService:
         
         projects.sort(key=lambda x: x.get('updated_at', ''), reverse=True)
         return projects[:limit]
+
+    def _iter_agent_projects_full(self) -> List[Dict[str, Any]]:
+        """遍历完整 Agent 项目数据（按更新时间倒序）。"""
+        projects: List[Dict[str, Any]] = []
+        agent_dir = self._agent_projects_dir()
+        if not os.path.exists(agent_dir):
+            return projects
+        for filename in os.listdir(agent_dir):
+            if not filename.endswith('.yaml'):
+                continue
+            project = _load_yaml(os.path.join(agent_dir, filename))
+            if isinstance(project, dict) and project:
+                projects.append(project)
+        projects.sort(key=lambda x: x.get('updated_at', ''), reverse=True)
+        return projects
+
+    def list_agent_generated_images(self, limit: int = 100, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """汇总 Agent 生成图片历史（元素图 + 起始帧）。"""
+        records: List[Dict[str, Any]] = []
+        seen_ids = set()
+
+        def _pick_url(primary: Any, cached: Any = None) -> str:
+            for candidate in (cached, primary):
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()
+            return ""
+
+        def _append_record(record: Dict[str, Any]):
+            rid = record.get("id")
+            if isinstance(rid, str) and rid in seen_ids:
+                return
+            if isinstance(rid, str):
+                seen_ids.add(rid)
+            records.append(record)
+
+        for project in self._iter_agent_projects_full():
+            pid = str(project.get("id") or "")
+            if project_id and pid != project_id:
+                continue
+
+            project_name = str(project.get("name") or pid)
+            project_updated = project.get("updated_at") or project.get("created_at") or _now()
+
+            elements = project.get("elements") or {}
+            if isinstance(elements, dict):
+                for element_id, element in elements.items():
+                    if not isinstance(element, dict):
+                        continue
+                    eid = str(element_id or element.get("id") or "")
+                    title = str(element.get("name") or eid or "element")
+                    prompt_text = str(element.get("description") or element.get("name") or "").strip()
+                    created_fallback = element.get("updated_at") or element.get("created_at") or project_updated
+                    history = element.get("image_history") or []
+
+                    if isinstance(history, list) and history:
+                        for idx, img in enumerate(history):
+                            if not isinstance(img, dict):
+                                continue
+                            image_id = str(img.get("id") or f"{eid}_{idx}")
+                            image_url = _pick_url(img.get("source_url"), img.get("url"))
+                            if not image_url:
+                                continue
+                            created_at = img.get("created_at") or created_fallback
+                            _append_record({
+                                "id": f"agent_elem_{pid}_{eid}_{image_id}",
+                                "project_id": pid,
+                                "project_name": project_name,
+                                "source": "agent",
+                                "source_type": "element",
+                                "source_id": eid,
+                                "title": title,
+                                "prompt": prompt_text,
+                                "negative_prompt": "",
+                                "image_url": image_url,
+                                "provider": "agent",
+                                "model": "",
+                                "width": None,
+                                "height": None,
+                                "steps": None,
+                                "seed": None,
+                                "style": None,
+                                "created_at": created_at,
+                            })
+                    else:
+                        image_url = _pick_url(element.get("image_url"), element.get("cached_image_url"))
+                        if image_url:
+                            _append_record({
+                                "id": f"agent_elem_{pid}_{eid}_current",
+                                "project_id": pid,
+                                "project_name": project_name,
+                                "source": "agent",
+                                "source_type": "element",
+                                "source_id": eid,
+                                "title": title,
+                                "prompt": prompt_text,
+                                "negative_prompt": "",
+                                "image_url": image_url,
+                                "provider": "agent",
+                                "model": "",
+                                "width": None,
+                                "height": None,
+                                "steps": None,
+                                "seed": None,
+                                "style": None,
+                                "created_at": created_fallback,
+                            })
+
+            segments = project.get("segments") or []
+            if isinstance(segments, list):
+                for seg in segments:
+                    if not isinstance(seg, dict):
+                        continue
+                    for shot in (seg.get("shots") or []):
+                        if not isinstance(shot, dict):
+                            continue
+                        sid = str(shot.get("id") or "")
+                        title = str(shot.get("name") or sid or "shot")
+                        prompt_text = str(shot.get("prompt") or shot.get("description") or "").strip()
+                        created_fallback = shot.get("updated_at") or shot.get("created_at") or project_updated
+                        history = shot.get("start_image_history") or []
+
+                        if isinstance(history, list) and history:
+                            for idx, img in enumerate(history):
+                                if not isinstance(img, dict):
+                                    continue
+                                image_id = str(img.get("id") or f"{sid}_{idx}")
+                                image_url = _pick_url(img.get("source_url"), img.get("url"))
+                                if not image_url:
+                                    continue
+                                created_at = img.get("created_at") or created_fallback
+                                _append_record({
+                                    "id": f"agent_shot_{pid}_{sid}_{image_id}",
+                                    "project_id": pid,
+                                    "project_name": project_name,
+                                    "source": "agent",
+                                    "source_type": "shot",
+                                    "source_id": sid,
+                                    "title": title,
+                                    "prompt": prompt_text,
+                                    "negative_prompt": "",
+                                    "image_url": image_url,
+                                    "provider": "agent",
+                                    "model": "",
+                                    "width": None,
+                                    "height": None,
+                                    "steps": None,
+                                    "seed": None,
+                                    "style": None,
+                                    "created_at": created_at,
+                                })
+                        else:
+                            image_url = _pick_url(shot.get("start_image_url"), shot.get("cached_start_image_url"))
+                            if image_url:
+                                _append_record({
+                                    "id": f"agent_shot_{pid}_{sid}_current",
+                                    "project_id": pid,
+                                    "project_name": project_name,
+                                    "source": "agent",
+                                    "source_type": "shot",
+                                    "source_id": sid,
+                                    "title": title,
+                                    "prompt": prompt_text,
+                                    "negative_prompt": "",
+                                    "image_url": image_url,
+                                    "provider": "agent",
+                                    "model": "",
+                                    "width": None,
+                                    "height": None,
+                                    "steps": None,
+                                    "seed": None,
+                                    "style": None,
+                                    "created_at": created_fallback,
+                                })
+
+        records.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        return records[:limit]
+
+    def list_agent_generated_videos(self, limit: int = 50, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """汇总 Agent 生成视频历史（从镜头中提取）。"""
+        records: List[Dict[str, Any]] = []
+        for project in self._iter_agent_projects_full():
+            pid = str(project.get("id") or "")
+            if project_id and pid != project_id:
+                continue
+
+            project_name = str(project.get("name") or pid)
+            project_updated = project.get("updated_at") or project.get("created_at") or _now()
+            segments = project.get("segments") or []
+            if not isinstance(segments, list):
+                continue
+
+            for seg in segments:
+                if not isinstance(seg, dict):
+                    continue
+                for shot in (seg.get("shots") or []):
+                    if not isinstance(shot, dict):
+                        continue
+                    video_url = shot.get("video_url")
+                    if not isinstance(video_url, str) or not video_url.strip():
+                        continue
+
+                    sid = str(shot.get("id") or "")
+                    created_at = shot.get("updated_at") or shot.get("created_at") or project_updated
+                    status_raw = str(shot.get("status") or "").lower()
+                    status = "completed" if status_raw in {"video_ready", "completed", "done"} else (
+                        "processing" if "processing" in status_raw else "completed"
+                    )
+
+                    records.append({
+                        "id": f"agent_video_{pid}_{sid}",
+                        "project_id": pid,
+                        "project_name": project_name,
+                        "source": "agent",
+                        "task_id": shot.get("video_task_id") or "",
+                        "source_image": shot.get("cached_start_image_url") or shot.get("start_image_url") or "",
+                        "prompt": shot.get("video_prompt") or shot.get("prompt") or shot.get("description") or "",
+                        "video_url": video_url.strip(),
+                        "status": status,
+                        "provider": "agent",
+                        "model": "",
+                        "duration": shot.get("duration") or 5,
+                        "seed": shot.get("seed") or 0,
+                        "created_at": created_at,
+                        "updated_at": created_at,
+                    })
+
+        records.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+        return records[:limit]
     
     def update_agent_project(self, project_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """更新 Agent 项目"""
@@ -1028,6 +1324,12 @@ class StorageService:
     def get_custom_providers(self) -> Dict[str, Dict[str, Any]]:
         """获取自定义配置字典（按 ID 索引）"""
         data = _load_yaml(self._custom_providers_file())
+        providers = data.get('providers', [])
+        return {p.get('id'): p for p in providers if p.get('id')}
+
+    def get_module_custom_providers(self) -> Dict[str, Dict[str, Any]]:
+        """获取独立模块自定义配置字典（按 ID 索引）。"""
+        data = _load_yaml(self._module_custom_providers_file())
         providers = data.get('providers', [])
         return {p.get('id'): p for p in providers if p.get('id')}
 

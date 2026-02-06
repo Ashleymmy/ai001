@@ -1,12 +1,15 @@
 import { useState, useEffect, useRef } from 'react'
+import { useLocation } from 'react-router-dom'
 import {
   Film, Download, RefreshCw, Trash2, Save, Sparkles, Upload, Edit3, Copy,
   Plus, ChevronLeft, ChevronRight, X, Play, Pause, GripVertical, Image,
-  FileText, FolderOpen, Clock, Eye, Settings2, ChevronDown
+  FileText, FolderOpen, Clock, Eye, Settings2, ChevronDown, PanelRightClose, PanelRightOpen
 } from 'lucide-react'
 import ModuleChat from '../components/ModuleChat'
+import ModuleModelSwitcher from '../components/ModuleModelSwitcher'
 import ProjectBackButton from '../components/ProjectBackButton'
 import { generateStoryboards, regenerateImage, uploadReference, parseStory } from '../services/api'
+import { IMAGE_PROVIDERS, useSettingsStore } from '../store/settingsStore'
 
 interface Storyboard {
   id: string
@@ -19,6 +22,7 @@ interface Storyboard {
 
 interface SavedStoryboardProject {
   id: string
+  projectId?: string
   name: string
   script: string
   style: string
@@ -39,6 +43,12 @@ const STYLES = [
 const STORAGE_KEY = 'storyboarder-storyboards'
 
 export default function StoryboardPage() {
+  const location = useLocation()
+  const { settings, updateStoryboard, syncToBackend } = useSettingsStore()
+  const projectPathMatch = location.pathname.match(/\/home\/storyboard\/([^/?#]+)/)
+  const projectId = projectPathMatch ? decodeURIComponent(projectPathMatch[1]) : null
+  const storageKey = projectId ? `${STORAGE_KEY}:${projectId}` : STORAGE_KEY
+
   const [script, setScript] = useState('')
   const [style, setStyle] = useState('cinematic')
   const [count, setCount] = useState(4)
@@ -70,10 +80,27 @@ export default function StoryboardPage() {
   // 高级选项
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [generateMode, setGenerateMode] = useState<'auto' | 'manual'>('auto')
+  const [chatCollapsed, setChatCollapsed] = useState(false)
+
+  const applyStoryboardModel = async (updates: Partial<typeof settings.storyboard>) => {
+    updateStoryboard(updates)
+    try {
+      await syncToBackend()
+    } catch (error) {
+      console.error('同步分镜模型设置失败:', error)
+    }
+  }
 
   useEffect(() => {
+    setStoryboardId(null)
+    setStoryboardName('未命名分镜')
+    setScript('')
+    setStyle('cinematic')
+    setReferenceImage(null)
+    setStoryboards([])
+    setShowHistory(false)
     loadSavedProjects()
-  }, [])
+  }, [storageKey])
 
   // 幻灯片自动播放
   useEffect(() => {
@@ -90,9 +117,11 @@ export default function StoryboardPage() {
 
   const loadSavedProjects = () => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY)
+      const saved = localStorage.getItem(storageKey)
       if (saved) {
         setSavedProjects(JSON.parse(saved))
+      } else {
+        setSavedProjects([])
       }
     } catch (e) {
       console.error('加载历史记录失败:', e)
@@ -104,6 +133,7 @@ export default function StoryboardPage() {
     
     const data: SavedStoryboardProject = {
       id: storyboardId || `storyboard-${Date.now()}`,
+      projectId: projectId || undefined,
       name: storyboardName,
       script,
       style,
@@ -122,7 +152,7 @@ export default function StoryboardPage() {
       setStoryboardId(data.id)
     }
     
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(savedList))
+    localStorage.setItem(storageKey, JSON.stringify(savedList))
     setSavedProjects(savedList)
     
     if (showAlert) {
@@ -145,7 +175,7 @@ export default function StoryboardPage() {
     if (!confirm('确定删除这个分镜项目吗？')) return
     
     const newList = savedProjects.filter(p => p.id !== id)
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(newList))
+    localStorage.setItem(storageKey, JSON.stringify(newList))
     setSavedProjects(newList)
     
     if (storyboardId === id) {
@@ -194,7 +224,10 @@ export default function StoryboardPage() {
           referenceImage,
           storyText: script,
           style,
-          count
+          count,
+          llm: settings.llm,
+          storyboard: settings.storyboard,
+          local: settings.local
         })
         
         setStoryboards(results.map((r, i) => ({
@@ -207,7 +240,7 @@ export default function StoryboardPage() {
         })))
       } else {
         // 手动模式：先拆解剧本，再逐个生成
-        const prompts = await parseStory(script, count, style)
+        const prompts = await parseStory(script, count, style, settings.llm)
         
         const newStoryboards: Storyboard[] = prompts.map((prompt, i) => ({
           id: `sb-${Date.now()}-${i}`,
@@ -233,7 +266,10 @@ export default function StoryboardPage() {
     ))
     
     try {
-      const newUrl = await regenerateImage(sb.prompt, referenceImage, style)
+      const newUrl = await regenerateImage(sb.prompt, referenceImage, style, {
+        storyboard: settings.storyboard,
+        local: settings.local
+      })
       setStoryboards(prev => prev.map(s => 
         s.id === sb.id ? { ...s, imageUrl: newUrl, status: 'done' as const } : s
       ))
@@ -378,15 +414,15 @@ ${storyboards.map(sb => `<div class="sb"><img src="${sb.imageUrl}"><div class="i
   }
 
   return (
-    <div className="flex flex-col h-full animate-fadeIn">
+    <div className="flex flex-col h-full overflow-hidden animate-fadeIn">
       {/* 项目返回按钮 */}
       <div className="px-4 pt-3">
         <ProjectBackButton />
       </div>
       
-      <div className="flex-1 flex">
+      <div className="flex-1 min-h-0 flex">
       {/* 左侧主区域 */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 min-h-0 min-w-0 flex flex-col">
         {/* 工具栏 */}
         <div className="flex items-center justify-between px-6 py-4 glass-dark border-b border-white/5 animate-fadeInDown">
           <div className="flex items-center gap-3">
@@ -402,6 +438,13 @@ ${storyboards.map(sb => `<div class="sb"><img src="${sb.imageUrl}"><div class="i
             />
           </div>
           <div className="flex items-center gap-2">
+            <ModuleModelSwitcher
+              category="storyboard"
+              title="分镜模型"
+              config={settings.storyboard}
+              providers={IMAGE_PROVIDERS}
+              onApply={applyStoryboardModel}
+            />
             <button 
               onClick={() => setShowHistory(true)}
               className="flex items-center gap-2 px-3 py-2 glass-button rounded-xl text-sm hover:bg-white/10 transition-all"
@@ -583,7 +626,7 @@ ${storyboards.map(sb => `<div class="sb"><img src="${sb.imageUrl}"><div class="i
 
         {/* 分镜展示区 */}
         <div 
-          className="flex-1 p-6 overflow-y-auto"
+          className="flex-1 min-h-0 p-6 overflow-y-auto"
           style={{ overscrollBehavior: 'contain' }}
         >
           {storyboards.length === 0 ? (
@@ -740,12 +783,43 @@ ${storyboards.map(sb => `<div class="sb"><img src="${sb.imageUrl}"><div class="i
       </div>
 
       {/* 右侧 AI 对话 */}
-      <div className="w-96 border-l border-white/5 flex flex-col glass-dark animate-slideInRight">
-        <ModuleChat 
-          moduleType="storyboard" 
-          placeholder="描述场景，或让 AI 帮你设计分镜..."
-          context={script ? `当前剧本：${script.slice(0, 300)}...` : undefined}
-        />
+      <div
+        className={`border-l border-white/5 glass-dark animate-slideInRight relative overflow-hidden transition-[width] duration-300 ease-out ${
+          chatCollapsed ? 'w-12' : 'w-96'
+        }`}
+      >
+        <div
+          className={`absolute inset-0 flex items-start justify-center pt-3 transition-opacity duration-200 ${
+            chatCollapsed ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          }`}
+        >
+          <button
+            onClick={() => setChatCollapsed(false)}
+            className="p-2 glass-button rounded-lg text-gray-300 hover:text-white transition-transform duration-200 hover:scale-105"
+            title="展开聊天"
+          >
+            <PanelRightOpen size={16} />
+          </button>
+        </div>
+        <div
+          className={`h-full flex flex-col min-h-0 transition-all duration-300 ${
+            chatCollapsed ? 'opacity-0 translate-x-2 pointer-events-none' : 'opacity-100 translate-x-0'
+          }`}
+        >
+          <button
+            onClick={() => setChatCollapsed(true)}
+            className="absolute top-2 left-2 z-10 p-1.5 glass-button rounded-lg text-gray-300 hover:text-white transition-transform duration-200 hover:scale-105"
+            title="收起聊天"
+          >
+            <PanelRightClose size={14} />
+          </button>
+          <ModuleChat
+            moduleType="storyboard"
+            placeholder="描述场景，或让 AI 帮你设计分镜..."
+            context={script ? `当前剧本：${script.slice(0, 300)}...` : undefined}
+            className="flex-1 min-h-0 m-2"
+          />
+        </div>
       </div>
 
       {/* 历史记录弹窗 */}

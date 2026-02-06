@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
 import { Save, Download, FileText, User, Loader2, Check, Clock, ChevronRight, Trash2, Feather } from 'lucide-react'
+import { useLocation } from 'react-router-dom'
 import { chatWithAI, stopChatGeneration, listScripts, saveScript, deleteScript, updateScript, Script } from '../services/api'
 import ChatInput from '../components/ChatInput'
 import ProjectBackButton from '../components/ProjectBackButton'
+import { useSettingsStore } from '../store/settingsStore'
 
 interface Message {
   id: string
@@ -20,6 +22,11 @@ interface TimelineItem {
 type PageState = 'chat' | 'workspace'
 
 export default function ScriptPage() {
+  const location = useLocation()
+  const { settings } = useSettingsStore()
+  const projectId = new URLSearchParams(location.search).get('project') || undefined
+  const chatScope = `script:${projectId || 'global'}`
+
   const [pageState, setPageState] = useState<PageState>('chat')
   const [script, setScript] = useState('')
   const [title, setTitle] = useState('未命名剧本')
@@ -38,12 +45,12 @@ export default function ScriptPage() {
   // 加载历史剧本
   useEffect(() => {
     loadHistoryScripts()
-  }, [])
+  }, [projectId])
 
   const loadHistoryScripts = async () => {
     try {
       setLoadingHistory(true)
-      const scripts = await listScripts()
+      const scripts = await listScripts(projectId)
       setHistoryScripts(scripts)
     } catch (error) {
       console.error('加载历史剧本失败:', error)
@@ -92,11 +99,11 @@ export default function ScriptPage() {
           await updateScript(currentScriptId, title, script)
         } catch {
           // 如果更新失败（可能已被删除），创建新的
-          const saved = await saveScript(title, script)
+          const saved = await saveScript(title, script, projectId)
           setCurrentScriptId(saved.id)
         }
       } else {
-        const saved = await saveScript(title, script)
+        const saved = await saveScript(title, script, projectId)
         setCurrentScriptId(saved.id)
       }
       await loadHistoryScripts()
@@ -143,7 +150,7 @@ export default function ScriptPage() {
   }, [pageState, messages.length])
 
   const handleStop = () => {
-    stopChatGeneration()
+    stopChatGeneration(chatScope)
     setIsLoading(false)
     setTimeline(prev => prev.filter(item => item.type !== 'ai_thinking'))
   }
@@ -195,7 +202,10 @@ export default function ScriptPage() {
         ? `[剧本助手模式] 当前剧本标题：${title}\n当前剧本内容：${script.slice(0, 1000)}` 
         : '[剧本助手模式] 用户正在开始创作新剧本'
       
-      const response = await chatWithAI(messageText, context)
+      const response = await chatWithAI(messageText, context, {
+        scope: chatScope,
+        llm: settings.llm
+      })
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),

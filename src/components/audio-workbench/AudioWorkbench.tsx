@@ -97,7 +97,7 @@ export default function AudioWorkbench({
   const [previewMode, setPreviewMode] = useState<'narration' | 'mix'>('mix')
   const [loading, setLoading] = useState(true)
   const [generatingVoice, setGeneratingVoice] = useState(false)
-  const [fixingShotAudio, setFixingShotAudio] = useState(false)
+  const [selectedShotAudioMode, setSelectedShotAudioMode] = useState<'generate' | 'regenerate' | null>(null)
   const [generatingMaster, setGeneratingMaster] = useState(false)
   const [extractingVideoAudio, setExtractingVideoAudio] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -334,7 +334,7 @@ export default function AudioWorkbench({
     }
   }, [effectiveIncludeDialogue, includeNarration, onReloadProject, projectId, refreshTimeline, workflowMode])
 
-  const handleFixSelectedShotAudio = useCallback(async () => {
+  const handleGenerateSelectedShotAudio = useCallback(async (overwrite: boolean) => {
     if (!selectedShotId) return
     const effIncludeNarration = includeNarration
     const effIncludeDialogue = effectiveIncludeDialogue
@@ -342,18 +342,34 @@ export default function AudioWorkbench({
       setError(workflowMode === 'video_dialogue' ? '音画同出模式下仅生成旁白：请先开启「旁白：开」' : '请至少选择一个：旁白 或 对白')
       return
     }
-    setFixingShotAudio(true)
+
+    const speakable = speakableByShotId[selectedShotId]
+    const needNarration = effIncludeNarration && Boolean(speakable?.narration)
+    const needDialogue = effIncludeDialogue && Boolean(speakable?.dialogue)
+    if (!needNarration && !needDialogue) {
+      setError('当前选中镜头没有可生成的人声文本（旁白/对白均为空）')
+      return
+    }
+
+    setSelectedShotAudioMode(overwrite ? 'regenerate' : 'generate')
     setError(null)
     try {
-      await generateAgentAudio(projectId, {
-        overwrite: true,
+      const result = await generateAgentAudio(projectId, {
+        overwrite,
         includeNarration: effIncludeNarration,
         includeDialogue: effIncludeDialogue,
         shotIds: [selectedShotId],
       })
       await onReloadProject(projectId)
       await refreshTimeline()
-      setNotice(`已重生成镜头音频：${selectedShotId}`)
+
+      if (Number(result.generated) > 0) {
+        setNotice(`${overwrite ? '已重生成' : '已生成'}镜头音频：${selectedShotId}`)
+      } else if (Number(result.skipped) > 0) {
+        setNotice(`镜头音频未生成（已跳过）：${selectedShotId}`)
+      } else {
+        setNotice(`镜头音频处理完成：${selectedShotId}`)
+      }
     } catch (e) {
       const msg =
         (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
@@ -361,9 +377,9 @@ export default function AudioWorkbench({
         '未知错误'
       setError(msg)
     } finally {
-      setFixingShotAudio(false)
+      setSelectedShotAudioMode(null)
     }
-  }, [effectiveIncludeDialogue, includeNarration, onReloadProject, projectId, refreshTimeline, selectedShotId, workflowMode])
+  }, [effectiveIncludeDialogue, includeNarration, onReloadProject, projectId, refreshTimeline, selectedShotId, speakableByShotId, workflowMode])
 
   const handleExtractAudioFromVideos = useCallback(async () => {
     if (workflowMode !== 'video_dialogue') return
@@ -527,15 +543,26 @@ export default function AudioWorkbench({
             )}
 
             {selectedShotId && (
-              <button
-                onClick={() => void handleFixSelectedShotAudio()}
-                disabled={fixingShotAudio || generatingVoice}
-                className="px-3 py-2 glass-button rounded-xl text-sm flex items-center gap-2 disabled:opacity-50"
-                title="仅重生成当前选中镜头的旁白/对白音频（用于修复片段）"
-              >
-                {fixingShotAudio ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />}
-                修复本镜头
-              </button>
+              <>
+                <button
+                  onClick={() => void handleGenerateSelectedShotAudio(false)}
+                  disabled={selectedShotAudioMode !== null || generatingVoice}
+                  className="px-3 py-2 glass-button rounded-xl text-sm flex items-center gap-2 disabled:opacity-50"
+                  title="仅生成当前选中镜头的人声轨（不覆盖已有）"
+                >
+                  {selectedShotAudioMode === 'generate' ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />}
+                  生成本镜头
+                </button>
+                <button
+                  onClick={() => void handleGenerateSelectedShotAudio(true)}
+                  disabled={selectedShotAudioMode !== null || generatingVoice}
+                  className="px-3 py-2 glass-button rounded-xl text-sm flex items-center gap-2 disabled:opacity-50"
+                  title="仅重生成当前选中镜头的人声轨（覆盖已有）"
+                >
+                  {selectedShotAudioMode === 'regenerate' ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />}
+                  重生成本镜头
+                </button>
+              </>
             )}
 
             <button

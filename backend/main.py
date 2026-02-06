@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Set
 import os
 import uuid
 import base64
@@ -43,15 +43,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 全局服务实例
+# 全局服务实例（Agent 运行时）
 llm_service: Optional[LLMService] = None
 image_service: Optional[ImageService] = None
-storyboard_service: Optional[ImageService] = None  # 分镜专用图像服务
-video_service: Optional[VideoService] = None  # 视频生成服务
+storyboard_service: Optional[ImageService] = None  # 分镜专用图像服务（Agent）
+video_service: Optional[VideoService] = None  # 视频生成服务（Agent）
 agent_service: Optional[AgentService] = None  # Agent 服务
 
+# 独立模块运行时（与 Agent 隔离）
+module_llm_service: Optional[LLMService] = None
+module_image_service: Optional[ImageService] = None
+module_storyboard_service: Optional[ImageService] = None
+module_video_service: Optional[VideoService] = None
+
+video_task_services: Dict[str, VideoService] = {}  # 任务级视频服务实例（模块侧）
+
 # 当前配置
-current_settings = {}
+current_settings: Dict[str, Any] = {}  # Agent settings
+module_current_settings: Dict[str, Any] = {}  # Module settings
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -63,78 +72,131 @@ os.makedirs(REF_IMAGES_DIR, exist_ok=True)
 
 def load_saved_settings():
     """启动时加载已保存的设置"""
-    global llm_service, image_service, storyboard_service, video_service, agent_service, current_settings
-    
-    saved = storage.get_settings()
-    if not saved:
-        print("[Startup] 没有找到已保存的设置")
-        return
-    
-    current_settings = saved
-    print("[Startup] 加载已保存的设置...")
-    
-    # 加载 LLM 配置
-    llm_config = saved.get('llm', {})
-    if llm_config.get('apiKey'):
-        llm_service = LLMService(
-            provider=llm_config.get('provider', 'qwen'),
-            api_key=llm_config.get('apiKey', ''),
-            base_url=llm_config.get('baseUrl') or None,
-            model=llm_config.get('model') or None
-        )
-        print(f"[Startup] LLM 已加载: provider={llm_config.get('provider')}")
-    
-    # 加载图像配置
-    img_config = saved.get('image', {})
-    local_config = saved.get('local', {})
-    
-    if local_config.get('enabled') and img_config.get('provider') in ['comfyui', 'sd-webui']:
-        image_service = ImageService(
-            provider=img_config.get('provider'),
-            model=img_config.get('model') or None,
-            comfyui_url=local_config.get('comfyuiUrl', 'http://127.0.0.1:8188'),
-            sd_webui_url=local_config.get('sdWebuiUrl', 'http://127.0.0.1:7860')
-        )
-    elif img_config.get('provider') and img_config.get('provider') != 'placeholder':
-        image_service = ImageService(
-            provider=img_config.get('provider'),
-            api_key=img_config.get('apiKey') or os.getenv("IMAGE_API_KEY", ""),
-            base_url=img_config.get('baseUrl') or None,
-            model=img_config.get('model') or None
-        )
-        print(f"[Startup] 图像服务已加载: provider={img_config.get('provider')}")
-    
-    # 加载分镜图像配置
-    sb_config = saved.get('storyboard', {})
-    if sb_config.get('provider') and sb_config.get('provider') != 'placeholder':
-        if local_config.get('enabled') and sb_config.get('provider') in ['comfyui', 'sd-webui']:
-            storyboard_service = ImageService(
-                provider=sb_config.get('provider'),
-                model=sb_config.get('model') or None,
-                comfyui_url=local_config.get('comfyuiUrl', 'http://127.0.0.1:8188'),
-                sd_webui_url=local_config.get('sdWebuiUrl', 'http://127.0.0.1:7860')
+    global llm_service, image_service, storyboard_service, video_service
+    global module_llm_service, module_image_service, module_storyboard_service, module_video_service
+    global agent_service, current_settings, module_current_settings
+
+    # Agent 运行时：只读全局 settings
+    agent_saved = storage.get_settings()
+    if agent_saved:
+        current_settings = agent_saved
+        print("[Startup] 加载 Agent settings...")
+
+        llm_config = agent_saved.get("llm", {})
+        if llm_config.get("apiKey"):
+            llm_service = LLMService(
+                provider=llm_config.get("provider", "qwen"),
+                api_key=llm_config.get("apiKey", ""),
+                base_url=llm_config.get("baseUrl") or None,
+                model=llm_config.get("model") or None,
             )
-        else:
-            storyboard_service = ImageService(
-                provider=sb_config.get('provider'),
-                api_key=sb_config.get('apiKey') or os.getenv("STORYBOARD_API_KEY", "") or os.getenv("IMAGE_API_KEY", ""),
-                base_url=sb_config.get('baseUrl') or None,
-                model=sb_config.get('model') or None
+
+        img_config = agent_saved.get("image", {})
+        local_config = agent_saved.get("local", {})
+        if local_config.get("enabled") and img_config.get("provider") in ["comfyui", "sd-webui"]:
+            image_service = ImageService(
+                provider=img_config.get("provider"),
+                model=img_config.get("model") or None,
+                comfyui_url=local_config.get("comfyuiUrl", "http://127.0.0.1:8188"),
+                sd_webui_url=local_config.get("sdWebuiUrl", "http://127.0.0.1:7860"),
             )
-        print(f"[Startup] 分镜图像服务已加载: provider={sb_config.get('provider')}")
-    
-    # 加载视频配置
-    video_config = saved.get('video', {})
-    if video_config.get('provider') and video_config.get('provider') != 'none':
-        video_service = VideoService(
-            provider=video_config.get('provider'),
-            api_key=video_config.get('apiKey') or os.getenv("VIDEO_API_KEY", ""),
-            base_url=video_config.get('baseUrl') or None,
-            model=video_config.get('model') or None
-        )
-        print(f"[Startup] 视频服务已加载: provider={video_config.get('provider')}")
-    
-    # 初始化 Agent 服务
+        elif img_config.get("provider") and img_config.get("provider") != "placeholder":
+            image_service = ImageService(
+                provider=img_config.get("provider"),
+                api_key=img_config.get("apiKey") or os.getenv("IMAGE_API_KEY", ""),
+                base_url=img_config.get("baseUrl") or None,
+                model=img_config.get("model") or None,
+            )
+
+        sb_config = agent_saved.get("storyboard", {})
+        if sb_config.get("provider") and sb_config.get("provider") != "placeholder":
+            if local_config.get("enabled") and sb_config.get("provider") in ["comfyui", "sd-webui"]:
+                storyboard_service = ImageService(
+                    provider=sb_config.get("provider"),
+                    model=sb_config.get("model") or None,
+                    comfyui_url=local_config.get("comfyuiUrl", "http://127.0.0.1:8188"),
+                    sd_webui_url=local_config.get("sdWebuiUrl", "http://127.0.0.1:7860"),
+                )
+            else:
+                storyboard_service = ImageService(
+                    provider=sb_config.get("provider"),
+                    api_key=sb_config.get("apiKey") or os.getenv("STORYBOARD_API_KEY", "") or os.getenv("IMAGE_API_KEY", ""),
+                    base_url=sb_config.get("baseUrl") or None,
+                    model=sb_config.get("model") or None,
+                )
+
+        video_config = agent_saved.get("video", {})
+        if video_config.get("provider") and video_config.get("provider") != "none":
+            video_service = VideoService(
+                provider=video_config.get("provider"),
+                api_key=video_config.get("apiKey") or os.getenv("VIDEO_API_KEY", ""),
+                base_url=video_config.get("baseUrl") or None,
+                model=video_config.get("model") or None,
+            )
+    else:
+        print("[Startup] 没有找到 Agent settings（将使用环境变量/默认值）")
+
+    # 独立模块运行时：优先 module settings，缺失时回退旧 settings（兼容老数据）
+    module_saved = storage.get_module_settings() or storage.get_settings()
+    if module_saved:
+        module_current_settings = module_saved
+        print("[Startup] 加载 Module settings...")
+
+        module_llm_cfg = module_saved.get("llm", {})
+        if module_llm_cfg.get("apiKey"):
+            module_llm_service = LLMService(
+                provider=module_llm_cfg.get("provider", "qwen"),
+                api_key=module_llm_cfg.get("apiKey", ""),
+                base_url=module_llm_cfg.get("baseUrl") or None,
+                model=module_llm_cfg.get("model") or None,
+            )
+
+        module_img_cfg = module_saved.get("image", {})
+        module_local_cfg = module_saved.get("local", {})
+        if module_local_cfg.get("enabled") and module_img_cfg.get("provider") in ["comfyui", "sd-webui"]:
+            module_image_service = ImageService(
+                provider=module_img_cfg.get("provider"),
+                model=module_img_cfg.get("model") or None,
+                comfyui_url=module_local_cfg.get("comfyuiUrl", "http://127.0.0.1:8188"),
+                sd_webui_url=module_local_cfg.get("sdWebuiUrl", "http://127.0.0.1:7860"),
+            )
+        elif module_img_cfg.get("provider") and module_img_cfg.get("provider") != "placeholder":
+            module_image_service = ImageService(
+                provider=module_img_cfg.get("provider"),
+                api_key=module_img_cfg.get("apiKey") or os.getenv("IMAGE_API_KEY", ""),
+                base_url=module_img_cfg.get("baseUrl") or None,
+                model=module_img_cfg.get("model") or None,
+            )
+
+        module_sb_cfg = module_saved.get("storyboard", {})
+        if module_sb_cfg.get("provider") and module_sb_cfg.get("provider") != "placeholder":
+            if module_local_cfg.get("enabled") and module_sb_cfg.get("provider") in ["comfyui", "sd-webui"]:
+                module_storyboard_service = ImageService(
+                    provider=module_sb_cfg.get("provider"),
+                    model=module_sb_cfg.get("model") or None,
+                    comfyui_url=module_local_cfg.get("comfyuiUrl", "http://127.0.0.1:8188"),
+                    sd_webui_url=module_local_cfg.get("sdWebuiUrl", "http://127.0.0.1:7860"),
+                )
+            else:
+                module_storyboard_service = ImageService(
+                    provider=module_sb_cfg.get("provider"),
+                    api_key=module_sb_cfg.get("apiKey") or os.getenv("STORYBOARD_API_KEY", "") or os.getenv("IMAGE_API_KEY", ""),
+                    base_url=module_sb_cfg.get("baseUrl") or None,
+                    model=module_sb_cfg.get("model") or None,
+                )
+
+        module_video_cfg = module_saved.get("video", {})
+        if module_video_cfg.get("provider") and module_video_cfg.get("provider") != "none":
+            module_video_service = VideoService(
+                provider=module_video_cfg.get("provider"),
+                api_key=module_video_cfg.get("apiKey") or os.getenv("VIDEO_API_KEY", ""),
+                base_url=module_video_cfg.get("baseUrl") or None,
+                model=module_video_cfg.get("model") or None,
+            )
+    else:
+        print("[Startup] 没有找到 Module settings（将使用环境变量/默认值）")
+
+    # 初始化 Agent 服务（仅依赖 storage，不与 module runtime 共享配置）
     agent_service = AgentService(storage)
     print("[Startup] Agent 服务已加载")
 
@@ -362,23 +424,30 @@ class GenerateRequest(BaseModel):
     storyText: str
     style: str = "cinematic"
     count: int = 4
+    llm: Optional[ModelConfig] = None
+    storyboard: Optional[ModelConfig] = None
+    local: Optional[LocalConfig] = None
 
 
 class ParseStoryRequest(BaseModel):
     storyText: str
     style: str = "cinematic"
     count: int = 4
+    llm: Optional[ModelConfig] = None
 
 
 class RegenerateRequest(BaseModel):
     prompt: str
     referenceImage: Optional[str] = None
     style: str = "cinematic"
+    storyboard: Optional[ModelConfig] = None
+    local: Optional[LocalConfig] = None
 
 
 class ChatRequest(BaseModel):
     message: str
     context: Optional[str] = None
+    llm: Optional[ModelConfig] = None
 
 
 class BridgeGenerateTextRequest(BaseModel):
@@ -392,6 +461,8 @@ class BridgeGenerateTextRequest(BaseModel):
 
 class VideoRequest(BaseModel):
     imageUrl: str
+    projectId: Optional[str] = None
+    scope: str = "module"  # module | agent
     prompt: str = ""
     duration: float = 5.0
     motionStrength: float = 0.5
@@ -407,6 +478,7 @@ class VideoRequest(BaseModel):
     firstFrameUrl: Optional[str] = None
     lastFrameUrl: Optional[str] = None
     referenceImageUrls: Optional[List[str]] = None
+    video: Optional[ModelConfig] = None
 
 
 class VideoTaskStatusRequest(BaseModel):
@@ -445,7 +517,22 @@ STYLE_PROMPTS = {
 }
 
 
-def get_llm_service() -> LLMService:
+def _is_model_access_error(error_message: str) -> bool:
+    """判断是否为模型/endpoint 不存在或无权限错误。"""
+    msg = (error_message or "").lower()
+    return (
+        "model or endpoint" in msg
+        and (
+            "does not exist" in msg
+            or "do not have access" in msg
+            or "no access" in msg
+            or "not found" in msg
+        )
+    )
+
+
+def get_agent_llm_service() -> LLMService:
+    """Agent 运行时 LLM 服务（全局 settings）。"""
     global llm_service
     if llm_service is None:
         llm_service = LLMService(
@@ -455,7 +542,53 @@ def get_llm_service() -> LLMService:
     return llm_service
 
 
+def get_module_llm_service() -> LLMService:
+    """独立模块运行时 LLM 服务（module settings）。"""
+    global module_llm_service
+    if module_llm_service is None:
+        module_llm_service = LLMService(
+            provider=os.getenv("LLM_PROVIDER", "qwen"),
+            api_key=os.getenv("LLM_API_KEY", "")
+        )
+    return module_llm_service
+
+
+def get_llm_service() -> LLMService:
+    """兼容历史调用：默认返回独立模块 LLM 服务。"""
+    return get_module_llm_service()
+
+
+def get_request_llm_service(override: Optional[ModelConfig] = None) -> LLMService:
+    """按请求构建模块 LLM 服务，避免影响 Agent 运行时。"""
+    if override is None:
+        return get_module_llm_service()
+
+    provider = (override.provider or "").strip() or "qwen"
+    api_key = (override.apiKey or "").strip()
+    base_url = (override.baseUrl or "").strip() or None
+    model = (override.model or "").strip() or None
+
+    if provider.startswith("custom_"):
+        custom = storage.get_module_custom_provider(provider) or storage.get_custom_provider(provider) or {}
+        if isinstance(custom, dict) and str(custom.get("category") or "") == "llm":
+            api_key = str(custom.get("apiKey") or api_key).strip()
+            base_url = str(custom.get("baseUrl") or (base_url or "")).strip() or None
+            model = str(custom.get("model") or (model or "")).strip() or None
+
+    # 前端未携带密钥时，回退到模块设置，保持兼容行为。
+    if not api_key:
+        return get_module_llm_service()
+
+    return LLMService(
+        provider=provider,
+        api_key=api_key,
+        base_url=base_url,
+        model=model
+    )
+
+
 def get_image_service() -> ImageService:
+    """Agent 运行时图像服务（全局 settings）。"""
     global image_service
     if image_service is None:
         image_service = ImageService(
@@ -466,34 +599,127 @@ def get_image_service() -> ImageService:
 
 
 def get_storyboard_service() -> ImageService:
-    """获取分镜图像服务，如果未配置则回退到普通图像服务"""
+    """Agent 分镜图像服务；未配置则回退到 Agent 图像服务。"""
     global storyboard_service
     if storyboard_service is not None:
         return storyboard_service
-    # 回退到普通图像服务
     return get_image_service()
+
+
+def get_module_image_service() -> ImageService:
+    """独立模块图像服务（module settings）。"""
+    global module_image_service
+    if module_image_service is None:
+        module_image_service = ImageService(
+            provider=os.getenv("IMAGE_PROVIDER", "placeholder"),
+            api_key=os.getenv("IMAGE_API_KEY", "")
+        )
+    return module_image_service
+
+
+def get_module_storyboard_service() -> ImageService:
+    """独立模块分镜图像服务；未配置则回退到独立模块图像服务。"""
+    global module_storyboard_service
+    if module_storyboard_service is not None:
+        return module_storyboard_service
+    return get_module_image_service()
+
+
+def resolve_request_model_config(
+    override: ModelConfig,
+    expected_categories: Optional[Set[str]] = None,
+    module_scope: bool = True
+) -> Tuple[str, str, Optional[str], Optional[str]]:
+    provider = (override.provider or "").strip()
+    api_key = (override.apiKey or "").strip()
+    base_url = (override.baseUrl or "").strip() or None
+    model = (override.model or "").strip() or None
+
+    if provider.startswith("custom_"):
+        if module_scope:
+            custom = storage.get_module_custom_provider(provider) or storage.get_custom_provider(provider) or {}
+        else:
+            custom = storage.get_custom_provider(provider) or {}
+        custom_category = str(custom.get("category") or "")
+        if isinstance(custom, dict) and (
+            expected_categories is None or custom_category in expected_categories
+        ):
+            api_key = str(custom.get("apiKey") or api_key).strip()
+            base_url = str(custom.get("baseUrl") or (base_url or "")).strip() or None
+            model = str(custom.get("model") or (model or "")).strip() or None
+
+    return provider, api_key, base_url, model
+
+
+def get_request_image_service(
+    override: Optional[ModelConfig] = None,
+    local_override: Optional[LocalConfig] = None,
+    mode: str = "image",
+    module_scope: bool = True
+) -> ImageService:
+    if module_scope:
+        fallback = get_module_storyboard_service() if mode == "storyboard" else get_module_image_service()
+    else:
+        fallback = get_storyboard_service() if mode == "storyboard" else get_image_service()
+    if override is None:
+        return fallback
+
+    provider, api_key, base_url, model = resolve_request_model_config(
+        override, expected_categories={"image", "storyboard"}, module_scope=module_scope
+    )
+    if not provider:
+        return fallback
+    if provider == "placeholder":
+        return ImageService(provider="placeholder", model=model)
+
+    local_cfg = local_override or LocalConfig()
+    if provider in {"comfyui", "sd-webui"}:
+        comfyui_url = local_cfg.comfyuiUrl
+        sd_webui_url = local_cfg.sdWebuiUrl
+        if base_url:
+            if provider == "comfyui":
+                comfyui_url = base_url
+            else:
+                sd_webui_url = base_url
+        return ImageService(
+            provider=provider,
+            model=model,
+            comfyui_url=comfyui_url,
+            sd_webui_url=sd_webui_url
+        )
+
+    if not api_key:
+        return fallback
+
+    return ImageService(
+        provider=provider,
+        api_key=api_key,
+        base_url=base_url,
+        model=model
+    )
 
 
 @app.get("/health")
 async def health_check():
+    module_llm = get_module_llm_service()
+    module_image = get_module_image_service()
     return {
         "status": "ok",
         "version": "1.0.0",
-        "llm_configured": llm_service is not None and bool(llm_service.api_key),
-        "image_configured": image_service is not None
+        "llm_configured": bool(module_llm.api_key),
+        "image_configured": bool(module_image.provider and module_image.provider != "placeholder")
     }
 
 
-@app.post("/api/settings")
-async def update_settings(request: SettingsRequest):
-    """更新服务配置"""
-    global llm_service, image_service, storyboard_service, video_service, current_settings
-    
-    current_settings = request.model_dump()
+def apply_agent_runtime_settings(request: SettingsRequest) -> Dict[str, Any]:
+    """应用 Agent 运行时设置（全局 settings）。"""
+    global llm_service, image_service, storyboard_service, video_service
+
+    applied_settings = request.model_dump()
     if request.tts:
         # Avoid persisting legacy flat fields (None) into YAML.
-        current_settings["tts"] = request.tts.model_dump(exclude_none=True)
-    
+        applied_settings["tts"] = request.tts.model_dump(exclude_none=True)
+
     # 更新 LLM 服务
     llm_config = request.llm
     llm_service = LLMService(
@@ -502,21 +728,20 @@ async def update_settings(request: SettingsRequest):
         base_url=llm_config.baseUrl if llm_config.baseUrl else None,
         model=llm_config.model if llm_config.model else None
     )
-    print(f"[Settings] LLM 配置更新: provider={llm_config.provider}, model={llm_config.model}")
-    
+    print(f"[Settings][Agent] LLM 配置更新: provider={llm_config.provider}, model={llm_config.model}")
+
     # 更新图像服务
     img_config = request.image
     local_config = request.local
-    
+
     if local_config.enabled and img_config.provider in ['comfyui', 'sd-webui']:
-        # 使用本地服务
         image_service = ImageService(
             provider=img_config.provider,
             model=img_config.model if img_config.model else None,
             comfyui_url=local_config.comfyuiUrl,
             sd_webui_url=local_config.sdWebuiUrl
         )
-        print(f"[Settings] 图像服务配置更新: 本地模式, provider={img_config.provider}")
+        print(f"[Settings][Agent] 图像服务配置更新: 本地模式, provider={img_config.provider}")
     else:
         image_service = ImageService(
             provider=img_config.provider,
@@ -524,8 +749,8 @@ async def update_settings(request: SettingsRequest):
             base_url=img_config.baseUrl if img_config.baseUrl else None,
             model=img_config.model if img_config.model else None
         )
-        print(f"[Settings] 图像服务配置更新: API模式, provider={img_config.provider}, model={img_config.model}")
-    
+        print(f"[Settings][Agent] 图像服务配置更新: API模式, provider={img_config.provider}, model={img_config.model}")
+
     # 更新分镜图像服务
     if request.storyboard:
         sb_config = request.storyboard
@@ -543,8 +768,8 @@ async def update_settings(request: SettingsRequest):
                 base_url=sb_config.baseUrl if sb_config.baseUrl else None,
                 model=sb_config.model if sb_config.model else None
             )
-        print(f"[Settings] 分镜图像服务配置更新: provider={sb_config.provider}, model={sb_config.model}")
-    
+        print(f"[Settings][Agent] 分镜图像服务配置更新: provider={sb_config.provider}, model={sb_config.model}")
+
     # 更新视频服务
     video_config = request.video
     if video_config.provider and video_config.provider != 'none':
@@ -554,25 +779,121 @@ async def update_settings(request: SettingsRequest):
             base_url=video_config.baseUrl if video_config.baseUrl else None,
             model=video_config.model if video_config.model else None
         )
-        print(f"[Settings] 视频服务配置更新: provider={video_config.provider}, model={video_config.model}")
+        print(f"[Settings][Agent] 视频服务配置更新: provider={video_config.provider}, model={video_config.model}")
     else:
         video_service = None
-        print("[Settings] 视频服务未配置")
+        print("[Settings][Agent] 视频服务未配置")
 
     # TTS 配置仅持久化（按需在调用时使用）
     if request.tts:
         tts_provider = str(request.tts.provider or "").strip() or "volc_tts_v1_http"
         print(
-            "[Settings] TTS 配置已更新: "
+            "[Settings][Agent] TTS 配置已更新: "
             f"provider={tts_provider}, "
             f"volc.model={request.tts.volc.model}, "
             f"fish.model={request.tts.fish.model}"
         )
-    
-    # 持久化设置到文件
+
+    return applied_settings
+
+
+def apply_module_runtime_settings(request: SettingsRequest) -> Dict[str, Any]:
+    """应用独立模块运行时设置（与 Agent 隔离）。"""
+    global module_llm_service, module_image_service, module_storyboard_service, module_video_service
+
+    applied_settings = request.model_dump()
+    if request.tts:
+        # Avoid persisting legacy flat fields (None) into YAML.
+        applied_settings["tts"] = request.tts.model_dump(exclude_none=True)
+
+    llm_config = request.llm
+    module_llm_service = LLMService(
+        provider=llm_config.provider,
+        api_key=llm_config.apiKey,
+        base_url=llm_config.baseUrl if llm_config.baseUrl else None,
+        model=llm_config.model if llm_config.model else None
+    )
+    print(f"[Settings][Module] LLM 配置更新: provider={llm_config.provider}, model={llm_config.model}")
+
+    img_config = request.image
+    local_config = request.local
+
+    if local_config.enabled and img_config.provider in ['comfyui', 'sd-webui']:
+        module_image_service = ImageService(
+            provider=img_config.provider,
+            model=img_config.model if img_config.model else None,
+            comfyui_url=local_config.comfyuiUrl,
+            sd_webui_url=local_config.sdWebuiUrl
+        )
+        print(f"[Settings][Module] 图像服务配置更新: 本地模式, provider={img_config.provider}")
+    else:
+        module_image_service = ImageService(
+            provider=img_config.provider,
+            api_key=img_config.apiKey,
+            base_url=img_config.baseUrl if img_config.baseUrl else None,
+            model=img_config.model if img_config.model else None
+        )
+        print(f"[Settings][Module] 图像服务配置更新: API模式, provider={img_config.provider}, model={img_config.model}")
+
+    if request.storyboard:
+        sb_config = request.storyboard
+        if local_config.enabled and sb_config.provider in ['comfyui', 'sd-webui']:
+            module_storyboard_service = ImageService(
+                provider=sb_config.provider,
+                model=sb_config.model if sb_config.model else None,
+                comfyui_url=local_config.comfyuiUrl,
+                sd_webui_url=local_config.sdWebuiUrl
+            )
+        else:
+            module_storyboard_service = ImageService(
+                provider=sb_config.provider,
+                api_key=sb_config.apiKey,
+                base_url=sb_config.baseUrl if sb_config.baseUrl else None,
+                model=sb_config.model if sb_config.model else None
+            )
+        print(f"[Settings][Module] 分镜图像服务配置更新: provider={sb_config.provider}, model={sb_config.model}")
+
+    video_config = request.video
+    if video_config.provider and video_config.provider != 'none':
+        module_video_service = VideoService(
+            provider=video_config.provider,
+            api_key=video_config.apiKey,
+            base_url=video_config.baseUrl if video_config.baseUrl else None,
+            model=video_config.model if video_config.model else None
+        )
+        print(f"[Settings][Module] 视频服务配置更新: provider={video_config.provider}, model={video_config.model}")
+    else:
+        module_video_service = None
+        print("[Settings][Module] 视频服务未配置")
+
+    if request.tts:
+        tts_provider = str(request.tts.provider or "").strip() or "volc_tts_v1_http"
+        print(
+            "[Settings][Module] TTS 配置已更新: "
+            f"provider={tts_provider}, "
+            f"volc.model={request.tts.volc.model}, "
+            f"fish.model={request.tts.fish.model}"
+        )
+
+    return applied_settings
+
+
+@app.post("/api/settings")
+async def update_settings(request: SettingsRequest):
+    """更新设置（兼容旧接口，仍写入全局 settings）。"""
+    global current_settings
+    current_settings = apply_agent_runtime_settings(request)
     storage.save_settings(current_settings)
-    
     return {"status": "ok", "message": "设置已更新"}
+
+
+@app.post("/api/module/settings")
+async def update_module_settings(request: SettingsRequest):
+    """更新独立模块设置（与 Agent 设置隔离）。"""
+    global module_current_settings
+    module_current_settings = apply_module_runtime_settings(request)
+    storage.save_module_settings(module_current_settings)
+    return {"status": "ok", "message": "模块设置已更新"}
 
 
 @app.post("/api/test-connection")
@@ -593,6 +914,23 @@ async def test_connection(request: TestConnectionRequest):
 
     if category not in {"llm", "image", "storyboard", "video"}:
         raise HTTPException(status_code=400, detail="category must be one of: llm, image, storyboard, video")
+
+    if (cfg.provider or "").startswith("custom_"):
+        custom = storage.get_module_custom_provider(cfg.provider) or storage.get_custom_provider(cfg.provider) or {}
+        category_aliases = {
+            "llm": {"llm"},
+            "image": {"image", "storyboard"},
+            "storyboard": {"image", "storyboard"},
+            "video": {"video"},
+        }
+        expected = category_aliases.get(category, set())
+        if isinstance(custom, dict) and str(custom.get("category") or "") in expected:
+            cfg = ModelConfig(
+                provider=cfg.provider,
+                apiKey=str(custom.get("apiKey") or cfg.apiKey or ""),
+                baseUrl=str(custom.get("baseUrl") or cfg.baseUrl or ""),
+                model=str(custom.get("model") or cfg.model or "")
+            )
 
     # ========== LLM ==========
     if category == "llm":
@@ -785,6 +1123,19 @@ async def get_settings():
     return {"status": "not_configured"}
 
 
+@app.get("/api/module/settings")
+async def get_module_settings():
+    """获取独立模块设置（优先 module settings，缺失时回退旧 settings）。"""
+    saved = storage.get_module_settings() or storage.get_settings()
+    if saved:
+        try:
+            saved["tts"] = TTSConfig.model_validate(saved.get("tts") or {}).model_dump(exclude_none=True)
+        except Exception:
+            pass
+        return saved
+    return {"status": "not_configured"}
+
+
 @app.post("/api/tts/test")
 async def test_tts(request: TestTTSRequest):
     """测试 TTS 连通性（最小合成）"""
@@ -889,7 +1240,7 @@ async def test_tts(request: TestTTSRequest):
             raise HTTPException(status_code=500, detail=f"TTS 测试失败: {msg}")
 
     if provider.startswith("custom_"):
-        custom_provider = storage.get_custom_provider(provider) or {}
+        custom_provider = storage.get_module_custom_provider(provider) or storage.get_custom_provider(provider) or {}
         if not custom_provider or str(custom_provider.get("category") or "") != "tts":
             raise HTTPException(status_code=400, detail="自定义 TTS 配置不存在或类别不匹配（请先在设置里新增 tts 自定义配置）")
 
@@ -979,7 +1330,7 @@ async def test_tts(request: TestTTSRequest):
 
 
 def _get_fish_service_from_settings() -> FishAudioService:
-    settings = storage.get_settings() or {}
+    settings = storage.get_module_settings() or storage.get_settings() or {}
     cfg = TTSConfig.model_validate(settings.get("tts") or {})
     fish_cfg = cfg.fish
     api_key = str(fish_cfg.apiKey or "").strip()
@@ -1094,7 +1445,7 @@ async def fish_create_model(
 
 @app.post("/api/parse-story")
 async def parse_story(request: ParseStoryRequest):
-    service = get_llm_service()
+    service = get_request_llm_service(request.llm)
     prompts = await service.parse_story(
         story_text=request.storyText,
         count=request.count,
@@ -1105,8 +1456,8 @@ async def parse_story(request: ParseStoryRequest):
 
 @app.post("/api/generate")
 async def generate_storyboards(request: GenerateRequest):
-    llm = get_llm_service()
-    img = get_storyboard_service()  # 使用分镜专用服务
+    llm = get_request_llm_service(request.llm)
+    img = get_request_image_service(request.storyboard, request.local, mode="storyboard")
     
     style_prompt = STYLE_PROMPTS.get(request.style, STYLE_PROMPTS["cinematic"])
     
@@ -1142,7 +1493,7 @@ async def generate_storyboards(request: GenerateRequest):
 
 @app.post("/api/regenerate")
 async def regenerate_image(request: RegenerateRequest):
-    img = get_storyboard_service()  # 使用分镜专用服务
+    img = get_request_image_service(request.storyboard, request.local, mode="storyboard")
     style_prompt = STYLE_PROMPTS.get(request.style, STYLE_PROMPTS["cinematic"])
     full_prompt = f"{request.prompt}, {style_prompt}"
     
@@ -1160,7 +1511,7 @@ async def regenerate_image(request: RegenerateRequest):
 
 @app.post("/api/chat")
 async def chat_with_ai(request: ChatRequest):
-    service = get_llm_service()
+    service = get_request_llm_service(request.llm)
     
     try:
         reply = await service.chat(
@@ -1175,7 +1526,7 @@ async def chat_with_ai(request: ChatRequest):
 
 @app.post("/api/bridge/generate-text")
 async def bridge_generate_text(request: BridgeGenerateTextRequest):
-    """提供给 demo 的通用文本生成 bridge（使用主项目 llm 配置）。"""
+    """提供给 demo 的通用文本生成 bridge（使用独立模块 llm 配置）。"""
     service = get_llm_service()
 
     try:
@@ -1414,6 +1765,8 @@ async def get_uploaded_file(category: str, filename: str):
 
 class GenerateImageRequest(BaseModel):
     prompt: str
+    projectId: Optional[str] = None
+    scope: str = "module"  # module | agent
     negativePrompt: Optional[str] = "blurry, low quality, distorted, deformed, ugly"
     width: int = 1024
     height: int = 576
@@ -1422,6 +1775,8 @@ class GenerateImageRequest(BaseModel):
     style: Optional[str] = None
     referenceImage: Optional[str] = None
     referenceImages: Optional[List[str]] = None
+    image: Optional[ModelConfig] = None
+    local: Optional[LocalConfig] = None
 
 
 # 风格预设
@@ -1440,21 +1795,18 @@ STYLE_PRESETS = {
 @app.post("/api/generate-image")
 async def generate_single_image(request: GenerateImageRequest):
     """单独生成一张图像"""
-    global image_service
-    
-    # 如果没有配置过，使用默认服务
-    if image_service is None:
-        image_service = ImageService(provider="placeholder")
+    module_scope = (request.scope or "module") != "agent"
+    service = get_request_image_service(request.image, request.local, mode="image", module_scope=module_scope)
     
     # 处理风格预设
     final_prompt = request.prompt
     if request.style and request.style in STYLE_PRESETS:
         final_prompt = f"{request.prompt}, {STYLE_PRESETS[request.style]}"
     
-    print(f"[API] 图像生成请求: provider={image_service.provider}, model={image_service.model}, size={request.width}x{request.height}")
+    print(f"[API] 图像生成请求: provider={service.provider}, model={service.model}, size={request.width}x{request.height}")
     
     try:
-        result = await image_service.generate(
+        result = await service.generate(
             prompt=final_prompt,
             reference_image=request.referenceImage,
             reference_images=request.referenceImages,
@@ -1474,13 +1826,14 @@ async def generate_single_image(request: GenerateImageRequest):
             prompt=request.prompt,
             image_url=image_url,
             negative_prompt=request.negativePrompt or "",
-            provider=image_service.provider,
-            model=image_service.model or "",
+            provider=service.provider,
+            model=service.model or "",
             width=request.width,
             height=request.height,
             steps=request.steps,
             seed=actual_seed,
-            style=request.style
+            style=request.style,
+            project_id=request.projectId
         )
         
         return {
@@ -1493,21 +1846,58 @@ async def generate_single_image(request: GenerateImageRequest):
     except Exception as e:
         error_msg = str(e)
         print(f"图像生成失败: {error_msg}")
+        if _is_model_access_error(error_msg):
+            guidance = (
+                "当前图像模型不可用或无权限。"
+                "如果你使用火山方舟/豆包，请在设置里填写 /models 返回的 endpoint id（通常是 ep-xxx），"
+                "不要填展示名。"
+            )
+            raise HTTPException(status_code=500, detail=f"图像生成失败: {guidance}")
         raise HTTPException(status_code=500, detail=f"图像生成失败: {error_msg}")
 
 
 def get_video_service() -> VideoService:
-    """获取视频服务"""
+    """Agent 运行时视频服务（全局 settings）。"""
     global video_service
     if video_service is None:
         video_service = VideoService(provider="none")
     return video_service
 
 
+def get_module_video_service() -> VideoService:
+    """独立模块运行时视频服务（module settings）。"""
+    global module_video_service
+    if module_video_service is None:
+        module_video_service = VideoService(provider="none")
+    return module_video_service
+
+
+def get_request_video_service(override: Optional[ModelConfig] = None, module_scope: bool = True) -> VideoService:
+    fallback = get_module_video_service() if module_scope else get_video_service()
+    if override is None:
+        return fallback
+
+    provider, api_key, base_url, model = resolve_request_model_config(
+        override, expected_categories={"video"}, module_scope=module_scope
+    )
+    if not provider or provider == "none":
+        return VideoService(provider="none", model=model)
+    if not api_key:
+        return fallback
+
+    return VideoService(
+        provider=provider,
+        api_key=api_key,
+        base_url=base_url,
+        model=model
+    )
+
+
 @app.post("/api/generate-video")
 async def generate_video(request: VideoRequest):
     """生成视频（从图片）"""
-    service = get_video_service()
+    module_scope = (request.scope or "module") != "agent"
+    service = get_request_video_service(request.video, module_scope=module_scope)
     
     print(f"[API] 视频生成请求: provider={service.provider}, model={service.model}")
     print(f"[API] 参数: duration={request.duration}, resolution={request.resolution}, ratio={request.ratio}")
@@ -1540,11 +1930,16 @@ async def generate_video(request: VideoRequest):
             provider=service.provider,
             model=service.model or "",
             duration=request.duration,
-            seed=result.get("seed")
+            seed=result.get("seed"),
+            project_id=request.projectId
         )
+
+        task_id = result.get("task_id")
+        if task_id:
+            video_task_services[task_id] = service
         
         return {
-            "taskId": result.get("task_id"),
+            "taskId": task_id,
             "status": result.get("status"),
             "videoUrl": result.get("video_url"),
             "duration": result.get("duration"),
@@ -1560,7 +1955,7 @@ async def generate_video(request: VideoRequest):
 @app.post("/api/video-task-status")
 async def check_video_task_status(request: VideoTaskStatusRequest):
     """检查视频生成任务状态"""
-    service = get_video_service()
+    service = video_task_services.get(request.taskId) or get_module_video_service()
     
     try:
         result = await service.check_task_status(request.taskId)
@@ -1572,6 +1967,9 @@ async def check_video_task_status(request: VideoTaskStatusRequest):
                 "completed",
                 result.get("video_url")
             )
+            video_task_services.pop(request.taskId, None)
+        elif result.get("status") == "error":
+            video_task_services.pop(request.taskId, None)
         
         return {
             "taskId": request.taskId,
@@ -1589,9 +1987,16 @@ async def check_video_task_status(request: VideoTaskStatusRequest):
 
 
 @app.get("/api/videos/history")
-async def get_video_history(limit: int = 50):
+async def get_video_history(limit: int = 50, project_id: Optional[str] = None):
     """获取视频生成历史"""
-    videos = storage.list_generated_videos(limit)
+    videos = storage.list_generated_videos(limit, project_id=project_id)
+    return {"videos": videos}
+
+
+@app.get("/api/agent/videos/history")
+async def get_agent_video_history(limit: int = 50, project_id: Optional[str] = None):
+    """获取 Agent 视频历史（用于独立模块分区展示）。"""
+    videos = storage.list_agent_generated_videos(limit, project_id=project_id)
     return {"videos": videos}
 
 
@@ -1777,9 +2182,16 @@ async def delete_script(script_id: str):
 # ========== 图像历史 API ==========
 
 @app.get("/api/images/history")
-async def get_image_history(limit: int = 100):
+async def get_image_history(limit: int = 100, project_id: Optional[str] = None):
     """获取图像生成历史"""
-    images = storage.list_generated_images(limit)
+    images = storage.list_generated_images(limit, project_id=project_id)
+    return {"images": images}
+
+
+@app.get("/api/agent/images/history")
+async def get_agent_image_history(limit: int = 100, project_id: Optional[str] = None):
+    """获取 Agent 图片历史（用于独立模块分区展示）。"""
+    images = storage.list_agent_generated_images(limit, project_id=project_id)
     return {"images": images}
 
 
@@ -1857,9 +2269,9 @@ async def clear_chat_history(session_id: str, module: Optional[str] = None):
 
 
 @app.get("/api/chat/sessions")
-async def list_chat_sessions(limit: int = 50):
+async def list_chat_sessions(limit: int = 50, module: Optional[str] = None):
     """获取所有对话会话列表"""
-    sessions = storage.list_chat_sessions(limit)
+    sessions = storage.list_chat_sessions(limit, module=module)
     return {"sessions": sessions}
 
 
@@ -2007,6 +2419,62 @@ class UpdateCustomProviderRequest(BaseModel):
     models: Optional[List[str]] = None
 
 
+def _validate_custom_provider_category(category: str):
+    if category not in ['llm', 'image', 'storyboard', 'video', 'tts']:
+        raise HTTPException(status_code=400, detail="无效的类别，必须是 llm/image/storyboard/video/tts")
+
+
+@app.get("/api/module/custom-providers")
+async def list_module_custom_providers(category: Optional[str] = None):
+    """获取独立模块自定义配置预设列表。"""
+    providers = storage.list_module_custom_providers(category)
+    return {"providers": providers}
+
+
+@app.post("/api/module/custom-providers")
+async def add_module_custom_provider(request: CustomProviderRequest):
+    """添加独立模块自定义配置预设（与 Agent 隔离）。"""
+    _validate_custom_provider_category(request.category)
+
+    config = {
+        "apiKey": request.apiKey,
+        "baseUrl": request.baseUrl,
+        "model": request.model,
+        "models": request.models
+    }
+
+    provider = storage.add_module_custom_provider(request.name, request.category, config)
+    return provider
+
+
+@app.get("/api/module/custom-providers/{provider_id}")
+async def get_module_custom_provider(provider_id: str):
+    """获取单个独立模块自定义配置预设。"""
+    provider = storage.get_module_custom_provider(provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail="配置预设不存在")
+    return provider
+
+
+@app.put("/api/module/custom-providers/{provider_id}")
+async def update_module_custom_provider(provider_id: str, request: UpdateCustomProviderRequest):
+    """更新独立模块自定义配置预设。"""
+    updates = request.model_dump(exclude_none=True)
+    provider = storage.update_module_custom_provider(provider_id, updates)
+    if not provider:
+        raise HTTPException(status_code=404, detail="配置预设不存在")
+    return provider
+
+
+@app.delete("/api/module/custom-providers/{provider_id}")
+async def delete_module_custom_provider(provider_id: str):
+    """删除独立模块自定义配置预设。"""
+    success = storage.delete_module_custom_provider(provider_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="配置预设不存在")
+    return {"status": "ok"}
+
+
 @app.get("/api/custom-providers")
 async def list_custom_providers(category: Optional[str] = None):
     """获取自定义配置预设列表"""
@@ -2020,8 +2488,7 @@ async def add_custom_provider(request: CustomProviderRequest):
     
     用户可以添加多个自定义配置，每个配置有唯一的 id（以 custom_ 开头）和 isCustom=true 标识
     """
-    if request.category not in ['llm', 'image', 'storyboard', 'video', 'tts']:
-        raise HTTPException(status_code=400, detail="无效的类别，必须是 llm/image/storyboard/video/tts")
+    _validate_custom_provider_category(request.category)
     
     config = {
         "apiKey": request.apiKey,

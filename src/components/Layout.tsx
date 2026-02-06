@@ -21,6 +21,13 @@ export default function Layout({ children }: LayoutProps) {
     { to: '/home/settings', icon: Settings, label: '设置', gradient: 'from-slate-500 to-gray-400' }
   ]
 
+  const isStandaloneModuleRoute = [
+    '/home/script',
+    '/home/image',
+    '/home/storyboard',
+    '/home/video'
+  ].some((route) => location.pathname.startsWith(route))
+
   const isSubPage = location.pathname !== '/home'
 
   // 双击 Logo 返回欢迎页
@@ -108,8 +115,8 @@ export default function Layout({ children }: LayoutProps) {
         {children}
       </main>
 
-      {/* 悬浮创意助手 */}
-      <AIChatPanel />
+      {/* 悬浮创意助手（独立模块页不显示，避免与 Agent 通道混用） */}
+      {!isStandaloneModuleRoute && <AIChatPanel />}
     </div>
   )
 }

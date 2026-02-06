@@ -1,0 +1,76 @@
+llm:
+  provider: custom_96f7e175
+  apiKey: e8649622-6a8e-46c3-ada8-b9e72e56270b
+  baseUrl: https://ark.cn-beijing.volces.com/api/v3
+  model: doubao-seed-1-8-251228
+  customProvider: xw-火山-doubao1.8
+image:
+  provider: custom_2dcc19a3
+  apiKey: efc55e86-fe0f-44e8-9b17-18af964550cc
+  baseUrl: https://ark.cn-beijing.volces.com/api/v3
+  model: doubao-seedream-4-5-251128
+  customProvider: xw-火山-即梦4.5
+storyboard:
+  provider: custom_2dcc19a3
+  apiKey: efc55e86-fe0f-44e8-9b17-18af964550cc
+  baseUrl: https://ark.cn-beijing.volces.com/api/v3
+  model: Doubao-Seedream-4.5
+  customProvider: xw-火山-即梦4.5
+video:
+  provider: custom_ca16b98f
+  apiKey: 8f769410-24ef-43a1-a3bd-4264badb1ee7
+  baseUrl: https://ark.cn-beijing.volces.com/api/v3
+  model: doubao-seedance-1-5-pro-251215
+  customProvider: xw-火山-seeddance-1.0pro
+local:
+  enabled: false
+  comfyuiUrl: http://127.0.0.1:8188
+  sdWebuiUrl: http://127.0.0.1:7860
+  vramStrategy: auto
+tts:
+  provider: aliyun_bailian_tts_v2
+  volc:
+    appid: '1539962654'
+    accessToken: e523a52e21184d6ebba903585c67418d
+    endpoint: https://openspeech.bytedance.com/api/v1/tts
+    cluster: volcano_tts
+    model: seed-tts-1.1
+    encoding: mp3
+    rate: 24000
+    speedRatio: 1.0
+    narratorVoiceType: zh_female_sajiaonvyou_moon_bigtts
+    dialogueVoiceType: zh_female_yuanqinvyou_moon_bigtts
+    dialogueMaleVoiceType: ''
+    dialogueFemaleVoiceType: ''
+  fish:
+    apiKey: ''
+    baseUrl: https://api.fish.audio
+    model: speech-1.5
+    encoding: mp3
+    rate: 24000
+    speedRatio: 1.0
+    narratorVoiceType: ''
+    dialogueVoiceType: ''
+    dialogueMaleVoiceType: ''
+    dialogueFemaleVoiceType: ''
+  bailian:
+    apiKey: sk-91eeefd017df40f090e92a30143d2fe5
+    baseUrl: wss://dashscope.aliyuncs.com/api-ws/v1/inference
+    workspace: ''
+    model: cosyvoice-v3-flash
+    encoding: mp3
+    rate: 24000
+    speedRatio: 1.0
+    narratorVoiceType: longfeifei_v3
+    dialogueVoiceType: ''
+    dialogueMaleVoiceType: longanyang
+    dialogueFemaleVoiceType: longanhuan
+  custom:
+    encoding: mp3
+    rate: 24000
+    speedRatio: 1.0
+    narratorVoiceType: ''
+    dialogueVoiceType: ''
+    dialogueMaleVoiceType: ''
+    dialogueFemaleVoiceType: ''
+updated_at: '2026-02-06T14:52:58.859608'

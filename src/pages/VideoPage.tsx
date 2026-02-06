@@ -17,21 +17,27 @@ import {
   Volume2,
   VolumeX,
   CheckCircle,
-  Circle
+  Circle,
+  PanelRightClose,
+  PanelRightOpen
 } from 'lucide-react'
+import { useLocation } from 'react-router-dom'
 import ModuleChat from '../components/ModuleChat'
+import ModuleModelSwitcher from '../components/ModuleModelSwitcher'
 import ProjectBackButton from '../components/ProjectBackButton'
 import {
   generateVideo,
   checkVideoTaskStatus,
   getVideoHistory,
+  getAgentVideoHistory,
   deleteVideoHistory
 } from '../services/api'
-import { useSettingsStore } from '../store/settingsStore'
+import { useSettingsStore, VIDEO_PROVIDERS } from '../store/settingsStore'
 
 // 统一的任务项类型
 interface TaskItem {
   id: string
+  origin: 'module' | 'agent'
   type: 'current' | 'history'  // 当前会话 or 历史记录
   sourceImage: string
   prompt: string
@@ -55,10 +61,15 @@ interface TaskItem {
 }
 
 export default function VideoPage() {
+  const location = useLocation()
+  const projectId = new URLSearchParams(location.search).get('project') || undefined
   // 当前会话的任务
   const [currentTasks, setCurrentTasks] = useState<TaskItem[]>([])
   // 历史任务
   const [historyTasks, setHistoryTasks] = useState<TaskItem[]>([])
+  const [agentHistoryTasks, setAgentHistoryTasks] = useState<TaskItem[]>([])
+  const [activeHistoryTab, setActiveHistoryTab] = useState<'module' | 'agent'>('module')
+  const [chatCollapsed, setChatCollapsed] = useState(false)
   // 选中的任务
   const [selectedTask, setSelectedTask] = useState<TaskItem | null>(null)
   // 播放状态
@@ -68,8 +79,17 @@ export default function VideoPage() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const pollingRef = useRef<Map<string, NodeJS.Timeout>>(new Map())
   
-  const { settings } = useSettingsStore()
+  const { settings, updateVideo, syncToBackend } = useSettingsStore()
   const isConfigured = settings.video.provider !== 'none' && settings.video.apiKey
+
+  const applyVideoModel = async (updates: Partial<typeof settings.video>) => {
+    updateVideo(updates)
+    try {
+      await syncToBackend()
+    } catch (error) {
+      console.error('同步视频模型设置失败:', error)
+    }
+  }
 
   // 默认参数
   const [defaultDuration] = useState(5)
@@ -83,16 +103,19 @@ export default function VideoPage() {
   // 加载历史记录
   useEffect(() => {
     loadHistory()
+    loadAgentHistory()
+    consumePendingTasks()
     return () => {
       pollingRef.current.forEach(timer => clearTimeout(timer))
     }
-  }, [])
+  }, [projectId])
 
   const loadHistory = async () => {
     try {
-      const data = await getVideoHistory(50)
+      const data = await getVideoHistory(50, projectId)
       const tasks: TaskItem[] = data.map(item => ({
         id: item.id,
+        origin: 'module',
         type: 'history',
         sourceImage: item.source_image || '',
         prompt: item.prompt || '',
@@ -113,8 +136,78 @@ export default function VideoPage() {
     }
   }
 
-  // 合并当前任务和历史任务
-  const allTasks = [...currentTasks, ...historyTasks]
+  const loadAgentHistory = async () => {
+    try {
+      const data = await getAgentVideoHistory(50, projectId)
+      const tasks: TaskItem[] = data.map(item => ({
+        id: item.id,
+        origin: 'agent',
+        type: 'history',
+        sourceImage: item.source_image || '',
+        prompt: item.prompt || '',
+        videoUrl: item.video_url,
+        taskId: item.task_id,
+        status: item.status === 'completed' ? 'done' : item.status === 'processing' ? 'processing' : 'error',
+        progress: item.status === 'completed' ? 100 : 0,
+        duration: item.duration || 5,
+        motionStrength: 0.5,
+        seed: item.seed,
+        createdAt: item.created_at,
+        provider: item.provider,
+        model: item.model
+      }))
+      setAgentHistoryTasks(tasks)
+    } catch (error) {
+      console.error('加载 Agent 历史失败:', error)
+    }
+  }
+
+  const consumePendingTasks = () => {
+    const key = `storyboarder:video:pending:${projectId || 'global'}`
+    try {
+      const raw = sessionStorage.getItem(key)
+      if (!raw) return
+      const items = JSON.parse(raw)
+      if (!Array.isArray(items) || items.length === 0) {
+        sessionStorage.removeItem(key)
+        return
+      }
+      const newTasks: TaskItem[] = items
+        .filter((item) => item && typeof item.sourceImage === 'string')
+        .map((item) => ({
+          id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+          origin: 'module',
+          type: 'current',
+          sourceImage: item.sourceImage,
+          prompt: typeof item.prompt === 'string' ? item.prompt : '',
+          videoUrl: null,
+          taskId: null,
+          status: 'pending',
+          progress: 0,
+          duration: defaultDuration,
+          motionStrength: defaultMotionStrength,
+          seed: null,
+          createdAt: new Date().toISOString(),
+          resolution: defaultResolution,
+          ratio: defaultRatio,
+          cameraFixed: defaultCameraFixed,
+          watermark: defaultWatermark,
+          generateAudio: defaultGenerateAudio
+        }))
+      if (newTasks.length > 0) {
+        setCurrentTasks((prev) => [...newTasks, ...prev])
+        setSelectedTask((prev) => prev || newTasks[0])
+      }
+      sessionStorage.removeItem(key)
+    } catch (error) {
+      console.error('读取跨模块任务失败:', error)
+      sessionStorage.removeItem(key)
+    }
+  }
+
+  // 合并当前任务和当前选中分区的历史任务
+  const visibleHistoryTasks = activeHistoryTab === 'module' ? historyTasks : agentHistoryTasks
+  const allTasks = [...currentTasks, ...visibleHistoryTasks]
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
@@ -125,6 +218,7 @@ export default function VideoPage() {
       reader.onload = (event) => {
         const newTask: TaskItem = {
           id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+          origin: 'module',
           type: 'current',
           sourceImage: event.target?.result as string,
           prompt: '',
@@ -224,6 +318,7 @@ export default function VideoPage() {
     
     try {
       const result = await generateVideo(task.sourceImage, task.prompt, {
+        projectId,
         duration: task.duration,
         motionStrength: task.motionStrength,
         seed: task.seed || undefined,
@@ -231,7 +326,8 @@ export default function VideoPage() {
         ratio: task.ratio || defaultRatio,
         cameraFixed: task.cameraFixed ?? defaultCameraFixed,
         watermark: task.watermark ?? defaultWatermark,
-        generateAudio: task.generateAudio ?? defaultGenerateAudio
+        generateAudio: task.generateAudio ?? defaultGenerateAudio,
+        videoConfig: settings.video
       })
       
       if (result.status === 'completed' && result.videoUrl) {
@@ -271,6 +367,11 @@ export default function VideoPage() {
     }
     
     if (task.type === 'history') {
+      if (task.origin === 'agent') {
+        setAgentHistoryTasks(prev => prev.filter(t => t.id !== task.id))
+        if (selectedTask?.id === task.id) setSelectedTask(null)
+        return
+      }
       try {
         await deleteVideoHistory(task.id)
         setHistoryTasks(prev => prev.filter(t => t.id !== task.id))
@@ -290,6 +391,7 @@ export default function VideoPage() {
     const newTask: TaskItem = {
       ...task,
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+      origin: 'module',
       type: 'current',
       videoUrl: null,
       taskId: null,
@@ -365,15 +467,15 @@ export default function VideoPage() {
   const processingCount = currentTasks.filter(t => t.status === 'generating' || t.status === 'processing').length
 
   return (
-    <div className="flex flex-col h-full animate-fadeIn">
+    <div className="flex flex-col h-full overflow-hidden animate-fadeIn">
       {/* 项目返回按钮 */}
       <div className="px-4 pt-3">
         <ProjectBackButton />
       </div>
       
-      <div className="flex-1 flex">
+      <div className="flex-1 min-h-0 flex">
       {/* 左侧时间线 */}
-      <div className="w-80 border-r border-white/5 flex flex-col glass-dark animate-slideInLeft">
+      <div className="w-80 border-r border-white/5 flex flex-col min-h-0 glass-dark animate-slideInLeft">
         {/* 头部 */}
         <div className="p-4 border-b border-white/5">
           <div className="flex items-center justify-between mb-3">
@@ -405,11 +507,29 @@ export default function VideoPage() {
               </button>
             )}
           </div>
+          <div className="mt-3 flex items-center gap-1 p-1 rounded-lg bg-white/5 border border-white/10">
+            <button
+              onClick={() => setActiveHistoryTab('module')}
+              className={`flex-1 px-2 py-1 text-xs rounded-md transition-colors ${
+                activeHistoryTab === 'module' ? 'bg-green-500/20 text-green-300' : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              模块历史
+            </button>
+            <button
+              onClick={() => setActiveHistoryTab('agent')}
+              className={`flex-1 px-2 py-1 text-xs rounded-md transition-colors ${
+                activeHistoryTab === 'agent' ? 'bg-violet-500/20 text-violet-300' : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              Agent历史
+            </button>
+          </div>
         </div>
 
         {/* 任务列表 */}
         <div 
-          className="flex-1 overflow-y-auto"
+          className="flex-1 min-h-0 overflow-y-auto"
           style={{ overscrollBehavior: 'contain' }}
         >
           {allTasks.length === 0 ? (
@@ -447,18 +567,18 @@ export default function VideoPage() {
               )}
 
               {/* 历史任务 */}
-              {historyTasks.length > 0 && (
+              {visibleHistoryTasks.length > 0 && (
                 <div>
                   <div className="text-xs text-gray-500 px-2 py-1 flex items-center gap-2">
                     <Clock size={10} />
-                    历史记录
+                    {activeHistoryTab === 'module' ? '模块历史' : 'Agent历史'}
                   </div>
-                  {historyTasks.map((task, index) => (
+                  {visibleHistoryTasks.map((task, index) => (
                     <TaskTimelineItem
                       key={task.id}
                       task={task}
                       isSelected={selectedTask?.id === task.id}
-                      isLast={index === historyTasks.length - 1}
+                      isLast={index === visibleHistoryTasks.length - 1}
                       onSelect={() => setSelectedTask(task)}
                       onDelete={() => handleDeleteTask(task)}
                       onCopy={() => handleCopyTask(task)}
@@ -475,7 +595,7 @@ export default function VideoPage() {
       </div>
 
       {/* 中间预览区 */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 min-h-0 min-w-0 flex flex-col">
         {/* 工具栏 */}
         <div className="flex items-center justify-between px-6 py-4 glass-dark border-b border-white/5">
           <div className="flex items-center gap-3">
@@ -489,11 +609,31 @@ export default function VideoPage() {
               </p>
             </div>
           </div>
+          <div className="flex items-center gap-2">
+            <ModuleModelSwitcher
+              category="video"
+              title="视频模型"
+              config={settings.video}
+              providers={VIDEO_PROVIDERS}
+              onApply={applyVideoModel}
+            />
+            <label className="flex items-center gap-2 px-3 py-2 rounded-xl bg-gradient-to-r from-green-500 to-emerald-500 text-sm font-medium cursor-pointer hover:opacity-90 transition-opacity">
+              <Upload size={16} />
+              上传图片生成视频
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={handleImageUpload}
+                className="hidden"
+              />
+            </label>
+          </div>
         </div>
 
         {/* 预览区 */}
         <div 
-          className="flex-1 p-6 flex flex-col overflow-y-auto"
+          className="flex-1 min-h-0 p-6 flex flex-col overflow-y-auto"
           style={{ overscrollBehavior: 'contain' }}
         >
           {selectedTask ? (
@@ -731,6 +871,16 @@ export default function VideoPage() {
                     </button>
                   )}
 
+                  {selectedTask.type === 'history' && (
+                    <button
+                      onClick={() => handleCopyTask(selectedTask)}
+                      className="flex items-center gap-2 px-4 py-2.5 glass-button rounded-xl font-medium hover:bg-white/10"
+                    >
+                      <Copy size={16} />
+                      复制为新任务
+                    </button>
+                  )}
+
                   {selectedTask.type === 'current' && (
                     <button
                       onClick={() => handleGenerate(selectedTask)}
@@ -790,12 +940,43 @@ export default function VideoPage() {
       </div>
 
       {/* 右侧 AI 对话 */}
-      <div className="w-96 border-l border-white/5 flex flex-col glass-dark animate-slideInRight">
-        <ModuleChat 
-          moduleType="video" 
-          placeholder="描述视频效果，或让 AI 帮你规划运镜..."
-          context={selectedTask?.prompt ? `当前运动描述：${selectedTask.prompt}` : undefined}
-        />
+      <div
+        className={`border-l border-white/5 glass-dark animate-slideInRight relative overflow-hidden transition-[width] duration-300 ease-out ${
+          chatCollapsed ? 'w-12' : 'w-96'
+        }`}
+      >
+        <div
+          className={`absolute inset-0 flex items-start justify-center pt-3 transition-opacity duration-200 ${
+            chatCollapsed ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          }`}
+        >
+          <button
+            onClick={() => setChatCollapsed(false)}
+            className="p-2 glass-button rounded-lg text-gray-300 hover:text-white transition-transform duration-200 hover:scale-105"
+            title="展开聊天"
+          >
+            <PanelRightOpen size={16} />
+          </button>
+        </div>
+        <div
+          className={`h-full flex flex-col min-h-0 transition-all duration-300 ${
+            chatCollapsed ? 'opacity-0 translate-x-2 pointer-events-none' : 'opacity-100 translate-x-0'
+          }`}
+        >
+          <button
+            onClick={() => setChatCollapsed(true)}
+            className="absolute top-2 left-2 z-10 p-1.5 glass-button rounded-lg text-gray-300 hover:text-white transition-transform duration-200 hover:scale-105"
+            title="收起聊天"
+          >
+            <PanelRightClose size={14} />
+          </button>
+          <ModuleChat
+            moduleType="video"
+            placeholder="描述视频效果，或让 AI 帮你规划运镜..."
+            context={selectedTask?.prompt ? `当前运动描述：${selectedTask.prompt}` : undefined}
+            className="flex-1 min-h-0 m-2"
+          />
+        </div>
       </div>
       </div>
     </div>
@@ -915,13 +1096,15 @@ function TaskTimelineItem({
             >
               <Copy size={12} />
             </button>
-            <button
-              onClick={(e) => { e.stopPropagation(); onDelete() }}
-              className="p-1 hover:bg-red-500/20 rounded text-gray-400 hover:text-red-400"
-              title="删除"
-            >
-              <Trash2 size={12} />
-            </button>
+            {task.origin === 'module' && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onDelete() }}
+                className="p-1 hover:bg-red-500/20 rounded text-gray-400 hover:text-red-400"
+                title="删除"
+              >
+                <Trash2 size={12} />
+              </button>
+            )}
           </div>
         </div>
       </div>
