@@ -597,7 +597,7 @@ export default function VideoPage() {
       {/* 中间预览区 */}
       <div className="flex-1 min-h-0 min-w-0 flex flex-col">
         {/* 工具栏 */}
-        <div className="flex items-center justify-between px-6 py-4 glass-dark border-b border-white/5">
+        <div className="relative z-40 flex items-center justify-between px-6 py-4 glass-dark border-b border-white/5">
           <div className="flex items-center gap-3">
             <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-green-500 via-emerald-500 to-teal-400 flex items-center justify-center shadow-lg shadow-green-500/30">
               <Video size={20} className="text-white drop-shadow-md" strokeWidth={2.5} />

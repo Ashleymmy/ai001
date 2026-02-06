@@ -54,8 +54,9 @@ export default function ModuleModelSwitcher({
         setOpen(false)
       }
     }
-    document.addEventListener('mousedown', onDocClick)
-    return () => document.removeEventListener('mousedown', onDocClick)
+    // 使用 click 避免在原生 select 打开/选择时被提前关闭，导致“看得到但点不了”
+    document.addEventListener('click', onDocClick)
+    return () => document.removeEventListener('click', onDocClick)
   }, [open])
 
   const mergedCustomProviders = useMemo(() => {
@@ -160,7 +161,7 @@ export default function ModuleModelSwitcher({
   }
 
   return (
-    <div className="relative" ref={wrapRef}>
+    <div className="relative z-[100]" ref={wrapRef}>
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-2 px-3 py-1.5 glass-button rounded-lg text-xs hover:bg-white/10"
@@ -174,7 +175,7 @@ export default function ModuleModelSwitcher({
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-80 glass-card rounded-xl p-3 z-30 animate-fadeIn">
+        <div className="absolute right-0 top-full mt-2 w-80 glass-card rounded-xl p-3 z-[120] pointer-events-auto animate-fadeIn">
           <div className="text-sm font-medium mb-3">{title}</div>
 
           <div className="space-y-3">

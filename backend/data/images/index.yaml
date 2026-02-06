@@ -1,4 +1,73 @@
 images:
+- id: 1b2e7d98
+  project_id: null
+  prompt: a bouquet of fresh white chrysanthemums with layered pure white petals,
+    green stems adorned with a few delicate leaves, arranged in a minimalist white
+    ceramic vase, 2D hand-drawn anime style, intricate line art, soft color blocks,
+    Japanese healing anime aesthetic, rainy night scene, translucent water color texture,
+    hazy tranquil atmosphere, soft warm ambient lighting that highlights the gentle
+    glow of petals, subtle wet details on the vase and petal edges, masterpiece, ultra-detailed,
+    high resolution, smooth color blending, sharp refined lines, no text
+  negative_prompt: text, watermark, signature, blurry, low resolution, distorted proportions,
+    harsh shadows, oversaturated colors, messy line art, unrealistic textures, grainy,
+    noisy elements, harsh contrasts
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/02177036253303313d48c4760d2f20ff0aabc46dcd14fa8db0dd9_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260206%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260206T072223Z&X-Tos-Expires=86400&X-Tos-Signature=1945ea93b71f0bba89bbe4873cced06460e953e4eaee359e3de5764732e8b0ba&X-Tos-SignedHeaders=host
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1620883098
+  style: null
+  created_at: '2026-02-06T15:22:22.946679'
+- id: e8bf9ec7
+  project_id: null
+  prompt: 2D hand-drawn hospital nurse station scene, clean and tidy white counter
+    with computer monitor, medical record folders, blue medical tray placed on top,
+    neatly folded blue nurse uniforms hanging beside the counter, blurry outline of
+    hospital corridor in the background, rainy night setting with transparent water-like
+    haze and hazy tranquil atmosphere, 2D hand-drawn anime style, delicate line art,
+    soft color blocks, Japanese healing anime lighting, warm white fluorescent lighting,
+    gentle diffused glow, subtle rain reflections on surfaces, cozy healing vibe,
+    highly detailed, ultra-detailed, sharp linework, smooth color blending, cinematic
+    quality, 8k resolution, professional digital painting, no text
+  negative_prompt: text, watermark, signature, blurry, low resolution, messy, dirty,
+    cluttered, distorted proportions, harsh shadows, over-saturated colors, unrealistic
+    details, noisy, grainy, rough lines, disorganized elements, smudged art
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/0217703623654110f861eb1e54b862d552c48082241471ab76c5d_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260206%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260206T071935Z&X-Tos-Expires=86400&X-Tos-Signature=f26fe59aad42b6667c75fd8c06bcde776b478089091cad329df0abdac82f0de2&X-Tos-SignedHeaders=host
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1981130447
+  style: null
+  created_at: '2026-02-06T15:19:34.560705'
+- id: db24801f
+  project_id: null
+  prompt: Warm living room of an urban single girl, light gray fabric sofa, small
+    wooden coffee table with a clear glass tumbler and several medical books on it,
+    small Nurses' Day commemorative photo mounted on the wall, blurred rainy night
+    scene outside the window with transparent, hazy rain curtain showing watercolor-like
+    translucency; 2D hand-drawn anime style, delicate line art, soft color blocks,
+    Japanese healing animation aesthetic; warm yellow main lighting, cozy tranquil
+    atmosphere, dim ambient light from the rainy night outside complementing indoor
+    warmth; highly detailed, sharp precise lines, smooth color blending, cinematic
+    lighting, professional illustration, no text, realistic texture of fabric and
+    wood surfaces
+  negative_prompt: text, watermarks, low resolution, blurry details, distorted furniture
+    proportions, messy composition, harsh bright lighting, dull desaturated colors,
+    over-saturated tones, grainy texture, ugly, deformed elements, unrealistic rain
+    effects, disfigured objects
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021770362241910d619db30bd0c9858e230a26bb16935258c88a8_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260206%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260206T071731Z&X-Tos-Expires=86400&X-Tos-Signature=5bce2abd070f7ef4f013fe30adc9f5ac484334575f48942beeabbfef1af59bee&X-Tos-SignedHeaders=host
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 925426580
+  style: null
+  created_at: '2026-02-06T15:17:30.847593'
 - id: fbca7cb0
   prompt: Vintage local evening newspaper front-page clipping from 10 years ago, yellowed
     aged paper with minor creases, faint tears, cropped edges and subtle water stains;
@@ -1080,4 +1149,4 @@ images:
   seed: 1545869874
   style: ''
   created_at: '2026-01-07T17:35:45.571061'
-updated_at: '2026-02-06T09:27:05.554211'
+updated_at: '2026-02-06T15:22:22.946679'

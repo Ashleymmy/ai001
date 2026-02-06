@@ -424,7 +424,7 @@ export default function ImagePage() {
       <div className="flex-1 min-h-0 flex">
       <div className="flex-1 min-h-0 min-w-0 flex flex-col">
         {/* 顶部工具栏 */}
-        <div className="flex items-center justify-between px-6 py-4 glass-dark border-b border-white/5 animate-fadeInDown">
+        <div className="relative z-40 flex items-center justify-between px-6 py-4 glass-dark border-b border-white/5 animate-fadeInDown">
           <div className="flex items-center gap-3">
             <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-pink-500 via-rose-500 to-orange-400 flex items-center justify-center shadow-lg shadow-pink-500/30">
               <Image size={20} className="text-white drop-shadow-md" strokeWidth={2.5} />

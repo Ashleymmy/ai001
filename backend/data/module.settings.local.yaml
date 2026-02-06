@@ -5,11 +5,11 @@ llm:
   model: doubao-seed-1-8-251228
   customProvider: xw-火山-doubao1.8
 image:
-  provider: custom_2dcc19a3
-  apiKey: efc55e86-fe0f-44e8-9b17-18af964550cc
-  baseUrl: https://ark.cn-beijing.volces.com/api/v3
-  model: doubao-seedream-4-5-251128
-  customProvider: xw-火山-即梦4.5
+  provider: custom_c33653cb
+  apiKey: sk-yyy
+  baseUrl: https://dashscope.aliyuncs.com/api/v1
+  model: wanx2.1-t2i-turbo
+  customProvider: 通义万相(自定义)
 storyboard:
   provider: custom_2dcc19a3
   apiKey: efc55e86-fe0f-44e8-9b17-18af964550cc
@@ -73,4 +73,4 @@ tts:
     dialogueVoiceType: ''
     dialogueMaleVoiceType: ''
     dialogueFemaleVoiceType: ''
-updated_at: '2026-02-06T14:52:58.859608'
+updated_at: '2026-02-06T15:11:13.050315'
