@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import {
   AlertCircle, Check, CheckCircle, ChevronDown, ChevronRight, Download, Edit3, Film, Image as ImageIcon, Loader2, Maximize2, Pause, Play, Plus, RotateCcw, Star, Trash2, Upload, Volume2, Wand2, X
 } from 'lucide-react'
-import { uploadFile, type AgentElement, type AgentSegment, type AgentShot } from '../../../services/api'
+import { BACKEND_ORIGIN, uploadFile, type AgentElement, type AgentSegment, type AgentShot } from '../../../services/api'
 import { FishVoiceLibraryModal } from '../../../shared/fish/FishVoiceLibraryModal'
 import { useSettingsStore } from '../../../store/settingsStore'
 import type { AudioAsset } from '../types'
@@ -170,7 +170,7 @@ export function ElementsPanel({
 	    const u = (url || '').trim()
 	    if (!u) return ''
 	    if (/^(https?:|data:|blob:)/i.test(u)) return isProbablyExpiredSignedUrl(u) ? '' : u
-	    if (u.startsWith('/api/')) return `http://localhost:8001${u}`
+	    if (u.startsWith('/api/')) return `${BACKEND_ORIGIN}${u}`
 	    return u
 	  }
   
@@ -937,7 +937,7 @@ export function ShotCard({
 	    const u = (url || '').trim()
 	    if (!u) return ''
 	    if (/^(https?:|data:|blob:)/i.test(u)) return isProbablyExpiredSignedUrl(u) ? '' : u
-	    if (u.startsWith('/api/')) return `http://localhost:8001${u}`
+	    if (u.startsWith('/api/')) return `${BACKEND_ORIGIN}${u}`
 	    return u
 	  }
 

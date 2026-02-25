@@ -9,7 +9,9 @@ import StoryboardPage from './pages/StoryboardPage'
 import VideoPage from './pages/VideoPage'
 import SettingsPage from './pages/SettingsPage'
 import AgentPage from './pages/AgentPage'
+import StudioPage from './pages/StudioPage'
 import ProjectPage from './pages/ProjectPage'
+import ApiMonitorPage from './pages/ApiMonitorPage'
 import { useSettingsStore } from './store/settingsStore'
 
 // 首次访问检测 key
@@ -87,6 +89,11 @@ function KeepAliveOutlet() {
         {currentPath === '/home/settings' && <SettingsPage />}
       </div>
 
+      {/* API 监控页 - 不缓存 */}
+      <div style={{ display: currentPath === '/home/api-monitor' ? 'block' : 'none', height: '100%' }}>
+        {currentPath === '/home/api-monitor' && <ApiMonitorPage />}
+      </div>
+
       {/* 项目页 - 不缓存 */}
       <div style={{ display: currentPath.startsWith('/home/project/') ? 'block' : 'none', height: '100%' }}>
         {currentPath.startsWith('/home/project/') && <ProjectPage />}
@@ -123,6 +130,10 @@ function App() {
         {/* Agent 模式 - 独立布局，需要首次访问检测 */}
         <Route path="agent" element={<RequireVisited><AgentPage /></RequireVisited>} />
         <Route path="agent/:projectId" element={<RequireVisited><AgentPage /></RequireVisited>} />
+        {/* Studio 长篇制作工作台 - 独立布局 */}
+        <Route path="studio" element={<RequireVisited><StudioPage /></RequireVisited>} />
+        <Route path="studio/:seriesId" element={<RequireVisited><StudioPage /></RequireVisited>} />
+        <Route path="studio/:seriesId/:episodeId" element={<RequireVisited><StudioPage /></RequireVisited>} />
       </Routes>
     </HashRouter>
   )

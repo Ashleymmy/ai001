@@ -9,6 +9,7 @@ import {
   FileText, Music, Mic, Settings2, Eye, Download, Package, Trash2, X
 } from 'lucide-react'
 import {
+  BACKEND_ORIGIN,
   agentChat, agentPlanProject, agentGenerateElementPrompt,
   createAgentProject, getAgentProject, updateAgentProject, listAgentProjects,
   applyAgentOperator,
@@ -104,14 +105,14 @@ function resolveMediaUrl(url?: string | null) {
   if (!u) return ''
   if (/^(data:|blob:)/i.test(u)) return u
   if (/^https?:/i.test(u)) return isProbablyExpiredSignedUrl(u) ? '' : u
-  if (u.startsWith('/api/')) return `http://localhost:8001${u}`
+  if (u.startsWith('/api/')) return `${BACKEND_ORIGIN}${u}`
   return u
 }
 
 function canonicalizeMediaUrl(url: string) {
   const u = (url || '').trim()
   if (!u) return ''
-  return u.replace(/^https?:\/\/(?:localhost|127\.0\.0\.1):8001(?=\/api\/)/i, '')
+  return u.replace(/^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?(?=\/api\/)/i, '')
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

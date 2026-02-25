@@ -17,6 +17,10 @@ color 0B
 set "PROJECT_DIR=%~dp0"
 cd /d "%PROJECT_DIR%"
 
+:: 固定端口配置（统一由启动脚本维护）
+set "BACKEND_PORT=18001"
+set "FRONTEND_PORT=5174"
+
 :: 检查 Node.js
 echo [检查环境] 正在检查 Node.js...
 node -v >nul 2>&1
@@ -55,6 +59,27 @@ if not exist "backend\venv" (
     echo [提示] 建议创建虚拟环境: python -m venv backend\venv
 )
 
+:: 固定端口空闲检查
+set "PORT_BUSY="
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :%BACKEND_PORT% ^| findstr LISTENING') do set "PORT_BUSY=1"
+if defined PORT_BUSY (
+    color 0C
+    echo [错误] 后端端口 %BACKEND_PORT% 已被占用，请先释放端口后再启动。
+    echo        可执行 stop.bat 关闭旧服务，或手动终止占用进程。
+    pause
+    exit /b 1
+)
+
+set "PORT_BUSY="
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :%FRONTEND_PORT% ^| findstr LISTENING') do set "PORT_BUSY=1"
+if defined PORT_BUSY (
+    color 0C
+    echo [错误] 前端端口 %FRONTEND_PORT% 已被占用，请先释放端口后再启动。
+    echo        可执行 stop.bat 关闭旧服务，或手动终止占用进程。
+    pause
+    exit /b 1
+)
+
 :: 记录 PID 文件
 set "PID_FILE=%PROJECT_DIR%.dev-pids.json"
 
@@ -65,16 +90,16 @@ echo ═════════════════════════
 echo.
 
 :: 启动后端 (新窗口，带标题)
-echo [启动] 正在启动后端服务 (端口 8001)...
-start "🔧 AI Storyboarder - 后端服务" cmd /k "cd /d "%PROJECT_DIR%backend" && color 0E && echo. && echo  ╔═══════════════════════════════════════╗ && echo  ║  🔧 后端服务 - FastAPI + Uvicorn     ║ && echo  ║  端口: 8001                           ║ && echo  ╚═══════════════════════════════════════╝ && echo. && python -m uvicorn main:app --reload --port 8001 --host 0.0.0.0"
+echo [启动] 正在启动后端服务 (端口 %BACKEND_PORT%)...
+start "🔧 AI Storyboarder - 后端服务" cmd /k "cd /d "%PROJECT_DIR%backend" && color 0E && echo. && echo  ╔═══════════════════════════════════════╗ && echo  ║  🔧 后端服务 - FastAPI + Uvicorn     ║ && echo  ║  端口: %BACKEND_PORT%                          ║ && echo  ╚═══════════════════════════════════════╝ && echo. && python -m uvicorn main:app --reload --port %BACKEND_PORT% --host 0.0.0.0"
 
 :: 等待后端启动
 echo [等待] 等待后端服务启动...
 timeout /t 3 /nobreak >nul
 
 :: 启动前端 (新窗口，带标题)
-echo [启动] 正在启动前端服务 (端口 5174)...
-start "🎨 AI Storyboarder - 前端服务" cmd /k "cd /d "%PROJECT_DIR%" && color 0A && echo. && echo  ╔═══════════════════════════════════════╗ && echo  ║  🎨 前端服务 - Vite + React           ║ && echo  ║  端口: 5174                           ║ && echo  ╚═══════════════════════════════════════╝ && echo. && npm run dev"
+echo [启动] 正在启动前端服务 (端口 %FRONTEND_PORT%)...
+start "🎨 AI Storyboarder - 前端服务" cmd /k "cd /d "%PROJECT_DIR%" && set VITE_BACKEND_PORT=%BACKEND_PORT% && color 0A && echo. && echo  ╔═══════════════════════════════════════╗ && echo  ║  🎨 前端服务 - Vite + React           ║ && echo  ║  端口: %FRONTEND_PORT%                           ║ && echo  ╚═══════════════════════════════════════╝ && echo. && npm run dev -- --host 0.0.0.0 --port %FRONTEND_PORT% --strictPort"
 
 :: 等待前端启动
 echo [等待] 等待前端服务启动...
@@ -85,9 +110,9 @@ echo ═════════════════════════
 echo  ✅ 服务已启动！
 echo ══════════════════════════════════════════════════════════════
 echo.
-echo  📌 前端地址: http://localhost:5174
-echo  📌 后端地址: http://localhost:8001
-echo  📌 API 文档: http://localhost:8001/docs
+echo  📌 前端地址: http://localhost:%FRONTEND_PORT%
+echo  📌 后端地址: http://localhost:%BACKEND_PORT%
+echo  📌 API 文档: http://localhost:%BACKEND_PORT%/docs
 echo.
 echo  💡 提示:
 echo     - 按任意键打开浏览器
@@ -99,7 +124,7 @@ echo.
 pause >nul
 
 :: 打开浏览器
-start http://localhost:5174
+start http://localhost:%FRONTEND_PORT%
 
 echo.
 echo  🎉 浏览器已打开，祝你创作愉快！

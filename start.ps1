@@ -24,6 +24,10 @@ Write-Host ""
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectDir
 
+# 固定端口配置（统一由启动脚本维护）
+$BackendPort = 18001
+$FrontendPort = 5174
+
 # 全局变量存储进程
 $Global:BackendProcess = $null
 $Global:FrontendProcess = $null
@@ -85,6 +89,21 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-ColorText "  ✓ 后端依赖已就绪" "Green"
 
+# 端口占用检查（要求固定端口必须空闲）
+if (Test-Port $BackendPort) {
+    Write-Host ""
+    Write-ColorText "  ✗ 端口占用: 后端端口 $BackendPort 已被占用，请先释放端口后再启动。" "Red"
+    Write-ColorText "    可执行 stop.bat 关闭旧服务，或手动终止占用进程。" "Yellow"
+    exit 1
+}
+
+if (Test-Port $FrontendPort) {
+    Write-Host ""
+    Write-ColorText "  ✗ 端口占用: 前端端口 $FrontendPort 已被占用，请先释放端口后再启动。" "Red"
+    Write-ColorText "    可执行 stop.bat 关闭旧服务，或手动终止占用进程。" "Yellow"
+    exit 1
+}
+
 # 启动服务
 Write-Host ""
 Write-ColorText "═══════════════════════════════════════════════════════════════════" "DarkGray"
@@ -95,7 +114,7 @@ Write-Host ""
 # 启动后端
 Write-ColorText "[启动] 后端服务 (FastAPI)..." "Yellow"
 $backendScript = @"
-`$Host.UI.RawUI.WindowTitle = '🔧 后端服务 - Port 8001'
+`$Host.UI.RawUI.WindowTitle = '🔧 后端服务 - Port $BackendPort'
 `$Host.UI.RawUI.BackgroundColor = 'DarkBlue'
 Clear-Host
 Write-Host ''
@@ -103,16 +122,16 @@ Write-Host '  ╔═════════════════════
 Write-Host '  ║                                                           ║' -ForegroundColor Cyan
 Write-Host '  ║   🔧 AI Storyboarder 后端服务                             ║' -ForegroundColor Cyan
 Write-Host '  ║                                                           ║' -ForegroundColor Cyan
-Write-Host '  ║   端口: 8001                                              ║' -ForegroundColor Cyan
+Write-Host '  ║   端口: $BackendPort                                              ║' -ForegroundColor Cyan
 Write-Host '  ║   框架: FastAPI + Uvicorn                                 ║' -ForegroundColor Cyan
-Write-Host '  ║   API文档: http://localhost:8001/docs                     ║' -ForegroundColor Cyan
+Write-Host '  ║   API文档: http://localhost:$BackendPort/docs                     ║' -ForegroundColor Cyan
 Write-Host '  ║                                                           ║' -ForegroundColor Cyan
 Write-Host '  ╚═══════════════════════════════════════════════════════════╝' -ForegroundColor Cyan
 Write-Host ''
 Write-Host '  [状态] 服务启动中...' -ForegroundColor Yellow
 Write-Host ''
 Set-Location '$ProjectDir\backend'
-python -m uvicorn main:app --reload --port 8001 --host 0.0.0.0
+python -m uvicorn main:app --reload --port $BackendPort --host 0.0.0.0
 "@
 
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendScript
@@ -123,7 +142,7 @@ Start-Sleep -Seconds 2
 # 启动前端
 Write-ColorText "[启动] 前端服务 (Vite)..." "Yellow"
 $frontendScript = @"
-`$Host.UI.RawUI.WindowTitle = '🎨 前端服务 - Port 5174'
+`$Host.UI.RawUI.WindowTitle = '🎨 前端服务 - Port $FrontendPort'
 `$Host.UI.RawUI.BackgroundColor = 'DarkGreen'
 Clear-Host
 Write-Host ''
@@ -131,16 +150,17 @@ Write-Host '  ╔═════════════════════
 Write-Host '  ║                                                           ║' -ForegroundColor Green
 Write-Host '  ║   🎨 AI Storyboarder 前端服务                             ║' -ForegroundColor Green
 Write-Host '  ║                                                           ║' -ForegroundColor Green
-Write-Host '  ║   端口: 5174                                              ║' -ForegroundColor Green
+Write-Host '  ║   端口: $FrontendPort                                              ║' -ForegroundColor Green
 Write-Host '  ║   框架: Vite + React + TypeScript                         ║' -ForegroundColor Green
-Write-Host '  ║   地址: http://localhost:5174                             ║' -ForegroundColor Green
+Write-Host '  ║   地址: http://localhost:$FrontendPort                             ║' -ForegroundColor Green
 Write-Host '  ║                                                           ║' -ForegroundColor Green
 Write-Host '  ╚═══════════════════════════════════════════════════════════╝' -ForegroundColor Green
 Write-Host ''
 Write-Host '  [状态] 服务启动中...' -ForegroundColor Yellow
 Write-Host ''
 Set-Location '$ProjectDir'
-npm run dev
+`$env:VITE_BACKEND_PORT = '$BackendPort'
+npm run dev -- --host 0.0.0.0 --port $FrontendPort --strictPort
 "@
 
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $frontendScript
@@ -160,17 +180,17 @@ $frontendReady = $false
 while ($waited -lt $maxWait -and (-not $backendReady -or -not $frontendReady)) {
     # 检查后端
     if (-not $backendReady) {
-        if (Test-Port 8001) {
+        if (Test-Port $BackendPort) {
             $backendReady = $true
-            Write-ColorText "  ✓ 后端服务已就绪 (http://localhost:8001)" "Green"
+            Write-ColorText "  ✓ 后端服务已就绪 (http://localhost:$BackendPort)" "Green"
         }
     }
 
     # 检查前端
     if (-not $frontendReady) {
-        if (Test-Port 5174) {
+        if (Test-Port $FrontendPort) {
             $frontendReady = $true
-            Write-ColorText "  ✓ 前端服务已就绪 (http://localhost:5174)" "Green"
+            Write-ColorText "  ✓ 前端服务已就绪 (http://localhost:$FrontendPort)" "Green"
         }
     }
 
@@ -189,9 +209,9 @@ if ($backendReady -and $frontendReady) {
     Write-ColorText "  ✅ 所有服务已启动！" "Green"
     Write-ColorText "═══════════════════════════════════════════════════════════════════" "DarkGray"
     Write-Host ""
-    Write-ColorText "  📌 前端地址: http://localhost:5174" "Cyan"
-    Write-ColorText "  📌 后端地址: http://localhost:8001" "Cyan"
-    Write-ColorText "  📌 API 文档: http://localhost:8001/docs" "Cyan"
+    Write-ColorText "  📌 前端地址: http://localhost:$FrontendPort" "Cyan"
+    Write-ColorText "  📌 后端地址: http://localhost:$BackendPort" "Cyan"
+    Write-ColorText "  📌 API 文档: http://localhost:$BackendPort/docs" "Cyan"
     Write-Host ""
     Write-ColorText "  💡 提示:" "Yellow"
     Write-ColorText "     - 后端窗口 (蓝色) 显示 API 请求日志" "Gray"
@@ -204,7 +224,7 @@ if ($backendReady -and $frontendReady) {
     $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 
     if ($key.Character -ne 'q' -and $key.Character -ne 'Q') {
-        Start-Process "http://localhost:5174"
+        Start-Process "http://localhost:$FrontendPort"
         Write-ColorText "  🎉 浏览器已打开！" "Green"
     }
 } else {

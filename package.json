@@ -12,7 +12,7 @@
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5174 && electron .\"",
     "electron:build": "vite build && electron-builder",
     "electron:build:win": "vite build && electron-builder --win",
-    "python:dev": "cd backend && python -m pip install -r requirements.txt && python -m uvicorn main:app --reload --port 8001",
+    "python:dev": "cd backend && python -m pip install -r requirements.txt && python -m uvicorn main:app --reload --port 18001",
     "python:build": "cd backend && pyinstaller --onefile --name backend-server main.py",
     "pack:win": "npm run build && electron-builder --win --dir",
     "dist:win": "npm run build && electron-builder --win"

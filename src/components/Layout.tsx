@@ -1,5 +1,5 @@
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Home, FileText, Image, Film, Video, Settings, ChevronLeft } from 'lucide-react'
+import { Home, FileText, Image, Film, Video, Settings, ChevronLeft, Activity } from 'lucide-react'
 import AIChatPanel from './AIChatPanel'
 import { ReactNode } from 'react'
 import { clearVisited } from '../App'
@@ -18,6 +18,7 @@ export default function Layout({ children }: LayoutProps) {
     { to: '/home/image', icon: Image, label: '图像', gradient: 'from-pink-500 to-rose-400' },
     { to: '/home/storyboard', icon: Film, label: '分镜', gradient: 'from-orange-500 to-amber-400' },
     { to: '/home/video', icon: Video, label: '视频', gradient: 'from-green-500 to-emerald-400' },
+    { to: '/home/api-monitor', icon: Activity, label: '监控', gradient: 'from-cyan-500 to-sky-400' },
     { to: '/home/settings', icon: Settings, label: '设置', gradient: 'from-slate-500 to-gray-400' }
   ]
 
@@ -25,7 +26,8 @@ export default function Layout({ children }: LayoutProps) {
     '/home/script',
     '/home/image',
     '/home/storyboard',
-    '/home/video'
+    '/home/video',
+    '/home/api-monitor'
   ].some((route) => location.pathname.startsWith(route))
 
   const isSubPage = location.pathname !== '/home'

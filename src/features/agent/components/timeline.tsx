@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Edit3, Maximize2, Pause, Play, SkipBack, SkipForward } from 'lucide-react'
-import type { AgentSegment } from '../../../services/api'
+import { BACKEND_ORIGIN, type AgentSegment } from '../../../services/api'
 
 
 // 时间线面板
@@ -29,7 +29,7 @@ export function TimelinePanel({
     const u = (url || '').trim()
     if (!u) return ''
     if (/^(https?:|data:|blob:)/i.test(u)) return u
-    if (u.startsWith('/api/')) return `http://localhost:8001${u}`
+    if (u.startsWith('/api/')) return `${BACKEND_ORIGIN}${u}`
     return u
   }
 

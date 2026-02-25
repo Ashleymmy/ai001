@@ -1,0 +1,73 @@
+image:
+  apiKey: sk-yyy
+  baseUrl: https://dashscope.aliyuncs.com/api/v1
+  model: wanx2.1-t2i-turbo
+  provider: openai
+llm:
+  apiKey: 99a95d12-0b1b-491d-98f3-55eb9391c7fd
+  baseUrl: https://ark.cn-beijing.volces.com/api/v3
+  model: doubao-seed-2-0-pro-260215
+  provider: doubao
+local:
+  comfyuiUrl: http://127.0.0.1:8188
+  enabled: false
+  sdWebuiUrl: http://127.0.0.1:7860
+  vramStrategy: auto
+storyboard:
+  apiKey: efc55e86-fe0f-44e8-9b17-18af964550cc
+  baseUrl: https://ark.cn-beijing.volces.com/api/v3
+  customProvider: xw-火山-即梦4.5
+  model: Doubao-Seedream-4.5
+  provider: custom_2dcc19a3
+tts:
+  bailian:
+    apiKey: sk-91eeefd017df40f090e92a30143d2fe5
+    baseUrl: wss://dashscope.aliyuncs.com/api-ws/v1/inference
+    dialogueFemaleVoiceType: longanhuan
+    dialogueMaleVoiceType: longanyang
+    dialogueVoiceType: ''
+    encoding: mp3
+    model: cosyvoice-v3-flash
+    narratorVoiceType: longfeifei_v3
+    rate: 24000
+    speedRatio: 1.0
+    workspace: ''
+  custom:
+    dialogueFemaleVoiceType: ''
+    dialogueMaleVoiceType: ''
+    dialogueVoiceType: ''
+    encoding: mp3
+    narratorVoiceType: ''
+    rate: 24000
+    speedRatio: 1.0
+  fish:
+    apiKey: ''
+    baseUrl: https://api.fish.audio
+    dialogueFemaleVoiceType: ''
+    dialogueMaleVoiceType: ''
+    dialogueVoiceType: ''
+    encoding: mp3
+    model: speech-1.5
+    narratorVoiceType: ''
+    rate: 24000
+    speedRatio: 1.0
+  provider: aliyun_bailian_tts_v2
+  volc:
+    accessToken: e523a52e21184d6ebba903585c67418d
+    appid: '1539962654'
+    cluster: volcano_tts
+    dialogueFemaleVoiceType: ''
+    dialogueMaleVoiceType: ''
+    dialogueVoiceType: zh_female_yuanqinvyou_moon_bigtts
+    encoding: mp3
+    endpoint: https://openspeech.bytedance.com/api/v1/tts
+    model: seed-tts-1.1
+    narratorVoiceType: zh_female_sajiaonvyou_moon_bigtts
+    rate: 24000
+    speedRatio: 1.0
+updated_at: '2026-02-06T15:11:13.050315'
+video:
+  apiKey: 8f769410-24ef-43a1-a3bd-4264badb1ee7
+  baseUrl: https://ark.cn-beijing.volces.com/api/v3
+  model: doubao-seedance-1-5-pro-251215
+  provider: openai

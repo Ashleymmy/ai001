@@ -169,6 +169,30 @@ export default function HomePage() {
           </button>
         </div>
 
+        {/* Studio 长篇制作工作台入口 */}
+        <div className="mb-12 grid grid-cols-1 gap-4">
+          <button
+            onClick={() => navigate('/studio')}
+            className="glass-card p-6 text-left group hover-lift animate-fadeInUp delay-400"
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-5">
+                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500 via-purple-600 to-blue-600 flex items-center justify-center shadow-lg shadow-violet-500/30">
+                  <Film size={30} className="text-white drop-shadow-md" strokeWidth={2} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-3 mb-1">
+                    <h3 className="text-xl font-semibold">长篇制作工作台</h3>
+                    <span className="text-xs bg-gradient-to-r from-violet-500 to-blue-500 px-2.5 py-1 rounded-full text-white font-medium">Studio</span>
+                  </div>
+                  <p className="text-gray-400 text-sm">多集长篇精细化视频制作，支持脚本分幕、共享元素、逐集规划</p>
+                </div>
+              </div>
+              <ArrowRight size={24} className="text-gray-500 group-hover:text-white group-hover:translate-x-2 transition-apple" />
+            </div>
+          </button>
+        </div>
+
         {/* 项目管理 */}
         <div className="animate-fadeInUp delay-500">
           <div className="flex items-center justify-between mb-5">

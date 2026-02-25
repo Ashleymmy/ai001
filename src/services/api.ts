@@ -2,12 +2,19 @@ import axios from 'axios'
 import type { ModelConfig } from '../store/settingsStore'
 
 const runtimeHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost'
-const backendPort = import.meta.env.VITE_BACKEND_PORT || '8001'
-const API_BASE = import.meta.env.VITE_API_BASE || `http://${runtimeHost}:${backendPort}`
+const backendPort = import.meta.env.VITE_BACKEND_PORT || '18001'
+export const BACKEND_ORIGIN = import.meta.env.VITE_API_BASE || `http://${runtimeHost}:${backendPort}`
+const API_BASE = BACKEND_ORIGIN
 
 const api = axios.create({
   baseURL: API_BASE,
   timeout: 180000
+})
+
+// Studio 工作台专用实例（长耗时操作：LLM 分幕+元素提取可能需要 5-10 分钟）
+const studioApi = axios.create({
+  baseURL: API_BASE,
+  timeout: 600000
 })
 
 function inferRuntimeScope(): 'module' | 'agent' {
@@ -799,6 +806,148 @@ export async function getImageStats(): Promise<{
 }> {
   const response = await api.get('/api/images/stats')
   return response.data
+}
+
+export interface ApiMonitorCategoryStats {
+  total: number
+  success: number
+  error: number
+  avg_latency_ms: number
+}
+
+export interface ApiMonitorDailyItem {
+  used: number
+  limit: number | null
+  remaining: number | null
+  remaining_ratio: number | null
+}
+
+export interface ApiMonitorUsageSnapshot {
+  generated_at: string
+  started_at: string
+  window_minutes: number
+  in_flight: number
+  summary: {
+    total: number
+    success: number
+    error: number
+    success_rate: number
+    avg_latency_ms: number
+  }
+  by_category: Record<string, ApiMonitorCategoryStats>
+  recent_errors: Array<{
+    timestamp: string
+    category: string
+    path: string
+    status_code: number
+    duration_ms: number
+    error: string
+  }>
+  daily_usage: {
+    date: string
+    items: Record<string, ApiMonitorDailyItem>
+  }
+  events_retained: number
+}
+
+export interface ApiProviderRateLimit {
+  requests?: {
+    limit?: string | null
+    remaining?: string | null
+    reset?: string | null
+  } | null
+  tokens?: {
+    limit?: string | null
+    remaining?: string | null
+    reset?: string | null
+  } | null
+  raw_headers?: Record<string, string>
+}
+
+export interface ApiProviderTokenQuota {
+  source?: string
+  provider_code?: string | null
+  quota_code?: string | null
+  description?: string | null
+  total?: number | null
+  used?: number | null
+  remaining?: number | null
+  unit?: string | null
+  updated_at?: string
+}
+
+export interface ApiMonitorVolcConfig {
+  access_key_masked: string
+  secret_key_masked: string
+  has_access_key: boolean
+  has_secret_key: boolean
+  region: string
+  provider_code: string
+  quota_code: string
+}
+
+export interface ApiMonitorProbeConfig {
+  volcengine: ApiMonitorVolcConfig
+}
+
+export interface ApiMonitorVolcConfigUpdate {
+  access_key?: string | null
+  secret_key?: string | null
+  region?: string | null
+  provider_code?: string | null
+  quota_code?: string | null
+}
+
+export interface ApiProviderStatusItem {
+  category: string
+  provider: string
+  model: string
+  base_url: string
+  configured: boolean
+  status: string
+  message: string
+  http_status?: number
+  checked_at: string
+  rate_limit?: ApiProviderRateLimit | null
+  token_quota?: ApiProviderTokenQuota | null
+}
+
+export async function getApiMonitorUsage(windowMinutes: number = 60): Promise<ApiMonitorUsageSnapshot> {
+  const response = await api.get('/api/monitor/usage', {
+    params: { window_minutes: windowMinutes }
+  })
+  return response.data as ApiMonitorUsageSnapshot
+}
+
+export async function getApiMonitorBudget(): Promise<Record<string, number>> {
+  const response = await api.get('/api/monitor/budget')
+  return (response.data?.budgets || {}) as Record<string, number>
+}
+
+export async function updateApiMonitorBudget(
+  budgets: Record<string, number>
+): Promise<Record<string, number>> {
+  const response = await api.post('/api/monitor/budget', { budgets })
+  return (response.data?.budgets || {}) as Record<string, number>
+}
+
+export async function getApiMonitorConfig(): Promise<ApiMonitorProbeConfig> {
+  const response = await api.get('/api/monitor/config')
+  return response.data as ApiMonitorProbeConfig
+}
+
+export async function updateApiMonitorConfig(
+  volcengine: ApiMonitorVolcConfigUpdate
+): Promise<ApiMonitorProbeConfig> {
+  const response = await api.post('/api/monitor/config', { volcengine })
+  return (response.data?.config || response.data) as ApiMonitorProbeConfig
+}
+
+export async function getApiMonitorProviders(
+  scope: 'module' | 'agent' = 'module'
+): Promise<{ scope: string; generated_at: string; providers: ApiProviderStatusItem[] }> {
+  const response = await api.get('/api/monitor/providers', { params: { scope } })
+  return response.data as { scope: string; generated_at: string; providers: ApiProviderStatusItem[] }
 }
 
 // ========== Agent API ==========
@@ -1748,5 +1897,274 @@ export async function pollProjectVideoTasks(projectId: string): Promise<{
   updated: Array<Record<string, unknown>>
 }> {
   const response = await api.post(`/api/agent/projects/${projectId}/poll-video-tasks`)
+  return response.data
+}
+
+// ==========================================================================
+// Studio 长篇制作工作台 API
+// ==========================================================================
+
+export interface StudioSeries {
+  id: string
+  name: string
+  description: string
+  series_bible: string
+  visual_style: string
+  source_script: string
+  settings: Record<string, unknown>
+  created_at: string
+  updated_at: string
+  episode_count?: number
+  element_count?: number
+  episodes?: StudioEpisode[]
+  shared_elements?: StudioElement[]
+}
+
+export interface StudioEpisode {
+  id: string
+  series_id: string
+  act_number: number
+  title: string
+  summary: string
+  script_excerpt: string
+  creative_brief: Record<string, unknown>
+  target_duration_seconds: number
+  status: string
+  created_at: string
+  updated_at: string
+  shots?: StudioShot[]
+  episode_elements?: StudioEpisodeElement[]
+}
+
+export interface StudioElement {
+  id: string
+  series_id: string
+  name: string
+  type: string
+  description: string
+  voice_profile: string
+  image_url: string
+  image_history: string[]
+  reference_images: string[]
+  appears_in_episodes: string[]
+  created_at: string
+  updated_at: string
+}
+
+export interface StudioShot {
+  id: string
+  episode_id: string
+  segment_name: string
+  sort_order: number
+  name: string
+  type: string
+  duration: number
+  description: string
+  prompt: string
+  video_prompt: string
+  narration: string
+  dialogue_script: string
+  start_image_url: string
+  video_url: string
+  audio_url: string
+  status: string
+  created_at: string
+  updated_at: string
+}
+
+export interface StudioEpisodeElement {
+  id: string
+  episode_id: string
+  shared_element_id: string | null
+  name: string
+  type: string
+  description: string
+  voice_profile: string
+  image_url: string
+  is_override: number
+  created_at: string
+}
+
+// --- 系列 ---
+
+export async function studioCreateSeries(params: {
+  name: string
+  script: string
+  description?: string
+  series_bible?: string
+  visual_style?: string
+  target_episode_count?: number
+  episode_duration_seconds?: number
+}): Promise<{
+  series: StudioSeries
+  episodes: StudioEpisode[]
+  shared_elements: StudioElement[]
+}> {
+  const response = await studioApi.post('/api/studio/series', params)
+  return response.data
+}
+
+export async function studioListSeries(): Promise<StudioSeries[]> {
+  const response = await api.get('/api/studio/series')
+  return response.data
+}
+
+export async function studioGetSeries(seriesId: string): Promise<StudioSeries> {
+  const response = await api.get(`/api/studio/series/${seriesId}`)
+  return response.data
+}
+
+export async function studioUpdateSeries(
+  seriesId: string,
+  updates: Partial<Pick<StudioSeries, 'name' | 'description' | 'series_bible' | 'visual_style' | 'source_script'>>
+): Promise<StudioSeries> {
+  const response = await api.put(`/api/studio/series/${seriesId}`, updates)
+  return response.data
+}
+
+export async function studioDeleteSeries(seriesId: string): Promise<void> {
+  await api.delete(`/api/studio/series/${seriesId}`)
+}
+
+// --- 分集 ---
+
+export async function studioListEpisodes(seriesId: string): Promise<StudioEpisode[]> {
+  const response = await api.get(`/api/studio/series/${seriesId}/episodes`)
+  return response.data
+}
+
+export async function studioGetEpisode(episodeId: string): Promise<StudioEpisode> {
+  const response = await api.get(`/api/studio/episodes/${episodeId}`)
+  return response.data
+}
+
+export async function studioUpdateEpisode(
+  episodeId: string,
+  updates: Partial<Pick<StudioEpisode, 'title' | 'summary' | 'script_excerpt' | 'target_duration_seconds' | 'status'>>
+): Promise<StudioEpisode> {
+  const response = await api.put(`/api/studio/episodes/${episodeId}`, updates)
+  return response.data
+}
+
+export async function studioDeleteEpisode(episodeId: string): Promise<void> {
+  await api.delete(`/api/studio/episodes/${episodeId}`)
+}
+
+export async function studioPlanEpisode(episodeId: string): Promise<{
+  episode_id: string
+  creative_brief: Record<string, unknown>
+  new_elements: unknown[]
+  shots_count: number
+  shots: StudioShot[]
+}> {
+  const response = await studioApi.post(`/api/studio/episodes/${episodeId}/plan`)
+  return response.data
+}
+
+export async function studioEnhanceEpisode(
+  episodeId: string,
+  mode: 'refine' | 'expand' = 'refine'
+): Promise<{ episode_id: string; mode: string; patched: number; added: number }> {
+  const response = await studioApi.post(`/api/studio/episodes/${episodeId}/enhance`, null, {
+    params: { mode },
+  })
+  return response.data
+}
+
+// --- 共享元素 ---
+
+export async function studioGetElements(seriesId: string): Promise<StudioElement[]> {
+  const response = await api.get(`/api/studio/series/${seriesId}/elements`)
+  return response.data
+}
+
+export async function studioAddElement(
+  seriesId: string,
+  element: { name: string; type: string; description?: string; voice_profile?: string }
+): Promise<StudioElement> {
+  const response = await api.post(`/api/studio/series/${seriesId}/elements`, element)
+  return response.data
+}
+
+export async function studioUpdateElement(
+  elementId: string,
+  updates: Partial<Pick<StudioElement, 'name' | 'type' | 'description' | 'voice_profile' | 'image_url' | 'reference_images'>>
+): Promise<StudioElement> {
+  const response = await api.put(`/api/studio/elements/${elementId}`, updates)
+  return response.data
+}
+
+export async function studioDeleteElement(elementId: string): Promise<void> {
+  await api.delete(`/api/studio/elements/${elementId}`)
+}
+
+export async function studioGenerateElementImage(elementId: string): Promise<{
+  element_id: string
+  image_url: string
+}> {
+  const response = await api.post(`/api/studio/elements/${elementId}/generate-image`)
+  return response.data
+}
+
+// --- 镜头 ---
+
+export async function studioGetShots(episodeId: string): Promise<StudioShot[]> {
+  const response = await api.get(`/api/studio/episodes/${episodeId}/shots`)
+  return response.data
+}
+
+export async function studioUpdateShot(
+  shotId: string,
+  updates: Partial<Pick<StudioShot, 'name' | 'type' | 'duration' | 'description' | 'prompt' | 'video_prompt' | 'narration' | 'dialogue_script' | 'segment_name'>>
+): Promise<StudioShot> {
+  const response = await api.put(`/api/studio/shots/${shotId}`, updates)
+  return response.data
+}
+
+export async function studioDeleteShot(shotId: string): Promise<void> {
+  await api.delete(`/api/studio/shots/${shotId}`)
+}
+
+export async function studioGenerateShotAsset(
+  shotId: string,
+  params: { stage: 'frame' | 'video' | 'audio'; width?: number; height?: number; voice_type?: string }
+): Promise<Record<string, unknown>> {
+  const response = await api.post(`/api/studio/shots/${shotId}/generate`, params)
+  return response.data
+}
+
+// --- 批量生成 ---
+
+export async function studioBatchGenerate(
+  episodeId: string,
+  stages?: string[]
+): Promise<Record<string, unknown>> {
+  const response = await studioApi.post(`/api/studio/episodes/${episodeId}/batch-generate`, {
+    stages: stages || ['elements', 'frames', 'videos', 'audio'],
+  })
+  return response.data
+}
+
+// --- Studio 设置 ---
+
+export async function studioGetSettings(): Promise<Record<string, unknown>> {
+  const response = await api.get('/api/studio/settings')
+  return response.data
+}
+
+export async function studioSaveSettings(settings: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const response = await api.put('/api/studio/settings', settings)
+  return response.data
+}
+
+// --- 导出 ---
+
+export async function studioExportEpisode(episodeId: string): Promise<Record<string, unknown>> {
+  const response = await api.post(`/api/studio/episodes/${episodeId}/export`)
+  return response.data
+}
+
+export async function studioExportSeries(seriesId: string): Promise<Record<string, unknown>> {
+  const response = await api.post(`/api/studio/series/${seriesId}/export`)
   return response.data
 }

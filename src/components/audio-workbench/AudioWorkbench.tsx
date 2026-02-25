@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertCircle, CheckCircle, Loader2 } from 'lucide-react'
 import type { AudioTimeline, AudioTimelineShot } from '../../services/api'
 import {
+  BACKEND_ORIGIN,
   extractAudioFromVideos,
   generateAgentAudio,
   generateAudioTimelineMasterAudio,
@@ -20,7 +21,7 @@ function resolveMediaUrl(url?: string | null) {
   if (!u) return ''
   if (/^(data:|blob:)/i.test(u)) return u
   if (/^https?:/i.test(u)) return u
-  if (u.startsWith('/api/')) return `http://localhost:8001${u}`
+  if (u.startsWith('/api/')) return `${BACKEND_ORIGIN}${u}`
   return u
 }
 
