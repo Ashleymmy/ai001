@@ -2,10 +2,30 @@
 # 推荐用法：
 # 1) 复制为 `custom_providers.local.yaml`（该文件已在 `.gitignore` 中忽略）
 # 2) 填入真实 `apiKey`；也可以留空，改用环境变量：
-#    - LLM_API_KEY / IMAGE_API_KEY / STORYBOARD_API_KEY / VIDEO_API_KEY
+#    - LLM_API_KEY / OPENAI_API_KEY
+#    - LLM_BASE_URL / OPENAI_BASE_URL（可选，适用于 OpenAI 兼容中转渠道）
+#    - IMAGE_API_KEY / STORYBOARD_API_KEY / VIDEO_API_KEY
 # 3) 后端启动时优先读取 `custom_providers.local.yaml`，不存在则读取仓库自带的 `custom_providers.yaml`
 
 providers:
+  - id: custom_llm_openai
+    name: OpenAI 官方 (LLM)
+    category: llm
+    isCustom: true
+    apiKey: "YOUR_API_KEY_HERE"
+    baseUrl: https://api.openai.com/v1
+    model: gpt-4o-mini
+    models: [gpt-4o, gpt-4o-mini, gpt-4.1-mini]
+
+  - id: custom_llm_openrouter
+    name: OpenRouter 中转 (LLM)
+    category: llm
+    isCustom: true
+    apiKey: "YOUR_API_KEY_HERE"
+    baseUrl: https://openrouter.ai/api/v1
+    model: openai/gpt-4o-mini
+    models: [openai/gpt-4o-mini, anthropic/claude-3.5-sonnet]
+
   - id: custom_xxxxx
     name: 我的图像服务
     category: image

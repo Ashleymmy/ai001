@@ -1,6 +1,6 @@
 import { useEffect, useState, type MouseEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Clock, ArrowRight, Plus, Trash2, FolderOpen, Sparkles, Layout, X, Film } from 'lucide-react'
+import { Clock, ArrowRight, Plus, Trash2, FolderOpen, Sparkles, X, Film } from 'lucide-react'
 import { useProjectStore } from '../store/projectStore'
 import { listAgentProjects, deleteAgentProject, type AgentProject } from '../services/api'
 import { MODULE_CARDS } from '../shared/moduleCards'
@@ -10,7 +10,7 @@ interface UnifiedProject {
   id: string
   name: string
   description?: string
-  type: 'normal' | 'agent' | 'canvas'
+  type: 'normal' | 'agent'
   thumbnail?: string
   itemCount: number
   itemLabel: string
@@ -92,7 +92,7 @@ export default function HomePage() {
     }
   }
 
-  const handleDeleteProject = async (e: MouseEvent, id: string, type: 'normal' | 'agent' | 'canvas') => {
+  const handleDeleteProject = async (e: MouseEvent, id: string, type: 'normal' | 'agent') => {
     e.stopPropagation()
     if (confirm('确定要删除这个项目吗？')) {
       if (type === 'agent') {
@@ -145,8 +145,8 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Agent 和 Canvas 入口 */}
-        <div className="mb-12 grid grid-cols-2 gap-4">
+        {/* Agent 入口 */}
+        <div className="mb-12 grid grid-cols-1 gap-4">
           <button
             onClick={() => navigate('/agent')}
             className="glass-card p-6 text-left group hover-lift animate-fadeInUp delay-300"
@@ -162,27 +162,6 @@ export default function HomePage() {
                     <span className="text-xs bg-gradient-to-r from-fuchsia-500 to-purple-500 px-2.5 py-1 rounded-full text-white font-medium">全新</span>
                   </div>
                   <p className="text-gray-400 text-sm">AI 驱动的一站式视频创作流程</p>
-                </div>
-              </div>
-              <ArrowRight size={24} className="text-gray-500 group-hover:text-white group-hover:translate-x-2 transition-apple" />
-            </div>
-          </button>
-          
-          <button
-            onClick={() => navigate('/canvas')}
-            className="glass-card p-6 text-left group hover-lift animate-fadeInUp delay-400"
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-5">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-cyan-500 via-blue-500 to-indigo-500 flex items-center justify-center shadow-lg shadow-blue-500/30">
-                  <Layout size={30} className="text-white drop-shadow-md" strokeWidth={2} />
-                </div>
-                <div>
-                  <div className="flex items-center gap-3 mb-1">
-                    <h3 className="text-xl font-semibold">短剧工作台</h3>
-                    <span className="text-xs bg-gradient-to-r from-cyan-500 to-blue-500 px-2.5 py-1 rounded-full text-white font-medium">Demo</span>
-                  </div>
-                  <p className="text-gray-400 text-sm">短剧制作工作流（剧本→角色→分镜→视频）</p>
                 </div>
               </div>
               <ArrowRight size={24} className="text-gray-500 group-hover:text-white group-hover:translate-x-2 transition-apple" />
@@ -291,8 +270,6 @@ export default function HomePage() {
                   onClick={() => {
                     if (project.type === 'agent') {
                       navigate(`/agent/${project.id}`)
-                    } else if (project.type === 'canvas') {
-                      navigate(`/canvas/${project.id}`)
                     } else {
                       navigate(`/home/project/${project.id}`)
                     }
@@ -310,20 +287,14 @@ export default function HomePage() {
                       />
                     ) : project.type === 'agent' ? (
                       <Sparkles size={36} className="text-purple-500" />
-                    ) : project.type === 'canvas' ? (
-                      <Layout size={36} className="text-blue-500" />
                     ) : (
                       <Film size={36} className="text-gray-600" />
                     )}
                     
                     {/* 项目类型标签 */}
-                    {project.type !== 'normal' && (
-                      <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-[10px] font-medium ${
-                        project.type === 'agent' 
-                          ? 'bg-gradient-to-r from-fuchsia-500 to-purple-500 text-white' 
-                          : 'bg-gradient-to-r from-cyan-500 to-blue-500 text-white'
-                      }`}>
-                        {project.type === 'agent' ? 'Agent' : 'Canvas'}
+                    {project.type === 'agent' && (
+                      <div className="absolute top-2 right-2 px-2 py-0.5 rounded-full text-[10px] font-medium bg-gradient-to-r from-fuchsia-500 to-purple-500 text-white">
+                        Agent
                       </div>
                     )}
                   </div>

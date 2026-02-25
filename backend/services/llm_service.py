@@ -1,4 +1,4 @@
-"""LLM 服务 - 支持多种大模型提供商"""
+"""LLM 服务 - 基于 OpenAI 原生 SDK 的多服务商/中转渠道适配。"""
 import os
 import re
 from typing import Optional, List, Dict, Any
@@ -13,6 +13,23 @@ PROVIDER_CONFIGS = {
     "openai": {
         "base_url": "https://api.openai.com/v1",
         "default_model": "gpt-4o"
+    },
+    # OpenAI 兼容中转/聚合渠道（通过 OpenAI 原生 SDK + base_url 接入）
+    "openrouter": {
+        "base_url": "https://openrouter.ai/api/v1",
+        "default_model": "openai/gpt-4o-mini"
+    },
+    "oneapi": {
+        "base_url": "https://your-oneapi-domain/v1",
+        "default_model": "gpt-4o-mini"
+    },
+    "newapi": {
+        "base_url": "https://your-newapi-domain/v1",
+        "default_model": "gpt-4o-mini"
+    },
+    "siliconflow": {
+        "base_url": "https://api.siliconflow.cn/v1",
+        "default_model": "Qwen/Qwen2.5-72B-Instruct"
     },
     "deepseek": {
         "base_url": "https://api.deepseek.com/v1",
@@ -67,11 +84,18 @@ class LLMService:
         model: Optional[str] = None
     ):
         self.provider = provider
-        self.api_key = api_key or os.getenv("LLM_API_KEY", "")
+        self.api_key = (
+            (api_key or "").strip()
+            or os.getenv("LLM_API_KEY", "").strip()
+            or os.getenv("OPENAI_API_KEY", "").strip()
+        )
         
         # 获取配置
         config = PROVIDER_CONFIGS.get(provider, {})
-        self.base_url = base_url or config.get("base_url", "https://api.openai.com/v1")
+        env_base_url = os.getenv("LLM_BASE_URL", "").strip() or os.getenv("OPENAI_BASE_URL", "").strip()
+        self.base_url = self._normalize_base_url(
+            base_url or env_base_url or config.get("base_url", "https://api.openai.com/v1")
+        )
         self.model = model or config.get("default_model", "gpt-4o-mini")
         
         self.client = None
@@ -81,6 +105,14 @@ class LLMService:
                 base_url=self.base_url
             )
             print(f"[LLM] 初始化: provider={provider}, model={self.model}, base_url={self.base_url[:50]}...")
+
+    @staticmethod
+    def _normalize_base_url(base_url: Optional[str]) -> str:
+        """统一处理 base_url，避免尾随 / 导致的路径拼接问题。"""
+        raw = (base_url or "").strip()
+        if not raw:
+            return "https://api.openai.com/v1"
+        return raw.rstrip("/")
 
     async def parse_story(
         self,

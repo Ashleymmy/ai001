@@ -14,8 +14,8 @@ export default function ProjectBackButton({ className = '', projectId: propProje
   const searchParams = new URLSearchParams(location.search)
   const queryProjectId = searchParams.get('project')
   
-  // 从路径中提取 projectId (支持 /storyboard/:id, /agent/:id, /canvas/:id 格式)
-  const pathMatch = location.pathname.match(/\/(storyboard|agent|canvas)\/([^/]+)/)
+  // 从路径中提取 projectId (支持 /storyboard/:id, /agent/:id 格式)
+  const pathMatch = location.pathname.match(/\/(storyboard|agent)\/([^/]+)/)
   const pathProjectId = pathMatch ? pathMatch[2] : null
   
   const projectId = propProjectId || pathProjectId || queryProjectId

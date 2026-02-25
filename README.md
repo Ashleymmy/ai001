@@ -13,22 +13,6 @@
 
 ## 🚀 快速开始
 
-### 0. 克隆项目（包含 Submodule）
-
-本项目使用 Git Submodule 管理 `demo/huobao-drama`（短剧生成 demo）。
-
-```bash
-# 方式一：克隆时同时初始化 submodule（推荐）
-git clone --recurse-submodules https://github.com/Ashleymmy/ai001.git
-
-# 方式二：先克隆主项目，再初始化 submodule
-git clone https://github.com/Ashleymmy/ai001.git
-cd ai001
-git submodule update --init --recursive
-```
-
-**📖 详细的 Submodule 使用指南**: 参见 [HUOBAO_SUBMODULE_GUIDE.md](HUOBAO_SUBMODULE_GUIDE.md)
-
 ### 1. 安装依赖
 
 #### 前端 (Electron + React)
@@ -75,9 +59,6 @@ image:
 ```bash
 # 一键启动（Windows）
 npm run start
-
-# 说明：会额外尝试启动 demo/huobao-drama 的 Go 服务（端口 5678），用于 Canvas 页面嵌入 Huobao Demo。
-# 若未安装 Go，会跳过该服务。
 
 # 或者：手动分别启动
 # 终端 1 - 启动后端
@@ -155,8 +136,10 @@ MIT License
 
 ## 📚 开发文档
 
-- `开发文档.md`
-- `前端开发文档.md`
+- `docs/开发文档.md`
+- `docs/前端开发文档.md`
+- `docs/分镜脚本优化.md`
+- `docs/视频制作流程优化.md`
 
 ## 技术栈
 - 前端: Electron + React + TailwindCSS + Zustand

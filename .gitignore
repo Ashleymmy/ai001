@@ -43,9 +43,3 @@ backend/outputs/
 *.tmp
 .gocache/
 *.go.*
-
-# demo/huobao-drama (embedded Canvas demo)
-demo/huobao-drama/.git/
-demo/huobao-drama/data/
-demo/huobao-drama/web/node_modules/
-demo/huobao-drama/configs/config.yaml

@@ -22,6 +22,7 @@ from urllib.parse import urlparse, parse_qs
 import httpx
 from openai import AsyncOpenAI
 from .storage_service import StorageService
+from .llm_service import PROVIDER_CONFIGS
 from .agent.constants import SHOT_TYPES
 from .agent.prompts import (
     DEFAULT_AGENT_SYSTEM_PROMPT,
@@ -32,6 +33,11 @@ from .agent.prompts import (
     DEFAULT_SCRIPT_DOCTOR_PROMPT,
 )
 from .agent.models import AgentProject
+
+# Maximum duration for a single shot (seconds).
+# 8s balances between video model limits (Seedance 6s, Kling/Runway 10s)
+# and avoiding over-splitting narration.
+MAX_SHOT_SECONDS = 8.0
 
 
 def _sha256(text: str) -> str:
@@ -329,7 +335,39 @@ def _split_narration_sentences(text: str) -> List[str]:
     return merged
 
 
-def _split_dialogue_line(line: str, max_chars: int = 26) -> List[str]:
+def _merge_short_narration_chunks(
+    sentences: List[str],
+    *,
+    max_merge_seconds: float = 6.8,
+    speed: float = 1.0,
+) -> List[str]:
+    """Merge consecutive short narration sentences into longer chunks.
+
+    Avoids creating micro-fragments where each 2-3 second sentence becomes
+    its own shot.  Greedily merges adjacent sentences as long as the combined
+    duration stays within *max_merge_seconds*.
+    """
+    if not sentences:
+        return []
+    merged: List[str] = []
+    buf = ""
+    buf_dur = 0.0
+    for s in sentences:
+        s_dur = _estimate_speech_seconds(s, speed=speed)
+        if buf and buf_dur + s_dur <= max_merge_seconds:
+            buf = buf + s
+            buf_dur += s_dur
+        else:
+            if buf:
+                merged.append(buf)
+            buf = s
+            buf_dur = s_dur
+    if buf:
+        merged.append(buf)
+    return merged
+
+
+def _split_dialogue_line(line: str, max_chars: int = 40) -> List[str]:
     """Split a dialogue line into multiple shorter lines (keep speaker prefix)."""
     ln = (line or "").strip()
     if not ln:
@@ -1480,60 +1518,81 @@ class AgentService:
     
     def _init_client(self):
         """初始化 LLM 客户端"""
+        resolved = self._resolve_llm_client_config()
+        provider = resolved["provider"]
+        api_key = resolved["api_key"]
+        base_url = resolved["base_url"]
+        self.model = resolved["model"]
+
+        if not api_key:
+            self.client = None
+            self._llm_fingerprint = None
+            print("[Agent] 未配置 LLM API Key")
+            return
+
+        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._llm_fingerprint = (provider, api_key, base_url, self.model)
+        print(f"[Agent] 初始化完成: provider={provider}, model={self.model}")
+
+    def _resolve_llm_client_config(self) -> Dict[str, str]:
+        """解析当前 Agent 运行时的 LLM 配置（兼容 OpenAI 原生 SDK 环境变量）。"""
         settings = self.storage.get_settings() or {}
         if not isinstance(settings, dict):
             settings = {}
         llm_config = settings.get("llm", {}) if isinstance(settings, dict) else {}
         if not isinstance(llm_config, dict):
             llm_config = {}
-        
-        api_key = llm_config.get("apiKey") or os.getenv("LLM_API_KEY", "")
-        if not api_key:
-            self.client = None
-            self._llm_fingerprint = None
-            print("[Agent] 未配置 LLM API Key")
-            return
-        
-        provider = llm_config.get("provider", "qwen")
-        base_url = llm_config.get("baseUrl", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-        self.model = llm_config.get("model", "qwen-plus")
+
+        provider = str(llm_config.get("provider") or "qwen").strip() or "qwen"
+        provider_defaults = PROVIDER_CONFIGS.get(provider, {})
+
+        api_key = (
+            str(llm_config.get("apiKey") or "").strip()
+            or os.getenv("LLM_API_KEY", "").strip()
+            or os.getenv("OPENAI_API_KEY", "").strip()
+        )
+
+        base_url = (
+            str(llm_config.get("baseUrl") or "").strip()
+            or os.getenv("LLM_BASE_URL", "").strip()
+            or os.getenv("OPENAI_BASE_URL", "").strip()
+            or str(provider_defaults.get("base_url") or "https://api.openai.com/v1").strip()
+        ).rstrip("/")
+
+        model = (
+            str(llm_config.get("model") or "").strip()
+            or str(provider_defaults.get("default_model") or "gpt-4o-mini").strip()
+        )
         
         # 处理自定义配置
         if provider.startswith("custom_"):
             custom_providers = self.storage.get_custom_providers()
             custom_config = custom_providers.get(provider, {})
             if custom_config:
-                api_key = custom_config.get("apiKey", api_key)
-                base_url = custom_config.get("baseUrl", base_url)
-                self.model = custom_config.get("model", self.model)
-        
-        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-        self._llm_fingerprint = (provider, api_key, base_url, self.model)
-        print(f"[Agent] 初始化完成: model={self.model}")
+                api_key = str(custom_config.get("apiKey") or api_key).strip()
+                custom_base = str(custom_config.get("baseUrl") or "").strip()
+                if custom_base:
+                    base_url = custom_base.rstrip("/")
+                custom_model = str(custom_config.get("model") or "").strip()
+                if custom_model:
+                    model = custom_model
+
+        return {
+            "provider": provider,
+            "api_key": api_key,
+            "base_url": base_url,
+            "model": model,
+        }
 
     def _ensure_client(self) -> bool:
         """Ensure LLM client is initialized and up-to-date with latest settings."""
-        settings = self.storage.get_settings() or {}
-        if not isinstance(settings, dict):
-            settings = {}
-        llm_config = settings.get("llm", {})
-        if not isinstance(llm_config, dict):
-            llm_config = {}
-
-        provider = llm_config.get("provider", "qwen")
-        api_key = llm_config.get("apiKey") or os.getenv("LLM_API_KEY", "")
-        base_url = llm_config.get("baseUrl", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-        model = llm_config.get("model", "qwen-plus")
-
-        if provider.startswith("custom_"):
-            custom_providers = self.storage.get_custom_providers()
-            custom_config = custom_providers.get(provider, {})
-            if isinstance(custom_config, dict) and custom_config:
-                api_key = custom_config.get("apiKey", api_key)
-                base_url = custom_config.get("baseUrl", base_url)
-                model = custom_config.get("model", model)
-
-        fingerprint = (provider, api_key, base_url, model)
+        resolved = self._resolve_llm_client_config()
+        fingerprint = (
+            resolved["provider"],
+            resolved["api_key"],
+            resolved["base_url"],
+            resolved["model"],
+        )
         if self.client is None or self._llm_fingerprint != fingerprint:
             self._init_client()
         return self.client is not None
@@ -1953,7 +2012,6 @@ class AgentService:
             data = self._extract_json_from_reply(reply)
             normalized = self._normalize_project_plan(data)
             if normalized:
-                normalized = self._postprocess_audio_driven_plan(normalized, user_request)
                 normalized = await self._maybe_duration_fit_plan(normalized, user_request)
                 return {"success": True, "plan": normalized}
 
@@ -1977,7 +2035,6 @@ class AgentService:
                 repaired = self._extract_json_from_reply(repair_reply)
                 normalized2 = self._normalize_project_plan(repaired)
                 if normalized2:
-                    normalized2 = self._postprocess_audio_driven_plan(normalized2, user_request)
                     normalized2 = await self._maybe_duration_fit_plan(normalized2, user_request)
                     return {"success": True, "plan": normalized2}
             except Exception as e:
@@ -2090,7 +2147,7 @@ class AgentService:
                 if not isinstance(shot, dict):
                     continue
                 d = self._coerce_duration_seconds(shot.get("duration"), default=5.0)
-                total += float(_ceil_to_half(_clamp(d, 2.0, 6.0)) or 2.0)
+                total += float(_ceil_to_half(_clamp(d, 2.0, MAX_SHOT_SECONDS)) or 2.0)
         return total
 
     def _estimate_total_duration_after_split(self, plan: Dict[str, Any], speed_ratio: float, max_shot_seconds: float = 6.0) -> float:
@@ -2189,7 +2246,7 @@ class AgentService:
 
         target_seconds = self._find_target_duration_seconds(user_request, brief.get("targetDurationSeconds"))
         if not target_seconds:
-            return plan
+            return self._postprocess_audio_driven_plan(plan, user_request)
 
         total = self._sum_plan_shot_durations(plan)
         diff_ratio = abs(total - float(target_seconds)) / float(target_seconds) if target_seconds else 0.0
@@ -2201,10 +2258,10 @@ class AgentService:
         # Only do an extra LLM pass when mismatch is large or we hit speed caps.
         at_cap = sp is not None and (abs(sp - 0.85) < 0.02 or abs(sp - 1.25) < 0.02)
         if diff_ratio <= 0.08 and not (at_cap and diff_ratio > 0.05):
-            return plan
+            return self._postprocess_audio_driven_plan(plan, user_request)
 
         if not self._ensure_client():
-            return plan
+            return self._postprocess_audio_driven_plan(plan, user_request)
 
         snapshot = self._duration_fit_snapshot(plan)
         prompt = self._format_prompt_safe(
@@ -2233,7 +2290,7 @@ class AgentService:
             reply = response.choices[0].message.content or ""
             data = self._extract_json_from_reply(reply)
             if not isinstance(data, dict):
-                return plan
+                return self._postprocess_audio_driven_plan(plan, user_request)
 
             creative_brief_patch = data.get("creative_brief_patch") or {}
             segments_patch = data.get("segments_patch") or []
@@ -2256,7 +2313,7 @@ class AgentService:
             return self._postprocess_audio_driven_plan(next_plan, user_request)
         except Exception as e:
             print(f"[Agent] duration fit failed: {e}")
-            return plan
+            return self._postprocess_audio_driven_plan(plan, user_request)
 
     def _coerce_duration_seconds(self, raw: Any, default: float = 5.0) -> float:
         try:
@@ -2333,15 +2390,21 @@ class AgentService:
         try:
             max_sec = float(max_shot_seconds)
         except Exception:
-            max_sec = 6.0
-        pack_slack = 0.35
+            max_sec = 8.0
+        pack_slack = max(0.5, max_sec * 0.08)
         duration_pad = 0.35
         soft_limit = max(1.5, float(max_sec) - float(pack_slack))
         # Split budget in characters, aligned with calibrated TTS speed (3.75 chars/sec).
         split_max_chars = max(8, int(soft_limit * 3.75))
 
         chunks: List[Dict[str, str]] = []
-        for sent in _split_narration_sentences(narration):
+        raw_sentences = _split_narration_sentences(narration)
+        merged_sentences = _merge_short_narration_chunks(
+            raw_sentences,
+            max_merge_seconds=max_sec * 0.85,
+            speed=speed_ratio,
+        )
+        for sent in merged_sentences:
             if sent.strip():
                 chunks.append({"role": "narration", "text": sent.strip()})
         if dialogue_script:
@@ -3120,23 +3183,116 @@ class AgentService:
         target_seconds = self._find_target_duration_seconds(user_request, brief.get("targetDurationSeconds"))
         speed_ratio = 1.0
         if target_seconds:
-            speed_ratio = self._pick_speed_ratio_for_target(plan, target_seconds, max_shot_seconds=6.0)
+            speed_ratio = self._pick_speed_ratio_for_target(plan, target_seconds, max_shot_seconds=MAX_SHOT_SECONDS)
             brief["targetDurationSeconds"] = str(int(round(target_seconds)))
             brief["ttsSpeedRatio"] = f"{float(speed_ratio):.2f}"
 
-        # Audio-driven constraint: keep shot durations <= 6s by splitting long speech.
-        self._split_plan_shots_by_audio(plan, speed_ratio=float(speed_ratio), max_shot_seconds=6.0)
+        # Audio-driven constraint: keep shot durations within max by splitting long speech.
+        self._split_plan_shots_by_audio(plan, speed_ratio=float(speed_ratio), max_shot_seconds=MAX_SHOT_SECONDS)
 
-        # If we have a target and are shorter, try to distribute slack by extending shots up to 6s.
+        # If we have a target and are shorter, try to distribute slack by extending shots.
         if target_seconds:
-            self._distribute_duration_slack(plan, target_seconds=float(target_seconds), max_shot_seconds=6.0)
+            self._distribute_duration_slack(plan, target_seconds=float(target_seconds), max_shot_seconds=MAX_SHOT_SECONDS)
 
         # After splitting, de-duplicate start-frame prompts to reduce repeated frames.
         self._dedupe_plan_start_frame_prompts(plan)
         # Also keep video prompts motion-focused and avoid embedding voiceover text.
         self._decouple_plan_video_prompts(plan)
+
+        # Safety net: merge micro-fragments if shot count is severely exploded.
+        self._merge_if_exploded(plan, target_seconds)
         return plan
-    
+
+    def _merge_if_exploded(self, plan: Dict[str, Any], target_seconds: Optional[float]) -> None:
+        """Safety net: if shot count is severely over the suggested max, merge shortest adjacent pairs."""
+        if not isinstance(plan, dict):
+            return
+        segs = plan.get("segments") or []
+        if not isinstance(segs, list):
+            return
+
+        total_shots = sum(
+            len(seg.get("shots") or [])
+            for seg in segs
+            if isinstance(seg, dict)
+        )
+
+        if target_seconds and isinstance(target_seconds, (int, float)) and target_seconds > 0:
+            suggested_max = max(12, min(50, math.ceil(float(target_seconds) / 3.5)))
+        else:
+            total_dur = self._sum_plan_shot_durations(plan)
+            suggested_max = max(12, min(50, math.ceil(total_dur / 3.5)))
+
+        # Only force-merge when severely over the limit (1.5x).
+        hard_limit = int(suggested_max * 1.5)
+        if total_shots <= hard_limit:
+            if total_shots > suggested_max:
+                print(f"[Agent] Shot count warning: {total_shots} shots (suggested max: {suggested_max})")
+            return
+
+        print(f"[Agent] Shot explosion detected: {total_shots} shots >> {suggested_max} suggested. Merging down to {hard_limit}.")
+
+        # Repeatedly merge the shortest adjacent pair within any segment.
+        max_cycles = total_shots * 2
+        cycle = 0
+        while cycle < max_cycles:
+            cycle += 1
+            current_total = sum(
+                len(seg.get("shots") or [])
+                for seg in segs
+                if isinstance(seg, dict)
+            )
+            if current_total <= hard_limit:
+                break
+
+            best_seg = None
+            best_idx = -1
+            best_combined_dur = float("inf")
+
+            for seg in segs:
+                if not isinstance(seg, dict):
+                    continue
+                shots = seg.get("shots") or []
+                if not isinstance(shots, list) or len(shots) < 2:
+                    continue
+                for i in range(len(shots) - 1):
+                    s1 = shots[i]
+                    s2 = shots[i + 1]
+                    if not isinstance(s1, dict) or not isinstance(s2, dict):
+                        continue
+                    d1 = self._coerce_duration_seconds(s1.get("duration"), default=5.0)
+                    d2 = self._coerce_duration_seconds(s2.get("duration"), default=5.0)
+                    combined = d1 + d2
+                    if combined < best_combined_dur:
+                        best_combined_dur = combined
+                        best_seg = seg
+                        best_idx = i
+
+            if best_seg is None or best_idx < 0:
+                break
+
+            shots = best_seg["shots"]
+            s1 = shots[best_idx]
+            s2 = shots[best_idx + 1]
+            d1 = self._coerce_duration_seconds(s1.get("duration"), default=5.0)
+            d2 = self._coerce_duration_seconds(s2.get("duration"), default=5.0)
+
+            n1 = _as_text(s1.get("narration")).strip()
+            n2 = _as_text(s2.get("narration")).strip()
+            dlg1 = _as_text(s1.get("dialogue_script")).strip()
+            dlg2 = _as_text(s2.get("dialogue_script")).strip()
+
+            s1["narration"] = (n1 + n2).strip()
+            s1["dialogue_script"] = "\n".join([d for d in [dlg1, dlg2] if d]).strip()
+            s1["duration"] = str(_ceil_to_half(d1 + d2))
+
+            # Clean up split-part naming.
+            name = _as_text(s1.get("name")).strip()
+            name = re.sub(r"[（(]\d+/\d+[）)]", "", name).strip()
+            s1["name"] = name
+
+            shots.pop(best_idx + 1)
+
     async def script_doctor(self, project: Dict[str, Any], mode: str = "expand") -> Dict[str, Any]:
         """Enhance storyboard/script quality (hook/climax/logic) without breaking IDs."""
         if not self._ensure_client():

@@ -9,7 +9,6 @@ import StoryboardPage from './pages/StoryboardPage'
 import VideoPage from './pages/VideoPage'
 import SettingsPage from './pages/SettingsPage'
 import AgentPage from './pages/AgentPage'
-import CanvasPage from './pages/CanvasPage'
 import ProjectPage from './pages/ProjectPage'
 import { useSettingsStore } from './store/settingsStore'
 
@@ -124,9 +123,6 @@ function App() {
         {/* Agent 模式 - 独立布局，需要首次访问检测 */}
         <Route path="agent" element={<RequireVisited><AgentPage /></RequireVisited>} />
         <Route path="agent/:projectId" element={<RequireVisited><AgentPage /></RequireVisited>} />
-        {/* Canvas 画布模式，需要首次访问检测 */}
-        <Route path="canvas" element={<RequireVisited><CanvasPage /></RequireVisited>} />
-        <Route path="canvas/:projectId" element={<RequireVisited><CanvasPage /></RequireVisited>} />
       </Routes>
     </HashRouter>
   )

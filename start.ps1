@@ -67,21 +67,6 @@ if ($pythonVersion -match "Python") {
     exit 1
 }
 
-# 检查 Go（用于 demo/huobao-drama）
-$huobaoProjectPath = Join-Path $ProjectDir "demo\\huobao-drama"
-$huobaoEnabled = Test-Path $huobaoProjectPath
-if ($huobaoEnabled) {
-    $goVersion = go version 2>$null
-    if ($goVersion) {
-        Write-ColorText "  ✓ $goVersion" "Green"
-    } else {
-        Write-ColorText "  ⚠️ 未找到 Go，Canvas(Huobao demo) 将不可用" "Yellow"
-        $huobaoEnabled = $false
-    }
-} else {
-    $huobaoEnabled = $false
-}
-
 # 检查依赖
 Write-Host ""
 Write-ColorText "[检查依赖]" "Yellow"
@@ -99,27 +84,6 @@ if ($LASTEXITCODE -ne 0) {
     python -m pip install -r backend/requirements.txt
 }
 Write-ColorText "  ✓ 后端依赖已就绪" "Green"
-
-if ($huobaoEnabled) {
-    Write-Host ""
-    Write-ColorText "[检查依赖] demo/huobao-drama (Go)..." "Yellow"
-
-    $huobaoConfigPath = Join-Path $huobaoProjectPath "configs\\config.yaml"
-    $huobaoConfigExamplePath = Join-Path $huobaoProjectPath "configs\\config.example.yaml"
-    if (-not (Test-Path $huobaoConfigPath) -and (Test-Path $huobaoConfigExamplePath)) {
-        Copy-Item $huobaoConfigExamplePath $huobaoConfigPath -Force
-    }
-
-    try {
-        Push-Location $huobaoProjectPath
-        go mod download
-        Pop-Location
-        Write-ColorText "  ✓ demo Go 依赖已就绪" "Green"
-    } catch {
-        Write-ColorText "  ⚠️ demo Go 依赖下载失败（仍会尝试启动）" "Yellow"
-        try { Pop-Location } catch {}
-    }
-}
 
 # 启动服务
 Write-Host ""
@@ -155,25 +119,6 @@ Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendScript
 
 # 等待后端启动
 Start-Sleep -Seconds 2
-
-if ($huobaoEnabled) {
-    Write-ColorText "[启动] demo 服务 (Huobao Drama / Go)..." "Yellow"
-    $huobaoScript = @"
-`$Host.UI.RawUI.WindowTitle = '🎬 demo Go 服务 - Port 5678'
-`$Host.UI.RawUI.BackgroundColor = 'DarkMagenta'
-Clear-Host
-Write-Host ''
-Write-Host '  ╔═══════════════════════════════════════════════════════════╗' -ForegroundColor Magenta
-Write-Host '  ║     🎬 Huobao Drama (demo) - Go 后端服务                  ║' -ForegroundColor Magenta
-Write-Host '  ║     端口: 5678   健康检查: http://localhost:5678/health    ║' -ForegroundColor Magenta
-Write-Host '  ╚═══════════════════════════════════════════════════════════╝' -ForegroundColor Magenta
-Write-Host ''
-Set-Location '$huobaoProjectPath'
-go run main.go
-"@
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", $huobaoScript
-    Start-Sleep -Seconds 2
-}
 
 # 启动前端
 Write-ColorText "[启动] 前端服务 (Vite)..." "Yellow"
@@ -211,9 +156,8 @@ $maxWait = 30
 $waited = 0
 $backendReady = $false
 $frontendReady = $false
-$huobaoReady = $false
 
-while ($waited -lt $maxWait -and (-not $backendReady -or -not $frontendReady -or ($huobaoEnabled -and -not $huobaoReady))) {
+while ($waited -lt $maxWait -and (-not $backendReady -or -not $frontendReady)) {
     # 检查后端
     if (-not $backendReady) {
         if (Test-Port 8001) {
@@ -230,14 +174,7 @@ while ($waited -lt $maxWait -and (-not $backendReady -or -not $frontendReady -or
         }
     }
 
-    if ($huobaoEnabled -and -not $huobaoReady) {
-        if (Test-Port 5678) {
-            $huobaoReady = $true
-            Write-ColorText "  ✓ demo Go 服务已就绪 (http://localhost:5678)" "Green"
-        }
-    }
-
-    if (-not $backendReady -or -not $frontendReady -or ($huobaoEnabled -and -not $huobaoReady)) {
+    if (-not $backendReady -or -not $frontendReady) {
         Write-Host "`r  等待服务启动... ($waited 秒)" -NoNewline
         Start-Sleep -Seconds 1
         $waited++
@@ -246,7 +183,7 @@ while ($waited -lt $maxWait -and (-not $backendReady -or -not $frontendReady -or
 
 Write-Host ""
 
-if ($backendReady -and $frontendReady -and (-not $huobaoEnabled -or $huobaoReady)) {
+if ($backendReady -and $frontendReady) {
     Write-Host ""
     Write-ColorText "═══════════════════════════════════════════════════════════════════" "DarkGray"
     Write-ColorText "  ✅ 所有服务已启动！" "Green"
@@ -255,25 +192,10 @@ if ($backendReady -and $frontendReady -and (-not $huobaoEnabled -or $huobaoReady
     Write-ColorText "  📌 前端地址: http://localhost:5174" "Cyan"
     Write-ColorText "  📌 后端地址: http://localhost:8001" "Cyan"
     Write-ColorText "  📌 API 文档: http://localhost:8001/docs" "Cyan"
-    if ($huobaoEnabled) {
-        Write-ColorText "  📌 demo Go:  http://localhost:5678" "Cyan"
-    }
-    if ($huobaoEnabled) {
-        Write-Host ""
-        Write-ColorText "[同步] 预加载主项目 API 配置到 demo（默认禁用，可在 demo 的 AI配置 页面启用）..." "Yellow"
-        try {
-            python scripts/sync_huobao_ai_config.py --main http://localhost:8001 --demo http://localhost:5678
-        } catch {
-            Write-ColorText "  ⚠️ 同步失败：$($_.Exception.Message)" "Yellow"
-        }
-    }
     Write-Host ""
     Write-ColorText "  💡 提示:" "Yellow"
     Write-ColorText "     - 后端窗口 (蓝色) 显示 API 请求日志" "Gray"
     Write-ColorText "     - 前端窗口 (绿色) 显示构建状态" "Gray"
-    if ($huobaoEnabled) {
-        Write-ColorText "     - demo窗口 (紫色) 为 Canvas(Huobao) 后端" "Gray"
-    }
     Write-ColorText "     - 关闭此窗口不会停止服务" "Gray"
     Write-Host ""
 

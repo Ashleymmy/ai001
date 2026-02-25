@@ -41,19 +41,6 @@ if errorlevel 1 (
 for /f "tokens=*" %%i in ('python --version') do set PYTHON_VER=%%i
 echo [✓] %PYTHON_VER%
 
-:: 检查 Go（用于 demo/huobao-drama）
-set "HUOBAO_ENABLED=0"
-if exist "demo\huobao-drama" (
-    echo [检查环境] 正在检查 Go (demo/huobao-drama)...
-    go version >nul 2>&1
-    if errorlevel 1 (
-        echo [WARN] 未找到 Go，Canvas(Huobao demo) 将不可用
-    ) else (
-        for /f "tokens=*" %%i in ('go version') do echo [✓] %%i
-        set "HUOBAO_ENABLED=1"
-    )
-)
-
 :: 检查依赖
 echo.
 echo [检查依赖] 正在检查前端依赖...
@@ -66,14 +53,6 @@ echo [✓] 前端依赖已就绪
 echo [检查依赖] 正在检查后端依赖...
 if not exist "backend\venv" (
     echo [提示] 建议创建虚拟环境: python -m venv backend\venv
-)
-
-if "%HUOBAO_ENABLED%"=="1" (
-    if not exist "demo\\huobao-drama\\configs\\config.yaml" (
-        if exist "demo\\huobao-drama\\configs\\config.example.yaml" (
-            copy /Y "demo\\huobao-drama\\configs\\config.example.yaml" "demo\\huobao-drama\\configs\\config.yaml" >nul
-        )
-    )
 )
 
 :: 记录 PID 文件
@@ -93,13 +72,6 @@ start "🔧 AI Storyboarder - 后端服务" cmd /k "cd /d "%PROJECT_DIR%backend"
 echo [等待] 等待后端服务启动...
 timeout /t 3 /nobreak >nul
 
-if "%HUOBAO_ENABLED%"=="1" (
-    :: 启动 demo Go 后端（Huobao Drama）
-    echo [启动] 正在启动 demo 服务 (Huobao Drama / Go) (端口 5678)...
-    start "🎬 Huobao Drama (demo) - Go 后端" cmd /k "cd /d "%PROJECT_DIR%demo\\huobao-drama" && color 0D && echo. && echo  ╔═══════════════════════════════════════╗ && echo  ║  🎬 Huobao Drama (demo) - Go 后端     ║ && echo  ║  端口: 5678  Health: /health          ║ && echo  ╚═══════════════════════════════════════╝ && echo. && go mod download && go run main.go"
-    timeout /t 2 /nobreak >nul
-)
-
 :: 启动前端 (新窗口，带标题)
 echo [启动] 正在启动前端服务 (端口 5174)...
 start "🎨 AI Storyboarder - 前端服务" cmd /k "cd /d "%PROJECT_DIR%" && color 0A && echo. && echo  ╔═══════════════════════════════════════╗ && echo  ║  🎨 前端服务 - Vite + React           ║ && echo  ║  端口: 5174                           ║ && echo  ╚═══════════════════════════════════════╝ && echo. && npm run dev"
@@ -107,12 +79,6 @@ start "🎨 AI Storyboarder - 前端服务" cmd /k "cd /d "%PROJECT_DIR%" && col
 :: 等待前端启动
 echo [等待] 等待前端服务启动...
 timeout /t 5 /nobreak >nul
-
-if "%HUOBAO_ENABLED%"=="1" (
-    echo.
-    echo [同步] 预加载主项目 API 配置到 demo（默认禁用，可在 demo 的 AI配置 页面启用）...
-    python "scripts\\sync_huobao_ai_config.py" --main http://localhost:8001 --demo http://localhost:5678
-)
 
 echo.
 echo ══════════════════════════════════════════════════════════════
@@ -122,7 +88,6 @@ echo.
 echo  📌 前端地址: http://localhost:5174
 echo  📌 后端地址: http://localhost:8001
 echo  📌 API 文档: http://localhost:8001/docs
-if "%HUOBAO_ENABLED%"=="1" echo  📌 demo Go:  http://localhost:5678
 echo.
 echo  💡 提示:
 echo     - 按任意键打开浏览器

@@ -10,7 +10,6 @@ import {
   Pencil,
   Check,
   Sparkles,
-  Layout,
   MoreHorizontal,
   Trash2,
   Settings,
@@ -305,7 +304,7 @@ export default function ProjectPage() {
 
             {/* 高级模式入口 */}
             <h2 className="text-lg font-semibold mb-4 text-gray-300">高级模式</h2>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4">
               <button
                 onClick={() => navigate(`/agent/${projectId}`)}
                 className="glass-card p-5 text-left group hover-lift animate-fadeInUp"
@@ -320,25 +319,6 @@ export default function ProjectPage() {
                       <span className="text-xs bg-purple-500/30 text-purple-300 px-1.5 py-0.5 rounded">AI</span>
                     </div>
                     <p className="text-xs text-gray-500">AI 驱动的一站式创作</p>
-                  </div>
-                  <ChevronRight size={18} className="text-gray-500 group-hover:text-white group-hover:translate-x-1 transition-all" />
-                </div>
-              </button>
-
-              <button
-                onClick={() => navigate(`/canvas/${projectId}`)}
-                className="glass-card p-5 text-left group hover-lift animate-fadeInUp delay-100"
-              >
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-500 flex items-center justify-center shadow-lg shadow-blue-500/30">
-                    <Layout size={22} className="text-white" />
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <h3 className="font-medium">短剧工作台</h3>
-                      <span className="text-xs bg-blue-500/30 text-blue-300 px-1.5 py-0.5 rounded">Demo</span>
-                    </div>
-                    <p className="text-xs text-gray-500">短剧制作工作流</p>
                   </div>
                   <ChevronRight size={18} className="text-gray-500 group-hover:text-white group-hover:translate-x-1 transition-all" />
                 </div>

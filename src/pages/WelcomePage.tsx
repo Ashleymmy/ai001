@@ -559,97 +559,45 @@ interface PageTransitionProps {
 }
 
 const PageTransition: React.FC<PageTransitionProps> = ({ isActive, onComplete }) => {
-  const [phase, setPhase] = useState(0) // 0: hidden, 1: layer1, 2: layer2, 3: layer3
+  const [visible, setVisible] = useState(false)
 
   useEffect(() => {
-    if (!isActive) return
+    if (!isActive) {
+      setVisible(false)
+      return
+    }
 
-    // 立即开始第一层动画
-    const t0 = setTimeout(() => setPhase(1), 50)
-    // 第二层
-    const t1 = setTimeout(() => setPhase(2), 400)
-    // 第三层
-    const t2 = setTimeout(() => setPhase(3), 700)
-    // 完成跳转
-    const t3 = setTimeout(() => {
-      onComplete()
-    }, 1000)
+    const raf = requestAnimationFrame(() => setVisible(true))
+    const done = setTimeout(() => onComplete(), 550)
 
     return () => {
-      clearTimeout(t0)
-      clearTimeout(t1)
-      clearTimeout(t2)
-      clearTimeout(t3)
+      cancelAnimationFrame(raf)
+      clearTimeout(done)
     }
   }, [isActive, onComplete])
 
   if (!isActive) return null
 
   return (
-    <div className="fixed inset-0 z-[100] overflow-hidden">
-      {/* 第一层 - 紫粉渐变 */}
-      <div
-        className="absolute rounded-full bg-gradient-to-br from-purple-600 to-pink-600"
-        style={{
-          width: '200vmax',
-          height: '200vmax',
-          left: '50%',
-          top: '50%',
-          transform: `translate(-50%, -50%) scale(${phase >= 1 ? 1 : 0})`,
-          transition: 'transform 0.6s cubic-bezier(0.4, 0, 0.2, 1)'
-        }}
-      />
-
-      {/* 第二层 - 靛蓝紫渐变 */}
-      <div
-        className="absolute rounded-full bg-gradient-to-br from-indigo-600 to-purple-600"
-        style={{
-          width: '200vmax',
-          height: '200vmax',
-          left: '50%',
-          top: '50%',
-          transform: `translate(-50%, -50%) scale(${phase >= 2 ? 1 : 0})`,
-          transition: 'transform 0.5s cubic-bezier(0.4, 0, 0.2, 1)'
-        }}
-      />
-
-      {/* 第三层 - 深色背景 */}
-      <div
-        className="absolute rounded-full bg-[#0a0a12]"
-        style={{
-          width: '200vmax',
-          height: '200vmax',
-          left: '50%',
-          top: '50%',
-          transform: `translate(-50%, -50%) scale(${phase >= 3 ? 1 : 0})`,
-          transition: 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)'
-        }}
-      />
-
-      {/* 中心 Logo */}
-      <div
-        className="absolute left-1/2 top-1/2 z-10"
-        style={{
-          transform: `translate(-50%, -50%) scale(${phase >= 1 && phase < 3 ? 1 : phase >= 3 ? 1.5 : 0.5})`,
-          opacity: phase >= 1 && phase < 3 ? 1 : 0,
-          transition: 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)'
-        }}
-      >
-        <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-2xl shadow-purple-500/50">
-          <Film size={40} className="text-white" />
+    <div
+      className={`fixed inset-0 z-[100] transition-opacity duration-400 ${visible ? 'opacity-100' : 'opacity-0'}`}
+      style={{ background: 'rgba(8, 8, 14, 0.92)', backdropFilter: 'blur(6px)' }}
+    >
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div
+          className={`flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-5 py-4 transition-all duration-400 ${
+            visible ? 'opacity-100 scale-100' : 'opacity-0 scale-95'
+          }`}
+        >
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center">
+            <Film size={18} className="text-white" />
+          </div>
+          <div className="flex flex-col">
+            <span className="text-sm font-medium text-white/90">正在进入工作台</span>
+            <span className="text-xs text-white/60">请稍候...</span>
+          </div>
+          <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
         </div>
-      </div>
-
-      {/* 加载文字 */}
-      <div
-        className="absolute left-1/2 top-1/2 z-10"
-        style={{
-          transform: 'translate(-50%, 60px)',
-          opacity: phase >= 1 && phase < 3 ? 1 : 0,
-          transition: 'opacity 0.3s ease'
-        }}
-      >
-        <span className="text-white/90 text-sm font-medium tracking-widest">LOADING</span>
       </div>
     </div>
   )

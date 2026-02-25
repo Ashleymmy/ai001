@@ -1,4 +1,26 @@
 images:
+- id: 08461add
+  project_id: null
+  prompt: Cozy small apartment kitchen, modern 2D anime style, warm yellow lighting
+    enveloping the entire space, off-white tiled walls, mini electric stove in the
+    corner with a clay teapot on top, simple tableware arranged neatly on the countertop,
+    blurred heavy rain night scene visible through the window, smooth and delicate
+    lines, rich color layers, strong contrast between warm indoor tones and cool rainy
+    night outside, warm and healing atmosphere, 8K, ultra-detailed, high definition,
+    cinematic lighting, sharp focus, realistic light and shadow rendering
+  negative_prompt: Blurry, low resolution, messy composition, disproportionate elements,
+    rough lines, dull color palette, cold lighting dominance, overexposed areas, underexposed
+    areas, distorted shapes, cluttered space, text, watermarks, grainy texture, flat
+    lighting
+  image_url: https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-4-5/021770365089197ae767af4c69fa8400a91dada77a1314d156794_0.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20260206%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20260206T080500Z&X-Tos-Expires=86400&X-Tos-Signature=ebd87094e7918aca91d6cd89bcfa43313026b3fdc6e54bdc142ca0ebbaccde50&X-Tos-SignedHeaders=host
+  provider: custom_2dcc19a3
+  model: doubao-seedream-4-5-251128
+  width: 1024
+  height: 1024
+  steps: 25
+  seed: 1816497806
+  style: null
+  created_at: '2026-02-06T16:04:59.830273'
 - id: 1b2e7d98
   project_id: null
   prompt: a bouquet of fresh white chrysanthemums with layered pure white petals,
@@ -1149,4 +1171,4 @@ images:
   seed: 1545869874
   style: ''
   created_at: '2026-01-07T17:35:45.571061'
-updated_at: '2026-02-06T15:22:22.946679'
+updated_at: '2026-02-06T16:04:59.830273'

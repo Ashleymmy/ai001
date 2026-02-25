@@ -43,8 +43,9 @@ export function ModelConfigCard({
   const isCustom = config.provider === 'custom' || config.provider?.startsWith('custom_')
   const isPlaceholder = config.provider === 'placeholder' || config.provider === 'none'
   const isDoubao = config.provider === 'doubao'
+  const isLLM = category === 'llm'
 
-  const needsBaseUrl = isCustom || config.provider === 'claude' || config.provider === 'midjourney'
+  const needsBaseUrl = isLLM || isCustom || config.provider === 'claude' || config.provider === 'midjourney'
 
   const hasPresetModels = selectedProvider && selectedProvider.models.length > 0 && !isCustom && !isDoubao
   const hasCustomModels = selectedCustom && selectedCustom.models && selectedCustom.models.length > 0
@@ -97,6 +98,11 @@ export function ModelConfigCard({
               placeholder="https://api.example.com/v1"
               className="w-full glass-input p-3 text-sm"
             />
+            {isLLM && (
+              <p className="text-xs text-gray-500 mt-2">
+                LLM 使用 OpenAI 原生 SDK 调用，支持官方地址或 OpenAI 兼容中转地址（通常以 <code>/v1</code> 结尾）。
+              </p>
+            )}
           </div>
         )}
 
@@ -228,4 +234,3 @@ export function ModelConfigCard({
     </div>
   )
 }
-
