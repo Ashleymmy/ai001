@@ -7,6 +7,8 @@ import type {
   StudioElement,
   StudioShot,
   StudioEpisodeElement,
+  StudioCharacterDocImportResult,
+  StudioCharacterSplitResult,
   StudioBatchGenerateStreamEvent,
   StudioEpisodeHistoryEntry,
 } from '../services/api'
@@ -223,7 +225,19 @@ interface StudioState {
   addElement: (seriesId: string, element: { name: string; type: string; description?: string; voice_profile?: string; is_favorite?: number }) => Promise<void>
   updateElement: (elementId: string, updates: Record<string, unknown>) => Promise<void>
   deleteElement: (elementId: string) => Promise<void>
-  generateElementImage: (elementId: string) => Promise<void>
+  importCharacterDocument: (
+    seriesId: string,
+    documentText: string,
+    options?: { saveToElements?: boolean; dedupeByName?: boolean }
+  ) => Promise<StudioCharacterDocImportResult | null>
+  splitCharacterByAge: (
+    elementId: string,
+    options?: { replaceOriginal?: boolean }
+  ) => Promise<StudioCharacterSplitResult | null>
+  generateElementImage: (
+    elementId: string,
+    options?: { useReference?: boolean; referenceMode?: 'none' | 'light' | 'full'; width?: number; height?: number }
+  ) => Promise<void>
 
   updateShot: (shotId: string, updates: Record<string, unknown>) => Promise<void>
   deleteShot: (shotId: string) => Promise<void>
@@ -780,7 +794,87 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }
   },
 
-  generateElementImage: async (elementId) => {
+  importCharacterDocument: async (seriesId, documentText, options) => {
+    set({
+      generating: true,
+      generationScope: 'single',
+      generationMessage: '正在拆分角色文档',
+      error: null,
+      errorCode: null,
+      errorContext: null,
+      generationProgress: createInitialGenerationProgress(),
+    })
+    try {
+      const result = await api.studioImportCharacterDoc(seriesId, {
+        document_text: documentText,
+        save_to_elements: options?.saveToElements ?? true,
+        dedupe_by_name: options?.dedupeByName ?? true,
+      })
+      const activeSeriesId = get().currentSeriesId
+      if (activeSeriesId === seriesId) {
+        const els = await api.studioGetElements(seriesId)
+        set({ sharedElements: els })
+      }
+      set({ generating: false, generationScope: 'none', generationMessage: '' })
+      return result
+    } catch (e: unknown) {
+      const parsed = queueOperationFailure(set, e, {
+        key: `import_character_doc:${seriesId}`,
+        title: '导入角色文档',
+        retryTask: () => get().importCharacterDocument(seriesId, documentText, options),
+      })
+      set({
+        generating: false,
+        generationScope: 'none',
+        generationMessage: '',
+        error: parsed.message,
+        errorCode: parsed.code,
+        errorContext: parsed.context,
+      })
+      return null
+    }
+  },
+
+  splitCharacterByAge: async (elementId, options) => {
+    set({
+      generating: true,
+      generationScope: 'single',
+      generationMessage: '正在按阶段拆分角色',
+      error: null,
+      errorCode: null,
+      errorContext: null,
+      generationProgress: createInitialGenerationProgress(),
+    })
+    try {
+      const result = await api.studioSplitCharacterByAge(elementId, {
+        replace_original: options?.replaceOriginal ?? false,
+      })
+      const seriesId = get().currentSeriesId
+      if (seriesId) {
+        const els = await api.studioGetElements(seriesId)
+        set({ sharedElements: els })
+      }
+      set({ generating: false, generationScope: 'none', generationMessage: '' })
+      return result
+    } catch (e: unknown) {
+      const parsed = queueOperationFailure(set, e, {
+        key: `split_character_by_age:${elementId}`,
+        title: '角色阶段拆分',
+        retryTask: () => get().splitCharacterByAge(elementId, options),
+      })
+      set({
+        generating: false,
+        generationScope: 'none',
+        generationMessage: '',
+        error: parsed.message,
+        errorCode: parsed.code,
+        errorContext: parsed.context,
+      })
+      return null
+    }
+  },
+
+  generateElementImage: async (elementId, options) => {
     set({
       generating: true,
       generationScope: 'single',
@@ -791,7 +885,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       generationProgress: createInitialGenerationProgress(),
     })
     try {
-      await api.studioGenerateElementImage(elementId)
+      await api.studioGenerateElementImage(elementId, {
+        use_reference: options?.useReference,
+        reference_mode: options?.referenceMode,
+        width: options?.width,
+        height: options?.height,
+      })
       const seriesId = get().currentSeriesId
       if (seriesId) {
         const els = await api.studioGetElements(seriesId)
@@ -802,7 +901,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const parsed = queueOperationFailure(set, e, {
         key: `generate_element_image:${elementId}`,
         title: '生成元素图',
-        retryTask: () => get().generateElementImage(elementId),
+        retryTask: () => get().generateElementImage(elementId, options),
       })
       set({
         generating: false,

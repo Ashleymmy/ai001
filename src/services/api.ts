@@ -1969,6 +1969,33 @@ export interface StudioElement {
   updated_at: string
 }
 
+export interface StudioCharacterProfile {
+  base_name: string
+  stage_label: string
+  name: string
+  description: string
+  voice_profile: string
+  keywords: string[]
+}
+
+export interface StudioCharacterDocImportResult {
+  series_id: string
+  items: StudioCharacterProfile[]
+  created: number
+  updated: number
+  skipped: number
+}
+
+export interface StudioCharacterSplitResult {
+  element_id: string
+  need_split: boolean
+  reason: string
+  profiles: StudioCharacterProfile[]
+  created: number
+  updated: number
+  deleted_original?: boolean
+}
+
 export interface StudioSeriesStats {
   series_id: string
   episodes: {
@@ -2268,11 +2295,30 @@ export async function studioDeleteElement(elementId: string): Promise<void> {
   await api.delete(`/api/studio/elements/${elementId}`)
 }
 
-export async function studioGenerateElementImage(elementId: string): Promise<{
+export async function studioImportCharacterDoc(
+  seriesId: string,
+  payload: { document_text: string; save_to_elements?: boolean; dedupe_by_name?: boolean }
+): Promise<StudioCharacterDocImportResult> {
+  const response = await api.post(`/api/studio/series/${seriesId}/character-doc/import`, payload)
+  return response.data as StudioCharacterDocImportResult
+}
+
+export async function studioSplitCharacterByAge(
+  elementId: string,
+  payload?: { replace_original?: boolean }
+): Promise<StudioCharacterSplitResult> {
+  const response = await api.post(`/api/studio/elements/${elementId}/split-by-age`, payload || {})
+  return response.data as StudioCharacterSplitResult
+}
+
+export async function studioGenerateElementImage(
+  elementId: string,
+  options?: { use_reference?: boolean; reference_mode?: 'none' | 'light' | 'full'; width?: number; height?: number }
+): Promise<{
   element_id: string
   image_url: string
 }> {
-  const response = await api.post(`/api/studio/elements/${elementId}/generate-image`)
+  const response = await api.post(`/api/studio/elements/${elementId}/generate-image`, options || {})
   return response.data
 }
 

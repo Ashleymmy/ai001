@@ -8,7 +8,7 @@ import json
 import math
 import re
 import inspect
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from .studio_storage import StudioStorage
 from .studio.prompts import DEFAULT_CUSTOM_PROMPTS, normalize_custom_prompts
@@ -252,13 +252,340 @@ class StudioService:
 
         style_anchor = visual_style or "国风叙事动画插画风格"
         style_clause = f"整体视觉风格：{style_anchor}。"
+        element_type = str(element.get("type") or "").strip().lower()
+        character_clause = ""
+        mixed_variant_clause = ""
+        if element_type == "character":
+            character_clause = "角色图必须为单人、单版本设定（年龄/时间/剧情阶段/场景形态）；不得出现同一角色多版本拼贴或多人群像；"
+            if self._contains_multi_age_signals(base_prompt):
+                mixed_variant_clause = "若原描述含前期/后期等多版本词，仅渲染一个版本的人物立绘；"
         return (
             f"{base_prompt}\n"
             f"{style_clause}"
             "保持与同系列素材一致的线条、色彩、材质语言；"
+            f"{character_clause}"
+            f"{mixed_variant_clause}"
             "画面必须为统一的二维影视概念插画；"
             "禁止切换为写实照片风、3D渲染、Q版卡通。"
         ).strip()
+
+    @staticmethod
+    def _contains_multi_age_signals(text: str) -> bool:
+        candidate = str(text or "")
+        if not candidate.strip():
+            return False
+
+        # 年龄标识
+        age_markers = [
+            "幼年", "童年", "少年", "青年", "中年", "老年", "晚年",
+            "年轻时", "年老时",
+        ]
+        # 时间/阶段/场景形态标识
+        stage_markers = [
+            "前期", "中期", "后期", "初期", "末期", "早期", "晚期",
+            "十年后", "多年后", "若干年后",
+            "战前", "战后", "回忆", "现实", "白天", "夜晚", "雨夜", "雪夜",
+        ]
+        hit = [m for m in [*age_markers, *stage_markers] if m in candidate]
+
+        # 常见“成对阶段词”同时出现，直接判定为多版本
+        stage_pairs = [
+            ("前期", "后期"),
+            ("早期", "晚期"),
+            ("战前", "战后"),
+            ("白天", "夜晚"),
+            ("回忆", "现实"),
+        ]
+        if any(a in candidate and b in candidate for a, b in stage_pairs):
+            return True
+        return len(set(hit)) >= 2
+
+    @staticmethod
+    def _normalize_character_profiles_payload(payload: Any) -> List[Dict[str, Any]]:
+        items: Any = payload
+        if isinstance(payload, dict):
+            maybe = payload.get("items")
+            if isinstance(maybe, list):
+                items = maybe
+            elif isinstance(payload.get("profiles"), list):
+                items = payload.get("profiles")
+
+        if not isinstance(items, list):
+            return []
+
+        normalized: List[Dict[str, Any]] = []
+        seen_names: set[str] = set()
+        for raw in items:
+            if not isinstance(raw, dict):
+                continue
+            base_name = str(raw.get("base_name") or raw.get("baseName") or raw.get("character_name") or raw.get("name") or "").strip()
+            stage_label = str(raw.get("stage_label") or raw.get("stageLabel") or "").strip()
+            explicit_name = str(raw.get("name") or "").strip()
+            name = explicit_name or (f"{base_name}（{stage_label}）" if base_name and stage_label else base_name)
+            if not name:
+                continue
+            lowered = name.lower()
+            if lowered in seen_names:
+                continue
+            seen_names.add(lowered)
+
+            description = str(raw.get("description") or "").strip()
+            voice_profile = str(raw.get("voice_profile") or raw.get("voiceProfile") or "").strip()
+            keywords_raw = raw.get("keywords")
+            keywords: List[str] = []
+            if isinstance(keywords_raw, list):
+                keywords = [str(v).strip() for v in keywords_raw if str(v).strip()]
+            elif isinstance(keywords_raw, str) and keywords_raw.strip():
+                keywords = [s.strip() for s in keywords_raw.split(",") if s.strip()]
+
+            normalized.append({
+                "base_name": base_name or name,
+                "stage_label": stage_label,
+                "name": name,
+                "description": description,
+                "voice_profile": voice_profile,
+                "keywords": keywords,
+            })
+        return normalized
+
+    def _build_existing_character_map(self, series_id: str) -> Dict[str, Dict[str, Any]]:
+        existing = self.storage.get_shared_elements(series_id, element_type="character")
+        result: Dict[str, Dict[str, Any]] = {}
+        for item in existing:
+            name = str(item.get("name") or "").strip().lower()
+            if name and name not in result:
+                result[name] = item
+        return result
+
+    def _upsert_character_elements(
+        self,
+        series_id: str,
+        profiles: List[Dict[str, Any]],
+        dedupe_by_name: bool,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int]:
+        created_elements: List[Dict[str, Any]] = []
+        updated_elements: List[Dict[str, Any]] = []
+        skipped = 0
+
+        existing_map = self._build_existing_character_map(series_id)
+        for profile in profiles:
+            name = str(profile.get("name") or "").strip()
+            description = str(profile.get("description") or "").strip()
+            voice_profile = str(profile.get("voice_profile") or "").strip()
+            if not name:
+                skipped += 1
+                continue
+
+            existing = existing_map.get(name.lower()) if dedupe_by_name else None
+            if existing:
+                updates: Dict[str, Any] = {}
+                if description:
+                    updates["description"] = description
+                if voice_profile:
+                    updates["voice_profile"] = voice_profile
+                if updates:
+                    updated = self.storage.update_shared_element(existing["id"], updates)
+                    if updated:
+                        updated_elements.append(updated)
+                else:
+                    skipped += 1
+                continue
+
+            created = self.storage.add_shared_element(
+                series_id=series_id,
+                name=name,
+                element_type="character",
+                description=description,
+                voice_profile=voice_profile,
+            )
+            created_elements.append(created)
+            existing_map[name.lower()] = created
+
+        return created_elements, updated_elements, skipped
+
+    async def import_character_document(
+        self,
+        series_id: str,
+        document_text: str,
+        save_to_elements: bool = True,
+        dedupe_by_name: bool = True,
+    ) -> Dict[str, Any]:
+        series = self.storage.get_series(series_id)
+        if not series:
+            raise StudioServiceError(
+                "系列不存在",
+                error_code="series_not_found",
+                context={"series_id": series_id},
+            )
+        if not self.llm:
+            raise StudioServiceError(
+                "Studio LLM 服务未配置，请先在设置中配置 LLM API Key",
+                error_code="config_missing_llm",
+            )
+
+        text = str(document_text or "").strip()
+        if len(text) < 20:
+            raise StudioServiceError(
+                "角色文档内容过短，请至少提供 20 个字符",
+                error_code="character_doc_too_short",
+                context={"series_id": series_id},
+            )
+
+        visual_style = str(series.get("visual_style") or "").strip() or "未指定"
+        prompt = (
+            "请从以下“角色设定文档”中拆分出角色清单，适用于 AI 角色立绘制作。\n\n"
+            "输出规则：\n"
+            "1. 一个条目只允许一个角色+一个版本（年龄/时间段/剧情阶段/关键场景形态）。\n"
+            "2. 如果同一角色包含多个版本（如前期/后期、战前/战后、白天/雨夜），必须拆成多个条目。\n"
+            "3. 每个条目 description 必须是单版本视觉描述，禁止写“前期/后期混合”。\n"
+            "4. 仅输出 JSON，不要输出解释。\n"
+            "5. 输出格式：\n"
+            "[\n"
+            "  {\n"
+            "    \"base_name\": \"角色基础名\",\n"
+            "    \"stage_label\": \"版本标签（如少年/后期/战后/雨夜，可空）\",\n"
+            "    \"name\": \"元素名（建议含版本后缀）\",\n"
+            "    \"description\": \"单版本外观描述\",\n"
+            "    \"voice_profile\": \"可选\",\n"
+            "    \"keywords\": [\"可选标签\"]\n"
+            "  }\n"
+            "]\n\n"
+            f"系列视觉风格：{visual_style}\n"
+            f"角色文档：\n{text}"
+        )
+
+        raw = await self._llm_call(
+            user_prompt=prompt,
+            system_prompt="你是影视角色设计总监，擅长将长文档拆分为可执行的角色设定条目。",
+            max_tokens=6000,
+            temperature=0.35,
+        )
+        parsed = self._extract_json(raw)
+        profiles = self._normalize_character_profiles_payload(parsed)
+        if not profiles:
+            raise StudioServiceError(
+                "角色文档解析失败，未提取到有效角色条目",
+                error_code="character_doc_parse_failed",
+                context={"series_id": series_id, "preview": (raw or "")[:500]},
+            )
+
+        created_elements: List[Dict[str, Any]] = []
+        updated_elements: List[Dict[str, Any]] = []
+        skipped = 0
+        if save_to_elements:
+            created_elements, updated_elements, skipped = self._upsert_character_elements(
+                series_id=series_id,
+                profiles=profiles,
+                dedupe_by_name=dedupe_by_name,
+            )
+
+        return {
+            "series_id": series_id,
+            "items": profiles,
+            "created": len(created_elements),
+            "updated": len(updated_elements),
+            "skipped": skipped,
+            "created_elements": created_elements,
+            "updated_elements": updated_elements,
+        }
+
+    async def split_character_element_by_age(
+        self,
+        element_id: str,
+        replace_original: bool = False,
+    ) -> Dict[str, Any]:
+        element = self.storage.get_shared_element(element_id)
+        if not element:
+            raise StudioServiceError(
+                "元素不存在",
+                error_code="element_not_found",
+                context={"element_id": element_id},
+            )
+        if str(element.get("type") or "") != "character":
+            raise StudioServiceError(
+                "仅角色类型支持按阶段拆分",
+                error_code="invalid_element_type",
+                context={"element_id": element_id, "type": element.get("type")},
+            )
+        if not self.llm:
+            raise StudioServiceError(
+                "Studio LLM 服务未配置，请先在设置中配置 LLM API Key",
+                error_code="config_missing_llm",
+            )
+
+        base_name = str(element.get("name") or "").strip()
+        description = str(element.get("description") or "").strip()
+        voice_profile = str(element.get("voice_profile") or "").strip()
+        series = self.storage.get_series(element.get("series_id")) if element.get("series_id") else None
+        visual_style = str((series or {}).get("visual_style") or "").strip() or "未指定"
+
+        prompt = (
+            "请判断以下角色设定是否混入多个版本（年龄/时间/剧情阶段/场景形态），并按版本拆分。\n\n"
+            "要求：\n"
+            "1. 如果本来就是单版本，返回 need_split=false，profiles 可为空。\n"
+            "2. 如果包含多个版本，返回 need_split=true，并输出 profiles。\n"
+            "3. profiles 中每项必须是单角色、单版本，name 建议使用“角色名（版本）”。\n"
+            "4. 只输出 JSON，格式：\n"
+            "{\n"
+            "  \"need_split\": true,\n"
+            "  \"reason\": \"...\",\n"
+            "  \"profiles\": [\n"
+            "    {\"base_name\":\"...\",\"stage_label\":\"...\",\"name\":\"...\",\"description\":\"...\",\"voice_profile\":\"...\",\"keywords\":[]}\n"
+            "  ]\n"
+            "}\n\n"
+            f"系列视觉风格：{visual_style}\n"
+            f"角色名：{base_name}\n"
+            f"描述：{description}\n"
+            f"音色：{voice_profile}"
+        )
+
+        raw = await self._llm_call(
+            user_prompt=prompt,
+            system_prompt="你是角色设定编辑，擅长将混合版本设定拆分为可生成的单版本条目。",
+            max_tokens=3200,
+            temperature=0.25,
+        )
+        parsed = self._extract_json(raw)
+        payload = parsed if isinstance(parsed, dict) else {"profiles": parsed}
+        need_split = bool(payload.get("need_split"))
+        profiles = self._normalize_character_profiles_payload(payload)
+
+        # 兜底：LLM 未给 need_split，但文本明显多版本且拆出了 >=2 个条目，也视为可拆分
+        if not need_split and len(profiles) >= 2 and self._contains_multi_age_signals(description):
+            need_split = True
+
+        if not need_split or len(profiles) < 2:
+            return {
+                "element_id": element_id,
+                "need_split": False,
+                "reason": str(payload.get("reason") or "当前角色描述已接近单版本，无需拆分"),
+                "profiles": profiles,
+                "created": 0,
+                "updated": 0,
+            }
+
+        series_id = str(element.get("series_id") or "")
+        created_elements, updated_elements, _ = self._upsert_character_elements(
+            series_id=series_id,
+            profiles=profiles,
+            dedupe_by_name=True,
+        )
+
+        deleted_original = False
+        if replace_original:
+            deleted_original = self.storage.delete_shared_element(element_id)
+
+        return {
+            "element_id": element_id,
+            "need_split": True,
+            "reason": str(payload.get("reason") or ""),
+            "profiles": profiles,
+            "created": len(created_elements),
+            "updated": len(updated_elements),
+            "deleted_original": deleted_original,
+            "created_elements": created_elements,
+            "updated_elements": updated_elements,
+        }
 
     @staticmethod
     def _normalize_video_status(value: Any) -> str:
@@ -1055,6 +1382,8 @@ class StudioService:
         element_id: str,
         width: int = 1024,
         height: int = 1024,
+        use_reference: bool = False,
+        reference_mode: str = "none",
     ) -> Dict[str, Any]:
         """为共享元素生成参考图"""
         if not self.image:
@@ -1077,12 +1406,37 @@ class StudioService:
 
         series = self.storage.get_series(el.get("series_id")) if el.get("series_id") else None
         prompt = self._build_element_image_prompt(el, series)
-        ref_images = el.get("reference_images") or []
-        if not isinstance(ref_images, list):
-            ref_images = []
+        element_type = str(el.get("type") or "").strip().lower()
+        ref_images: List[str] = []
+        mode = (reference_mode or "").strip().lower()
+        if mode not in {"none", "light", "full"}:
+            mode = "light" if use_reference else "none"
+        if use_reference and mode == "none":
+            mode = "light"
+
+        # 限制一致性参考图：仅角色类型允许，且默认 light 模式只带 1 张图
+        if element_type != "character":
+            mode = "none"
+
+        raw_refs: List[str] = []
+        source_refs = el.get("reference_images") or []
+        if isinstance(source_refs, list):
+            raw_refs = [str(u).strip() for u in source_refs if isinstance(u, str) and str(u).strip()]
         current_image = str(el.get("image_url") or "").strip()
-        if current_image and current_image not in ref_images:
-            ref_images.insert(0, current_image)
+
+        if mode == "light":
+            if current_image:
+                ref_images = [current_image]
+            elif raw_refs:
+                ref_images = [raw_refs[0]]
+        elif mode == "full":
+            if current_image:
+                ref_images.append(current_image)
+            for url in raw_refs:
+                if url and url not in ref_images:
+                    ref_images.append(url)
+                if len(ref_images) >= 3:
+                    break
 
         result = await self.image.generate(
             prompt=prompt,

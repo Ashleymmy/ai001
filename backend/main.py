@@ -5865,6 +5865,23 @@ class StudioReorderShotsRequest(BaseModel):
     shot_ids: List[str]
 
 
+class StudioElementGenerateImageRequest(BaseModel):
+    width: Optional[int] = None
+    height: Optional[int] = None
+    use_reference: bool = False
+    reference_mode: str = "none"
+
+
+class StudioCharacterDocImportRequest(BaseModel):
+    document_text: str
+    save_to_elements: bool = True
+    dedupe_by_name: bool = True
+
+
+class StudioCharacterSplitRequest(BaseModel):
+    replace_original: bool = False
+
+
 class StudioSettingsRequest(BaseModel):
     llm: Optional[Dict[str, Any]] = None
     image: Optional[Dict[str, Any]] = None
@@ -6189,6 +6206,20 @@ async def studio_add_element(series_id: str, req: StudioElementCreateRequest):
     )
 
 
+@app.post("/api/studio/series/{series_id}/character-doc/import")
+async def studio_import_character_doc(series_id: str, req: StudioCharacterDocImportRequest):
+    service = _studio_ensure_service_ready()
+    try:
+        return await service.import_character_document(
+            series_id=series_id,
+            document_text=req.document_text,
+            save_to_elements=req.save_to_elements,
+            dedupe_by_name=req.dedupe_by_name,
+        )
+    except Exception as e:
+        _studio_raise_from_exception(e)
+
+
 @app.put("/api/studio/elements/{element_id}")
 async def studio_update_element(element_id: str, req: StudioElementUpdateRequest):
     service = _studio_ensure_service_ready()
@@ -6206,6 +6237,18 @@ async def studio_delete_element(element_id: str):
     if not ok:
         _studio_raise(404, "元素不存在", "element_not_found", {"element_id": element_id})
     return {"ok": True}
+
+
+@app.post("/api/studio/elements/{element_id}/split-by-age")
+async def studio_split_character_by_age(element_id: str, req: StudioCharacterSplitRequest):
+    service = _studio_ensure_service_ready()
+    try:
+        return await service.split_character_element_by_age(
+            element_id=element_id,
+            replace_original=req.replace_original,
+        )
+    except Exception as e:
+        _studio_raise_from_exception(e)
 
 
 @app.get("/api/studio/series/{series_id}/stats")
@@ -6311,10 +6354,20 @@ async def studio_inpaint_shot_frame(shot_id: str, req: StudioInpaintRequest):
 # --- 元素图片生成 ---
 
 @app.post("/api/studio/elements/{element_id}/generate-image")
-async def studio_generate_element_image(element_id: str):
+async def studio_generate_element_image(
+    element_id: str,
+    req: Optional[StudioElementGenerateImageRequest] = None,
+):
     service = _studio_ensure_service_ready()
     try:
-        return await service.generate_element_image(element_id)
+        payload = req or StudioElementGenerateImageRequest()
+        return await service.generate_element_image(
+            element_id=element_id,
+            width=payload.width or 1024,
+            height=payload.height or 1024,
+            use_reference=bool(payload.use_reference),
+            reference_mode=payload.reference_mode or "none",
+        )
     except Exception as e:
         _studio_raise_from_exception(e)
 
