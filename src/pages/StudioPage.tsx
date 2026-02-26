@@ -19,6 +19,8 @@ import type {
   StudioEpisodeElement,
   StudioGenerationProgress,
   StudioGenerationStage,
+  StudioFailedOperation,
+  StudioRetryRecord,
 } from '../store/studioStore'
 import Timeline from '../components/studio/Timeline'
 import PreviewPlayer from '../components/studio/PreviewPlayer'
@@ -105,6 +107,19 @@ function formatStorage(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
+function formatRelativeTime(input: string): string {
+  const timestamp = new Date(input).getTime()
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '--'
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000))
+  if (seconds < 60) return `${seconds}s 前`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} 分钟前`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} 小时前`
+  const days = Math.floor(hours / 24)
+  return `${days} 天前`
 }
 
 function defaultPreviewPanelRect(): PreviewPanelRect {
@@ -268,6 +283,15 @@ function HoverOverviewPanel({
   children: ReactNode
   maxWidthClass?: string
 }) {
+  const orderedFailedOperations = useMemo(
+    () => [...failedOperations].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
+    [failedOperations],
+  )
+  const orderedRetryHistory = useMemo(
+    () => [...retryHistory].sort((a, b) => new Date(b.finishedAt).getTime() - new Date(a.finishedAt).getTime()),
+    [retryHistory],
+  )
+
   return (
     <div className="pointer-events-none fixed inset-0 z-[120] flex items-center justify-center px-4 py-8 opacity-0 scale-[0.97] transition-all duration-150 delay-0 group-hover:delay-700 group-focus-within:delay-300 group-hover:opacity-100 group-hover:scale-100 group-focus-within:opacity-100 group-focus-within:scale-100">
       <div className={`w-full ${maxWidthClass} rounded-xl border border-gray-600 bg-gray-950/95 p-4 shadow-2xl backdrop-blur-sm`}>
@@ -354,6 +378,134 @@ function StudioDynamicIsland({ indicator }: { indicator: StudioActivityIndicator
   )
 }
 
+function RecoveryCenterPanel({
+  failedOperations,
+  retryHistory,
+  onRetry,
+  onDismiss,
+  onClearResolved,
+  onClearHistory,
+  onClose,
+}: {
+  failedOperations: StudioFailedOperation[]
+  retryHistory: StudioRetryRecord[]
+  onRetry: (operationId: string) => void
+  onDismiss: (operationId: string) => void
+  onClearResolved: () => void
+  onClearHistory: () => void
+  onClose: () => void
+}) {
+  return (
+    <div className="fixed top-14 right-2 md:right-4 xl:right-[26rem] z-[69] w-[min(460px,calc(100vw-1rem))] rounded-xl border border-gray-700 bg-gray-950/96 shadow-2xl backdrop-blur">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800">
+        <div>
+          <p className="text-sm font-semibold text-gray-100">恢复中心</p>
+          <p className="text-[11px] text-gray-500">失败队列与重试记录</p>
+        </div>
+        <button onClick={onClose} className="p-1 rounded text-gray-500 hover:text-white hover:bg-gray-800">
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+
+      <div className="p-3 border-b border-gray-800">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <h4 className="text-xs font-semibold text-gray-300">失败队列</h4>
+          <button
+            onClick={onClearResolved}
+            className="text-[11px] text-gray-500 hover:text-gray-200"
+          >
+            清理已恢复
+          </button>
+        </div>
+        <div className="max-h-56 overflow-y-auto space-y-2 pr-1">
+          {orderedFailedOperations.length === 0 && (
+            <div className="rounded border border-gray-800 bg-gray-900/60 px-3 py-2 text-xs text-gray-500">
+              当前没有失败操作
+            </div>
+          )}
+          {orderedFailedOperations.map((operation) => (
+            <div key={operation.id} className="rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-2">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-gray-100 truncate">{operation.title}</p>
+                  <p className="text-[11px] text-gray-400 mt-0.5 line-clamp-2">{operation.message}</p>
+                  <p className="text-[10px] text-gray-500 mt-1">
+                    {formatRelativeTime(operation.updatedAt)} · 重试 {operation.retryCount} 次
+                    {operation.code ? ` · ${operation.code}` : ''}
+                  </p>
+                </div>
+                <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${
+                  operation.status === 'resolved'
+                    ? 'bg-emerald-900/40 text-emerald-300'
+                    : operation.status === 'retrying'
+                      ? 'bg-blue-900/40 text-blue-300'
+                      : 'bg-red-900/40 text-red-300'
+                }`}>
+                  {operation.status === 'resolved' ? '已恢复' : operation.status === 'retrying' ? '重试中' : '失败'}
+                </span>
+              </div>
+              <div className="mt-2 flex items-center justify-end gap-2">
+                {operation.status !== 'resolved' && (
+                  <button
+                    onClick={() => onRetry(operation.id)}
+                    disabled={operation.status === 'retrying' || !operation.retryable}
+                    className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] bg-purple-700/70 hover:bg-purple-600/70 text-white disabled:opacity-45 disabled:cursor-not-allowed"
+                  >
+                    {operation.status === 'retrying' ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
+                    {operation.status === 'retrying' ? '处理中' : '重试'}
+                  </button>
+                )}
+                <button
+                  onClick={() => onDismiss(operation.id)}
+                  className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] bg-gray-800 hover:bg-gray-700 text-gray-200"
+                >
+                  <X className="w-3 h-3" />
+                  移除
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="p-3">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <h4 className="text-xs font-semibold text-gray-300">重试历史</h4>
+          <button
+            onClick={onClearHistory}
+            className="text-[11px] text-gray-500 hover:text-gray-200"
+          >
+            清空历史
+          </button>
+        </div>
+        <div className="max-h-52 overflow-y-auto space-y-1 pr-1">
+          {orderedRetryHistory.length === 0 && (
+            <div className="rounded border border-gray-800 bg-gray-900/60 px-3 py-2 text-xs text-gray-500">
+              暂无重试记录
+            </div>
+          )}
+          {orderedRetryHistory.slice(0, 12).map((record) => (
+            <div key={record.id} className="rounded border border-gray-800 bg-gray-900/60 px-2.5 py-1.5">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[11px] text-gray-200 line-clamp-1">{record.operationTitle}</p>
+                <span className={`text-[10px] shrink-0 ${record.success ? 'text-emerald-300' : 'text-red-300'}`}>
+                  {record.success ? '成功' : '失败'}
+                </span>
+              </div>
+              <p className="text-[10px] text-gray-500 mt-0.5">
+                第 {record.attempt} 次 · {formatRelativeTime(record.finishedAt)}
+              </p>
+              {!record.success && (
+                <p className="text-[10px] text-gray-400 mt-0.5 line-clamp-1">{record.message}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ============================================================
 // StudioPage - 长篇制作工作台
 // ============================================================
@@ -368,12 +520,23 @@ export default function StudioPage() {
   const [exportProgress, setExportProgress] = useState<StudioExportProgress | null>(null)
   const exportHideTimerRef = useRef<number | null>(null)
   const [toasts, setToasts] = useState<StudioToast[]>([])
+  const [networkIssue, setNetworkIssue] = useState<string | null>(null)
+  const [retryingNetwork, setRetryingNetwork] = useState(false)
+  const [showRecoveryCenter, setShowRecoveryCenter] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => readStoredNumber(LAYOUT_SIDEBAR_WIDTH_KEY, 256, 220, 420))
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => readStoredBoolean(LAYOUT_SIDEBAR_COLLAPSED_KEY, false))
   const [compactLayout, setCompactLayout] = useState<boolean>(() => (typeof window !== 'undefined' ? window.innerWidth < 1100 : false))
   const sidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
   const actualSidebarCollapsed = compactLayout ? true : sidebarCollapsed
   const actualSidebarWidth = actualSidebarCollapsed ? 56 : sidebarWidth
+  const unresolvedFailedOps = useMemo(
+    () => store.failedOperations.filter((item) => item.status !== 'resolved'),
+    [store.failedOperations],
+  )
+  const retryingFailedOpsCount = useMemo(
+    () => unresolvedFailedOps.filter((item) => item.status === 'retrying').length,
+    [unresolvedFailedOps],
+  )
   const activityIndicator = useMemo<StudioActivityIndicator>(() => {
     const generationProgress = store.generationProgress
 
@@ -535,6 +698,9 @@ export default function StudioPage() {
   // Store 错误统一转为 Toast
   useEffect(() => {
     if (!store.error) return
+    if (store.errorCode === 'network_error' || store.errorCode === 'network_timeout') {
+      setNetworkIssue(store.error)
+    }
     pushToast({
       message: store.error,
       code: store.errorCode,
@@ -629,6 +795,39 @@ export default function StudioPage() {
     if (!ok) return
     await store.batchGenerate(episodeId, stages)
   }, [ensureConfigReady, store])
+
+  const handleRetryNetworkIssue = useCallback(async () => {
+    setRetryingNetwork(true)
+    try {
+      if (store.currentEpisodeId) {
+        await store.selectEpisode(store.currentEpisodeId)
+        await store.loadEpisodeHistory(store.currentEpisodeId, 80, true)
+      } else if (store.currentSeriesId) {
+        await store.selectSeries(store.currentSeriesId)
+      } else {
+        await store.loadSeriesList()
+      }
+      setNetworkIssue(null)
+    } finally {
+      setRetryingNetwork(false)
+    }
+  }, [store, store.currentEpisodeId, store.currentSeriesId])
+
+  const handleRetryFailedOperation = useCallback((operationId: string) => {
+    void store.retryFailedOperation(operationId)
+  }, [store])
+
+  const handleDismissFailedOperation = useCallback((operationId: string) => {
+    store.dismissFailedOperation(operationId)
+  }, [store])
+
+  const handleClearResolvedFailedOperations = useCallback(() => {
+    store.clearResolvedFailedOperations()
+  }, [store])
+
+  const handleClearRetryHistory = useCallback(() => {
+    store.clearRetryHistory()
+  }, [store])
 
   const saveBlob = useCallback((blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob)
@@ -845,6 +1044,23 @@ export default function StudioPage() {
         </div>
         <div className="flex items-center gap-2">
           <button
+            onClick={() => setShowRecoveryCenter((prev) => !prev)}
+            className={`inline-flex items-center gap-1.5 px-2 py-1 rounded border text-xs transition-colors ${
+              unresolvedFailedOps.length > 0
+                ? 'border-red-700/70 bg-red-900/30 text-red-100 hover:bg-red-900/45'
+                : 'border-gray-700 bg-gray-800/70 text-gray-300 hover:bg-gray-800'
+            }`}
+            title="恢复中心"
+          >
+            {retryingFailedOpsCount > 0 ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <AlertCircle className="w-3.5 h-3.5" />}
+            <span>恢复</span>
+            {(unresolvedFailedOps.length > 0 || store.retryHistory.length > 0) && (
+              <span className="text-[10px] px-1 py-0.5 rounded bg-gray-900/80 text-gray-200">
+                {unresolvedFailedOps.length}/{store.retryHistory.length}
+              </span>
+            )}
+          </button>
+          <button
             onClick={() => setShowSettings(!showSettings)}
             className="p-1.5 rounded hover:bg-gray-800 text-gray-400 hover:text-white transition-colors"
             title="设置"
@@ -853,6 +1069,44 @@ export default function StudioPage() {
           </button>
         </div>
       </header>
+
+      {showRecoveryCenter && (
+        <RecoveryCenterPanel
+          failedOperations={store.failedOperations}
+          retryHistory={store.retryHistory}
+          onRetry={handleRetryFailedOperation}
+          onDismiss={handleDismissFailedOperation}
+          onClearResolved={handleClearResolvedFailedOperations}
+          onClearHistory={handleClearRetryHistory}
+          onClose={() => setShowRecoveryCenter(false)}
+        />
+      )}
+
+      {networkIssue && (
+        <div className="px-4 py-2 border-b border-amber-800/40 bg-amber-950/25 text-amber-100 flex items-center justify-between gap-3 shrink-0">
+          <div className="min-w-0">
+            <p className="text-xs font-medium truncate">网络连接不稳定，部分数据可能未刷新</p>
+            <p className="text-[11px] text-amber-200/80 truncate">{networkIssue}</p>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              onClick={handleRetryNetworkIssue}
+              disabled={retryingNetwork}
+              className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] bg-amber-700/60 hover:bg-amber-600/70 text-white disabled:opacity-50 transition-colors"
+            >
+              {retryingNetwork ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+              重试
+            </button>
+            <button
+              onClick={() => setNetworkIssue(null)}
+              className="inline-flex items-center justify-center rounded p-1 text-amber-200 hover:text-white hover:bg-amber-700/30 transition-colors"
+              title="关闭提示"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-1 overflow-hidden">
         {/* 左侧导航面板 */}

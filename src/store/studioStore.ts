@@ -32,6 +32,33 @@ export interface StudioGenerationProgress {
   errors: string[]
 }
 
+export type StudioFailedOperationStatus = 'failed' | 'retrying' | 'resolved'
+
+export interface StudioFailedOperation {
+  id: string
+  key: string
+  title: string
+  message: string
+  code: string | null
+  context: Record<string, unknown> | null
+  createdAt: string
+  updatedAt: string
+  retryCount: number
+  status: StudioFailedOperationStatus
+  retryable: boolean
+}
+
+export interface StudioRetryRecord {
+  id: string
+  operationId: string
+  operationTitle: string
+  attempt: number
+  startedAt: string
+  finishedAt: string
+  success: boolean
+  message: string
+}
+
 function createInitialGenerationProgress(): StudioGenerationProgress {
   return {
     stage: 'idle',
@@ -58,6 +85,13 @@ function normalizeProgressNumber(value: unknown, fallback: number): number {
 }
 
 let generationProgressResetTimer: ReturnType<typeof setTimeout> | null = null
+let loadSeriesRequestSeq = 0
+let selectSeriesRequestSeq = 0
+let selectEpisodeRequestSeq = 0
+let loadHistoryRequestSeq = 0
+const failedOperationRetryTaskMap = new Map<string, () => Promise<void>>()
+const FAILED_OPERATION_LIMIT = 20
+const RETRY_RECORD_LIMIT = 60
 
 type StudioErrorParsed = {
   message: string
@@ -98,6 +132,36 @@ function parseStudioError(e: unknown): StudioErrorParsed {
   return { message: '发生未知错误', code: null, context: null }
 }
 
+function shouldRetryStudioError(parsed: StudioErrorParsed): boolean {
+  return parsed.code === 'network_error' || parsed.code === 'network_timeout'
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+async function withTransientRetry<T>(
+  task: () => Promise<T>,
+  maxAttempts: number = 2,
+): Promise<T> {
+  let lastError: unknown = null
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      return await task()
+    } catch (e: unknown) {
+      lastError = e
+      const parsed = parseStudioError(e)
+      if (!shouldRetryStudioError(parsed) || attempt >= maxAttempts - 1) {
+        throw e
+      }
+      await sleep(260 * (attempt + 1))
+    }
+  }
+  throw lastError
+}
+
 interface StudioState {
   // 列表
   seriesList: StudioSeries[]
@@ -127,6 +191,8 @@ interface StudioState {
   planning: boolean
   generating: boolean
   generationProgress: StudioGenerationProgress
+  failedOperations: StudioFailedOperation[]
+  retryHistory: StudioRetryRecord[]
 
   // Actions
   loadSeriesList: () => Promise<void>
@@ -164,8 +230,116 @@ interface StudioState {
   restoreEpisodeHistory: (episodeId: string, historyId: string) => Promise<void>
 
   batchGenerate: (episodeId: string, stages?: string[]) => Promise<void>
+  retryFailedOperation: (operationId: string) => Promise<void>
+  dismissFailedOperation: (operationId: string) => void
+  clearResolvedFailedOperations: () => void
+  clearRetryHistory: () => void
 
   clearError: () => void
+}
+
+type StudioStateSetter = (partial: Partial<StudioState> | ((state: StudioState) => Partial<StudioState>)) => void
+
+interface FailedOperationPayload {
+  key: string
+  title: string
+  message: string
+  code: string | null
+  context: Record<string, unknown> | null
+  retryTask?: () => Promise<void>
+}
+
+function createStudioStoreId(prefix: string): string {
+  return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
+}
+
+function appendRetryRecord(
+  set: StudioStateSetter,
+  record: Omit<StudioRetryRecord, 'id'>,
+): void {
+  set((state) => ({
+    retryHistory: [
+      { id: createStudioStoreId('retry'), ...record },
+      ...state.retryHistory,
+    ].slice(0, RETRY_RECORD_LIMIT),
+  }))
+}
+
+function upsertFailedOperation(
+  set: StudioStateSetter,
+  payload: FailedOperationPayload,
+): string {
+  const now = new Date().toISOString()
+  let operationId = ''
+  let removedIds: string[] = []
+
+  set((state) => {
+    const existing = state.failedOperations.find((item) => item.key === payload.key && item.status !== 'resolved')
+    if (existing) {
+      operationId = existing.id
+      return {
+        failedOperations: state.failedOperations.map((item) => (
+          item.id === existing.id
+            ? {
+                ...item,
+                title: payload.title,
+                message: payload.message,
+                code: payload.code,
+                context: payload.context,
+                updatedAt: now,
+                status: 'failed',
+                retryable: payload.retryTask ? true : item.retryable,
+              }
+            : item
+        )),
+      }
+    }
+
+    operationId = createStudioStoreId('failed')
+    const entry: StudioFailedOperation = {
+      id: operationId,
+      key: payload.key,
+      title: payload.title,
+      message: payload.message,
+      code: payload.code,
+      context: payload.context,
+      createdAt: now,
+      updatedAt: now,
+      retryCount: 0,
+      status: 'failed',
+      retryable: Boolean(payload.retryTask),
+    }
+    const nextOperations = [entry, ...state.failedOperations]
+    if (nextOperations.length > FAILED_OPERATION_LIMIT) {
+      removedIds = nextOperations.slice(FAILED_OPERATION_LIMIT).map((item) => item.id)
+    }
+    return {
+      failedOperations: nextOperations.slice(0, FAILED_OPERATION_LIMIT),
+    }
+  })
+
+  if (payload.retryTask) {
+    failedOperationRetryTaskMap.set(operationId, payload.retryTask)
+  }
+  if (removedIds.length > 0) {
+    removedIds.forEach((id) => failedOperationRetryTaskMap.delete(id))
+  }
+  return operationId
+}
+
+function queueOperationFailure(
+  set: StudioStateSetter,
+  e: unknown,
+  payload: Omit<FailedOperationPayload, 'message' | 'code' | 'context'>,
+): StudioErrorParsed {
+  const parsed = parseStudioError(e)
+  upsertFailedOperation(set, {
+    ...payload,
+    message: parsed.message,
+    code: parsed.code,
+    context: parsed.context,
+  })
+  return parsed
 }
 
 export const useStudioStore = create<StudioState>((set, get) => ({
@@ -188,16 +362,158 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   planning: false,
   generating: false,
   generationProgress: createInitialGenerationProgress(),
+  failedOperations: [],
+  retryHistory: [],
+
+  retryFailedOperation: async (operationId) => {
+    const operation = get().failedOperations.find((item) => item.id === operationId)
+    if (!operation || operation.status === 'retrying') return
+    const retryTask = failedOperationRetryTaskMap.get(operationId)
+    if (!retryTask) {
+      const now = new Date().toISOString()
+      appendRetryRecord(set, {
+        operationId,
+        operationTitle: operation.title,
+        attempt: operation.retryCount + 1,
+        startedAt: now,
+        finishedAt: now,
+        success: false,
+        message: '当前操作不支持重试',
+      })
+      set((state) => ({
+        failedOperations: state.failedOperations.map((item) => (
+          item.id === operationId
+            ? {
+                ...item,
+                status: 'failed',
+                message: '当前操作不支持重试',
+                updatedAt: now,
+                retryable: false,
+              }
+            : item
+        )),
+      }))
+      return
+    }
+
+    const startedAt = new Date().toISOString()
+    const attempt = operation.retryCount + 1
+    set((state) => ({
+      failedOperations: state.failedOperations.map((item) => (
+        item.id === operationId
+          ? {
+              ...item,
+              status: 'retrying',
+              retryCount: attempt,
+              updatedAt: startedAt,
+            }
+          : item
+      )),
+    }))
+
+    try {
+      await retryTask()
+      const finishedAt = new Date().toISOString()
+      const latest = get().failedOperations.find((item) => item.id === operationId)
+      if (!latest) return
+      if (latest.status === 'retrying') {
+        set((state) => ({
+          failedOperations: state.failedOperations.map((item) => (
+            item.id === operationId
+              ? {
+                  ...item,
+                  status: 'resolved',
+                  message: '重试成功，已恢复',
+                  updatedAt: finishedAt,
+                }
+              : item
+          )),
+        }))
+        failedOperationRetryTaskMap.delete(operationId)
+        appendRetryRecord(set, {
+          operationId,
+          operationTitle: latest.title,
+          attempt,
+          startedAt,
+          finishedAt,
+          success: true,
+          message: '重试成功',
+        })
+      } else {
+        appendRetryRecord(set, {
+          operationId,
+          operationTitle: latest.title,
+          attempt,
+          startedAt,
+          finishedAt,
+          success: false,
+          message: latest.message || '重试失败',
+        })
+      }
+    } catch (e: unknown) {
+      const parsed = parseStudioError(e)
+      const finishedAt = new Date().toISOString()
+      set((state) => ({
+        failedOperations: state.failedOperations.map((item) => (
+          item.id === operationId
+            ? {
+                ...item,
+                status: 'failed',
+                message: parsed.message,
+                code: parsed.code,
+                context: parsed.context,
+                updatedAt: finishedAt,
+              }
+            : item
+        )),
+      }))
+      appendRetryRecord(set, {
+        operationId,
+        operationTitle: operation.title,
+        attempt,
+        startedAt,
+        finishedAt,
+        success: false,
+        message: parsed.message,
+      })
+    }
+  },
+
+  dismissFailedOperation: (operationId) => {
+    failedOperationRetryTaskMap.delete(operationId)
+    set((state) => ({
+      failedOperations: state.failedOperations.filter((item) => item.id !== operationId),
+    }))
+  },
+
+  clearResolvedFailedOperations: () => {
+    const resolvedIds = get().failedOperations.filter((item) => item.status === 'resolved').map((item) => item.id)
+    resolvedIds.forEach((id) => failedOperationRetryTaskMap.delete(id))
+    set((state) => ({
+      failedOperations: state.failedOperations.filter((item) => item.status !== 'resolved'),
+    }))
+  },
+
+  clearRetryHistory: () => {
+    set({ retryHistory: [] })
+  },
 
   clearError: () => set({ error: null, errorCode: null, errorContext: null }),
 
   loadSeriesList: async () => {
+    const requestSeq = ++loadSeriesRequestSeq
     set({ loading: true, error: null, errorCode: null, errorContext: null })
     try {
-      const list = await api.studioListSeries()
+      const list = await withTransientRetry(() => api.studioListSeries(), 2)
+      if (requestSeq !== loadSeriesRequestSeq) return
       set({ seriesList: list, loading: false })
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      if (requestSeq !== loadSeriesRequestSeq) return
+      const parsed = queueOperationFailure(set, e, {
+        key: 'load_series_list',
+        title: '加载系列列表',
+        retryTask: () => get().loadSeriesList(),
+      })
       set({ loading: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
@@ -218,6 +534,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       })
       return
     }
+    const requestSeq = ++selectSeriesRequestSeq
     set({
       loading: true,
       error: null,
@@ -232,7 +549,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       historyRestoring: false,
     })
     try {
-      const detail = await api.studioGetSeries(seriesId)
+      const detail = await withTransientRetry(() => api.studioGetSeries(seriesId), 2)
+      if (requestSeq !== selectSeriesRequestSeq) return
       set({
         currentSeries: detail,
         episodes: detail.episodes || [],
@@ -240,7 +558,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         loading: false,
       })
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      if (requestSeq !== selectSeriesRequestSeq) return
+      const parsed = queueOperationFailure(set, e, {
+        key: `select_series:${seriesId}`,
+        title: '加载系列详情',
+        retryTask: () => get().selectSeries(seriesId),
+      })
       set({ loading: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
@@ -250,9 +573,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       set({ currentEpisodeId: null, currentEpisode: null, shots: [], episodeHistory: [], historyLoading: false, historyRestoring: false })
       return
     }
+    const requestSeq = ++selectEpisodeRequestSeq
     set({ loading: true, error: null, errorCode: null, errorContext: null, currentEpisodeId: episodeId })
     try {
-      const detail = await api.studioGetEpisode(episodeId)
+      const detail = await withTransientRetry(() => api.studioGetEpisode(episodeId), 2)
+      if (requestSeq !== selectEpisodeRequestSeq) return
       set({
         currentEpisode: detail,
         shots: detail.shots || [],
@@ -262,7 +587,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         loading: false,
       })
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      if (requestSeq !== selectEpisodeRequestSeq) return
+      const parsed = queueOperationFailure(set, e, {
+        key: `select_episode:${episodeId}`,
+        title: '加载单集详情',
+        retryTask: () => get().selectEpisode(episodeId),
+      })
       set({ loading: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
@@ -283,7 +613,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       })
       return result.series
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      const parsed = queueOperationFailure(set, e, {
+        key: 'create_series',
+        title: '创建系列',
+        retryTask: () => get().createSeries(params).then(() => undefined),
+      })
       set({ creating: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
       return null
     }
@@ -297,7 +631,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         await get().selectSeries(seriesId)
       }
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      const parsed = queueOperationFailure(set, e, {
+        key: `update_series:${seriesId}`,
+        title: '更新系列信息',
+        retryTask: () => get().updateSeries(seriesId, updates),
+      })
       set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
@@ -321,7 +659,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       }
       await get().loadSeriesList()
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      const parsed = queueOperationFailure(set, e, {
+        key: `delete_series:${seriesId}`,
+        title: '删除系列',
+        retryTask: () => get().deleteSeries(seriesId),
+      })
       set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
@@ -333,7 +675,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         await get().selectEpisode(episodeId)
       }
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      const parsed = queueOperationFailure(set, e, {
+        key: `update_episode:${episodeId}`,
+        title: '更新分幕信息',
+        retryTask: () => get().updateEpisode(episodeId, updates),
+      })
       set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
@@ -352,7 +698,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       }
       set({ planning: false })
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      const parsed = queueOperationFailure(set, e, {
+        key: `plan_episode:${episodeId}`,
+        title: '分镜规划',
+        retryTask: () => get().planEpisode(episodeId),
+      })
       set({ planning: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
@@ -364,7 +714,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       await get().selectEpisode(episodeId)
       set({ planning: false })
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      const parsed = queueOperationFailure(set, e, {
+        key: `enhance_episode:${episodeId}:${mode}`,
+        title: mode === 'expand' ? '镜头扩展' : '镜头优化',
+        retryTask: () => get().enhanceEpisode(episodeId, mode),
+      })
       set({ planning: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
@@ -375,7 +729,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const els = await api.studioGetElements(seriesId)
       set({ sharedElements: els })
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      const parsed = queueOperationFailure(set, e, {
+        key: `add_element:${seriesId}:${element.name}`,
+        title: '新增共享元素',
+        retryTask: () => get().addElement(seriesId, element),
+      })
       set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
@@ -389,7 +747,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         set({ sharedElements: els })
       }
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      const parsed = queueOperationFailure(set, e, {
+        key: `update_element:${elementId}`,
+        title: '更新共享元素',
+        retryTask: () => get().updateElement(elementId, updates),
+      })
       set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
@@ -403,7 +765,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         set({ sharedElements: els })
       }
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      const parsed = queueOperationFailure(set, e, {
+        key: `delete_element:${elementId}`,
+        title: '删除共享元素',
+        retryTask: () => get().deleteElement(elementId),
+      })
       set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
@@ -419,7 +785,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       }
       set({ generating: false })
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      const parsed = queueOperationFailure(set, e, {
+        key: `generate_element_image:${elementId}`,
+        title: '生成元素图',
+        retryTask: () => get().generateElementImage(elementId),
+      })
       set({ generating: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
@@ -433,7 +803,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         set({ shots })
       }
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      const parsed = queueOperationFailure(set, e, {
+        key: `update_shot:${shotId}`,
+        title: '更新镜头信息',
+        retryTask: () => get().updateShot(shotId, updates),
+      })
       set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
@@ -447,7 +821,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         set({ shots })
       }
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      const parsed = queueOperationFailure(set, e, {
+        key: `delete_shot:${shotId}`,
+        title: '删除镜头',
+        retryTask: () => get().deleteShot(shotId),
+      })
       set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
@@ -463,7 +841,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       }
       set({ generating: false })
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      const parsed = queueOperationFailure(set, e, {
+        key: `generate_shot_asset:${shotId}:${stage}`,
+        title: stage === 'audio' ? '生成镜头音频' : stage === 'video' ? '生成镜头视频' : '生成镜头画面',
+        retryTask: () => get().generateShotAsset(shotId, stage),
+      })
       set({ generating: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
@@ -479,7 +861,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       }
       set({ generating: false })
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      const parsed = queueOperationFailure(set, e, {
+        key: `inpaint_shot_frame:${shotId}`,
+        title: '局部重绘镜头',
+        retryTask: () => get().inpaintShotFrame(shotId, params),
+      })
       set({ generating: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
@@ -491,22 +877,36 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         set({ shots })
       }
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      const parsed = queueOperationFailure(set, e, {
+        key: `reorder_shots:${episodeId}`,
+        title: '重排镜头顺序',
+        retryTask: () => get().reorderShots(episodeId, shotIds),
+      })
       set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
 
   loadEpisodeHistory: async (episodeId, limit = 50, includeSnapshot = false) => {
+    const requestSeq = ++loadHistoryRequestSeq
     set({ historyLoading: true })
     try {
-      const history = await api.studioGetEpisodeHistory(episodeId, limit, includeSnapshot)
+      const history = await withTransientRetry(
+        () => api.studioGetEpisodeHistory(episodeId, limit, includeSnapshot),
+        2,
+      )
+      if (requestSeq !== loadHistoryRequestSeq) return
       if (get().currentEpisodeId === episodeId) {
         set({ episodeHistory: history, historyLoading: false })
       } else {
         set({ historyLoading: false })
       }
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      if (requestSeq !== loadHistoryRequestSeq) return
+      const parsed = queueOperationFailure(set, e, {
+        key: `load_episode_history:${episodeId}`,
+        title: '加载历史记录',
+        retryTask: () => get().loadEpisodeHistory(episodeId, limit, includeSnapshot),
+      })
       set({ historyLoading: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
@@ -532,7 +932,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         set({ episodes: eps })
       }
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      const parsed = queueOperationFailure(set, e, {
+        key: `restore_episode_history:${episodeId}:${historyId}`,
+        title: '回退历史版本',
+        retryTask: () => get().restoreEpisodeHistory(episodeId, historyId),
+      })
       set({ historyRestoring: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
@@ -737,7 +1141,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         generationProgressResetTimer = null
       }, 2600)
     } catch (e: unknown) {
-      const parsed = parseStudioError(e)
+      const parsed = queueOperationFailure(set, e, {
+        key: `batch_generate:${episodeId}:${(stages || []).join(',')}`,
+        title: '批量生成',
+        retryTask: () => get().batchGenerate(episodeId, stages),
+      })
       set((state) => ({
         generating: false,
         error: parsed.message,
