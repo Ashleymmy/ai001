@@ -2058,6 +2058,69 @@ export interface StudioEpisodeHistoryEntry {
   }
 }
 
+export interface StudioPromptMatch {
+  term: string
+  category: string
+  category_label: string
+  severity: 'low' | 'medium' | 'high'
+  replacement: string
+  reason: string
+  start: number
+  end: number
+}
+
+export interface StudioPromptSuggestion {
+  source: string
+  replacement: string
+  reason: string
+  category: string
+  category_label: string
+}
+
+export interface StudioPromptAnalysis {
+  safe: boolean
+  risk_score: number
+  categories: string[]
+  matches: StudioPromptMatch[]
+  suggestions: StudioPromptSuggestion[]
+}
+
+export interface StudioPromptBatchCheckItem extends StudioPromptAnalysis {
+  id?: string | null
+  field?: string | null
+  label?: string | null
+  prompt: string
+}
+
+export interface StudioPromptOptimizeResult {
+  ok: boolean
+  optimized_prompt: string
+  changed: boolean
+  used_llm: boolean
+  before: StudioPromptAnalysis
+  after: StudioPromptAnalysis
+}
+
+export interface StudioExportToAgentResult {
+  ok: boolean
+  episode_id: string
+  project_id: string
+  project_name: string
+  created: boolean
+  elements_count: number
+  segments_count: number
+  shots_count: number
+}
+
+export interface StudioImportFromAgentResult {
+  ok: boolean
+  episode_id: string
+  project_id: string
+  shots_imported: number
+  elements_imported: number
+  episode: StudioEpisode
+}
+
 // --- 系列 ---
 
 export async function studioCreateSeries(params: {
@@ -2142,6 +2205,32 @@ export async function studioEnhanceEpisode(
     params: { mode },
   })
   return response.data
+}
+
+export async function studioExportEpisodeToAgent(
+  episodeId: string,
+  payload?: {
+    project_id?: string
+    project_name?: string
+    include_shared_elements?: boolean
+    include_episode_elements?: boolean
+    preserve_existing_messages?: boolean
+  }
+): Promise<StudioExportToAgentResult> {
+  const response = await api.post(`/api/studio/episodes/${episodeId}/export-to-agent`, payload || {})
+  return response.data as StudioExportToAgentResult
+}
+
+export async function studioImportEpisodeFromAgent(
+  episodeId: string,
+  payload: {
+    project_id: string
+    overwrite_episode_meta?: boolean
+    import_elements?: boolean
+  }
+): Promise<StudioImportFromAgentResult> {
+  const response = await api.post(`/api/studio/episodes/${episodeId}/import-from-agent`, payload)
+  return response.data as StudioImportFromAgentResult
 }
 
 // --- 共享元素 ---
@@ -2346,9 +2435,51 @@ export async function studioGetSettings(): Promise<Record<string, unknown>> {
   return response.data
 }
 
+export interface StudioPromptTemplateBundle {
+  system: string
+  user: string
+}
+
+export interface StudioPromptTemplateDefaults {
+  ok: boolean
+  custom_prompts: Record<string, StudioPromptTemplateBundle>
+  variable_hints: Record<string, string[]>
+}
+
+export async function studioGetPromptTemplateDefaults(): Promise<StudioPromptTemplateDefaults> {
+  const response = await api.get('/api/studio/prompt-templates/defaults')
+  return response.data as StudioPromptTemplateDefaults
+}
+
 export async function studioSaveSettings(settings: Record<string, unknown>): Promise<Record<string, unknown>> {
   const response = await api.put('/api/studio/settings', settings)
   return response.data
+}
+
+export async function studioPromptCheck(prompt: string): Promise<StudioPromptAnalysis> {
+  const response = await api.post('/api/studio/prompt-check', { prompt })
+  return response.data as StudioPromptAnalysis
+}
+
+export async function studioPromptBatchCheck(items: Array<{
+  id?: string
+  field?: string
+  label?: string
+  prompt: string
+}>): Promise<StudioPromptBatchCheckItem[]> {
+  const response = await api.post('/api/studio/prompt-check', { items })
+  return (response.data?.results || []) as StudioPromptBatchCheckItem[]
+}
+
+export async function studioPromptOptimize(
+  prompt: string,
+  options?: { use_llm?: boolean }
+): Promise<StudioPromptOptimizeResult> {
+  const response = await api.post('/api/studio/prompt-optimize', {
+    prompt,
+    use_llm: options?.use_llm !== false,
+  })
+  return response.data as StudioPromptOptimizeResult
 }
 
 export async function studioCheckConfig(): Promise<StudioConfigCheckResult> {

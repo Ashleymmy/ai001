@@ -638,6 +638,9 @@ class StudioStorage:
             result_ids = []
             for idx, s in enumerate(shots_data):
                 sid = _gen_id("shot_")
+                frame_history = self._json_field(s.get("frame_history", []))
+                video_history = self._json_field(s.get("video_history", []))
+                visual_action = self._json_field(s.get("visual_action", {}))
                 conn.execute(
                     """INSERT INTO shots
                        (id, episode_id, segment_name, sort_order, name, type,
@@ -652,8 +655,9 @@ class StudioStorage:
                         s.get("duration", 5.0), s.get("description", ""),
                         s.get("prompt", ""), s.get("end_prompt", ""), s.get("video_prompt", ""),
                         s.get("narration", ""), s.get("dialogue_script", ""),
-                        "", "", "[]", "", "[]", "", "{}",
-                        "pending", now, now,
+                        s.get("start_image_url", ""), s.get("end_image_url", ""), frame_history,
+                        s.get("video_url", ""), video_history, s.get("audio_url", ""), visual_action,
+                        s.get("status", "pending"), now, now,
                     ),
                 )
                 result_ids.append(sid)
@@ -726,6 +730,8 @@ class StudioStorage:
         description: str = "",
         voice_profile: str = "",
         shared_element_id: Optional[str] = None,
+        image_url: str = "",
+        is_override: int = 0,
     ) -> Dict[str, Any]:
         eid = _gen_id("ee_")
         now = _now()
@@ -737,13 +743,60 @@ class StudioStorage:
                     description, voice_profile, image_url, is_override, created_at)
                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (eid, episode_id, shared_element_id, name, element_type,
-                 description, voice_profile, "", 0, now),
+                 description, voice_profile, image_url, is_override, now),
             )
             conn.commit()
             row = conn.execute(
                 "SELECT * FROM episode_elements WHERE id=?", (eid,)
             ).fetchone()
             return self._row_to_dict(row)  # type: ignore[return-value]
+        finally:
+            conn.close()
+
+    def replace_episode_elements(
+        self,
+        episode_id: str,
+        elements_data: List[Dict[str, Any]],
+        keep_shared_elements: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """替换集内元素（默认保留继承的共享元素）。"""
+        conn = self._connect()
+        try:
+            if keep_shared_elements:
+                conn.execute(
+                    "DELETE FROM episode_elements WHERE episode_id=? AND shared_element_id IS NULL",
+                    (episode_id,),
+                )
+            else:
+                conn.execute("DELETE FROM episode_elements WHERE episode_id=?", (episode_id,))
+
+            now = _now()
+            for item in elements_data:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name", "") or "").strip()
+                if not name:
+                    continue
+                conn.execute(
+                    """INSERT INTO episode_elements
+                       (id, episode_id, shared_element_id, name, type,
+                        description, voice_profile, image_url, is_override, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        _gen_id("ee_"),
+                        episode_id,
+                        item.get("shared_element_id"),
+                        name,
+                        str(item.get("type", "character") or "character"),
+                        str(item.get("description", "") or ""),
+                        str(item.get("voice_profile", "") or ""),
+                        str(item.get("image_url", "") or ""),
+                        int(item.get("is_override", 1) or 1),
+                        now,
+                    ),
+                )
+            conn.commit()
+            return self.get_episode_elements(episode_id, _conn=conn)
         finally:
             conn.close()
 

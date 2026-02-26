@@ -10,16 +10,8 @@ import inspect
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from .studio_storage import StudioStorage
-from .studio.prompts import (
-    SCRIPT_SPLIT_SYSTEM_PROMPT,
-    SCRIPT_SPLIT_PROMPT,
-    ELEMENT_EXTRACTION_SYSTEM_PROMPT,
-    ELEMENT_EXTRACTION_PROMPT,
-    EPISODE_PLANNING_SYSTEM_PROMPT,
-    EPISODE_PLANNING_PROMPT,
-    EPISODE_ENHANCE_SYSTEM_PROMPT,
-    EPISODE_ENHANCE_PROMPT,
-)
+from .studio.prompts import DEFAULT_CUSTOM_PROMPTS, normalize_custom_prompts
+from .studio.prompt_sentinel import build_prompt_optimize_llm_payload
 from .llm_service import LLMService
 from .image_service import ImageService
 from .video_service import VideoService
@@ -61,6 +53,7 @@ class StudioService:
         self.video: Optional[VideoService] = None
         self.tts: Optional[VolcTTSService] = None
         self.generation_defaults: Dict[str, Any] = {}
+        self.custom_prompts: Dict[str, Dict[str, str]] = {}
 
     # ------------------------------------------------------------------
     # 配置
@@ -117,6 +110,7 @@ class StudioService:
 
         # 生成默认参数
         self.generation_defaults = settings.get("generation_defaults") or {}
+        self.custom_prompts = normalize_custom_prompts(settings.get("custom_prompts"))
 
     def check_config(self) -> Dict[str, Any]:
         """返回 Studio 工具链配置自检结果。"""
@@ -225,6 +219,39 @@ class StudioService:
             max_tokens=max_tokens,
         )
 
+    async def optimize_prompt_with_llm(
+        self,
+        prompt: str,
+        analysis: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """调用 LLM 进行提示词安全改写，失败时返回原文。"""
+        fallback = (prompt or "").strip()
+        if not fallback:
+            return {"optimized_prompt": fallback, "used_llm": False}
+        if not self.llm:
+            return {"optimized_prompt": fallback, "used_llm": False}
+
+        system_prompt, user_prompt = build_prompt_optimize_llm_payload(fallback, analysis)
+        try:
+            raw = await self._llm_call(
+                user_prompt=user_prompt,
+                system_prompt=system_prompt,
+                max_tokens=1200,
+                temperature=0.35,
+            )
+            parsed = self._extract_json(raw)
+            if isinstance(parsed, dict):
+                candidate = parsed.get("optimized_prompt") or parsed.get("prompt")
+                if isinstance(candidate, str) and candidate.strip():
+                    return {"optimized_prompt": candidate.strip(), "used_llm": True}
+
+            plain = (raw or "").strip()
+            if plain:
+                return {"optimized_prompt": plain, "used_llm": True}
+        except Exception:
+            pass
+        return {"optimized_prompt": fallback, "used_llm": False}
+
     def _default_frame_size(self) -> tuple[int, int]:
         raw_w = self.generation_defaults.get("frame_width", 1280)
         raw_h = self.generation_defaults.get("frame_height", 720)
@@ -251,6 +278,54 @@ class StudioService:
         except Exception as e:
             print(f"[Studio] 记录历史失败（{action} / {episode_id}）: {e}")
 
+    @staticmethod
+    def _render_prompt_template(template: str, variables: Dict[str, Any]) -> str:
+        """渲染 {var} 占位符，并兼容旧模板中的双花括号转义。"""
+        if not isinstance(template, str):
+            return ""
+
+        def replace_match(match: re.Match[str]) -> str:
+            key = match.group(1)
+            if key not in variables:
+                return match.group(0)
+            value = variables.get(key)
+            return "" if value is None else str(value)
+
+        rendered = re.sub(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", replace_match, template)
+        return rendered.replace("{{", "{").replace("}}", "}")
+
+    def _resolve_prompt_bundle(self, module_key: str, series_id: Optional[str] = None) -> Dict[str, str]:
+        """解析指定模块的系统/用户提示词（默认 -> 全局 -> 系列级覆盖）。"""
+        base = DEFAULT_CUSTOM_PROMPTS.get(module_key, {})
+        system_prompt = str(base.get("system", "") or "")
+        user_prompt = str(base.get("user", "") or "")
+
+        global_bundle = self.custom_prompts.get(module_key) if isinstance(self.custom_prompts, dict) else None
+        if isinstance(global_bundle, dict):
+            global_system = str(global_bundle.get("system", "") or "")
+            global_user = str(global_bundle.get("user", "") or "")
+            if global_system.strip():
+                system_prompt = global_system
+            if global_user.strip():
+                user_prompt = global_user
+
+        if series_id:
+            series = self.storage.get_series(series_id)
+            if series and isinstance(series.get("settings"), dict):
+                series_custom_prompts = normalize_custom_prompts(
+                    series.get("settings", {}).get("custom_prompts"),
+                )
+                series_bundle = series_custom_prompts.get(module_key)
+                if isinstance(series_bundle, dict):
+                    series_system = str(series_bundle.get("system", "") or "")
+                    series_user = str(series_bundle.get("user", "") or "")
+                    if series_system.strip():
+                        system_prompt = series_system
+                    if series_user.strip():
+                        user_prompt = series_user
+
+        return {"system": system_prompt, "user": user_prompt}
+
     # ------------------------------------------------------------------
     # A. 大脚本分幕拆解
     # ------------------------------------------------------------------
@@ -270,17 +345,21 @@ class StudioService:
         episode_duration = preferences.get("episode_duration_seconds", 90)
         visual_style = preferences.get("visual_style", "电影级")
 
-        user_prompt = SCRIPT_SPLIT_PROMPT.format(
-            full_script=full_script,
-            target_episode_count=target_count,
-            episode_duration_seconds=episode_duration,
-            visual_style=visual_style,
+        prompt_bundle = self._resolve_prompt_bundle("script_split")
+        user_prompt = self._render_prompt_template(
+            prompt_bundle["user"],
+            {
+                "full_script": full_script,
+                "target_episode_count": target_count,
+                "episode_duration_seconds": episode_duration,
+                "visual_style": visual_style,
+            },
         )
 
         print("[Studio] 调用 LLM 进行脚本分幕拆解...")
         raw = await self._llm_call(
             user_prompt=user_prompt,
-            system_prompt=SCRIPT_SPLIT_SYSTEM_PROMPT,
+            system_prompt=prompt_bundle["system"],
             max_tokens=int(self.generation_defaults.get("split_max_tokens", 8000)),
             temperature=0.5,
         )
@@ -324,15 +403,19 @@ class StudioService:
             for i, a in enumerate(acts)
         )
 
-        user_prompt = ELEMENT_EXTRACTION_PROMPT.format(
-            full_script=full_script,
-            acts_summary=acts_summary,
+        prompt_bundle = self._resolve_prompt_bundle("element_extraction")
+        user_prompt = self._render_prompt_template(
+            prompt_bundle["user"],
+            {
+                "full_script": full_script,
+                "acts_summary": acts_summary,
+            },
         )
 
         print("[Studio] 调用 LLM 进行共享元素提取...")
         raw = await self._llm_call(
             user_prompt=user_prompt,
-            system_prompt=ELEMENT_EXTRACTION_SYSTEM_PROMPT,
+            system_prompt=prompt_bundle["system"],
             max_tokens=8000,
             temperature=0.5,
         )
@@ -470,24 +553,28 @@ class StudioService:
         target_duration = episode.get("target_duration_seconds", 90)
         suggested_shots = max(5, math.ceil(target_duration / 7))
 
-        user_prompt = EPISODE_PLANNING_PROMPT.format(
-            series_name=series["name"],
-            act_number=act_num,
-            episode_title=episode.get("title", ""),
-            series_bible=series.get("series_bible", ""),
-            visual_style=series.get("visual_style", ""),
-            shared_elements_list=elements_list or "（暂无共享元素）",
-            prev_summary=prev_summary,
-            script_excerpt=episode.get("script_excerpt", ""),
-            next_summary=next_summary,
-            target_duration_seconds=target_duration,
-            suggested_shot_count=suggested_shots,
+        prompt_bundle = self._resolve_prompt_bundle("episode_planning", series_id=series["id"])
+        user_prompt = self._render_prompt_template(
+            prompt_bundle["user"],
+            {
+                "series_name": series["name"],
+                "act_number": act_num,
+                "episode_title": episode.get("title", ""),
+                "series_bible": series.get("series_bible", ""),
+                "visual_style": series.get("visual_style", ""),
+                "shared_elements_list": elements_list or "（暂无共享元素）",
+                "prev_summary": prev_summary,
+                "script_excerpt": episode.get("script_excerpt", ""),
+                "next_summary": next_summary,
+                "target_duration_seconds": target_duration,
+                "suggested_shot_count": suggested_shots,
+            },
         )
 
         print(f"[Studio] 调用 LLM 规划第 {act_num} 集 ({episode_id})...")
         raw = await self._llm_call(
             user_prompt=user_prompt,
-            system_prompt=EPISODE_PLANNING_SYSTEM_PROMPT,
+            system_prompt=prompt_bundle["system"],
             max_tokens=int(self.generation_defaults.get("plan_max_tokens", 16000)),
             temperature=0.7,
         )
@@ -594,17 +681,21 @@ class StudioService:
         snapshot = self.storage.get_episode_snapshot(episode_id)
         episode_json = json.dumps(snapshot, ensure_ascii=False, indent=2)
 
-        user_prompt = EPISODE_ENHANCE_PROMPT.format(
-            series_bible=series.get("series_bible", ""),
-            shared_elements_list=elements_list or "（暂无共享元素）",
-            episode_json=episode_json,
-            mode=mode,
+        prompt_bundle = self._resolve_prompt_bundle("episode_enhance", series_id=series["id"])
+        user_prompt = self._render_prompt_template(
+            prompt_bundle["user"],
+            {
+                "series_bible": series.get("series_bible", ""),
+                "shared_elements_list": elements_list or "（暂无共享元素）",
+                "episode_json": episode_json,
+                "mode": mode,
+            },
         )
 
         print(f"[Studio] Script Doctor 增强 {episode_id}（{mode}模式）...")
         raw = await self._llm_call(
             user_prompt=user_prompt,
-            system_prompt=EPISODE_ENHANCE_SYSTEM_PROMPT,
+            system_prompt=prompt_bundle["system"],
             max_tokens=int(self.generation_defaults.get("enhance_max_tokens", 16000)),
             temperature=0.7,
         )

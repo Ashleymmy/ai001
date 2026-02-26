@@ -1,5 +1,7 @@
 """Studio 长篇制作工作台 - LLM 提示词"""
 
+from typing import Any, Dict
+
 # ---------------------------------------------------------------------------
 # 大脚本分幕拆解
 # ---------------------------------------------------------------------------
@@ -215,3 +217,61 @@ EPISODE_ENHANCE_PROMPT = """请对以下集的分镜进行增强。
   ]
 }}
 ```"""
+
+
+PROMPT_MODULE_KEYS = (
+    "script_split",
+    "element_extraction",
+    "episode_planning",
+    "episode_enhance",
+)
+
+
+DEFAULT_CUSTOM_PROMPTS: Dict[str, Dict[str, str]] = {
+    "script_split": {
+        "system": SCRIPT_SPLIT_SYSTEM_PROMPT,
+        "user": SCRIPT_SPLIT_PROMPT,
+    },
+    "element_extraction": {
+        "system": ELEMENT_EXTRACTION_SYSTEM_PROMPT,
+        "user": ELEMENT_EXTRACTION_PROMPT,
+    },
+    "episode_planning": {
+        "system": EPISODE_PLANNING_SYSTEM_PROMPT,
+        "user": EPISODE_PLANNING_PROMPT,
+    },
+    "episode_enhance": {
+        "system": EPISODE_ENHANCE_SYSTEM_PROMPT,
+        "user": EPISODE_ENHANCE_PROMPT,
+    },
+}
+
+
+def build_default_custom_prompts() -> Dict[str, Dict[str, str]]:
+    """返回默认提示词副本，用于设置页展示与 fallback。"""
+    copied: Dict[str, Dict[str, str]] = {}
+    for module_key, bundle in DEFAULT_CUSTOM_PROMPTS.items():
+        copied[module_key] = {
+            "system": bundle.get("system", ""),
+            "user": bundle.get("user", ""),
+        }
+    return copied
+
+
+def normalize_custom_prompts(raw: Any) -> Dict[str, Dict[str, str]]:
+    """将任意输入清洗为 custom_prompts 标准结构。"""
+    result: Dict[str, Dict[str, str]] = {}
+    if not isinstance(raw, dict):
+        return result
+
+    for module_key in PROMPT_MODULE_KEYS:
+        module_value = raw.get(module_key)
+        if not isinstance(module_value, dict):
+            continue
+        system_prompt = module_value.get("system")
+        user_prompt = module_value.get("user")
+        result[module_key] = {
+            "system": system_prompt if isinstance(system_prompt, str) else "",
+            "user": user_prompt if isinstance(user_prompt, str) else "",
+        }
+    return result

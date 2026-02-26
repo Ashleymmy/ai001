@@ -636,6 +636,11 @@ interface GenerationProgress {
 
 **预计工作量**：前端 ~150 行，后端 ~200 行
 
+**当前进展（2026-02-26）**：
+- 已新增 `POST /api/studio/prompt-check` 与 `POST /api/studio/prompt-optimize` 接口
+- 镜头详情面板已接入提示词实时检测、风险命中提示与一键优化
+- 集工作台已新增「提示词体检」按钮与批量扫描结果面板
+
 ---
 
 ### 5.2 LLM 各工具模块系统/用户级提示词（建议 #15）
@@ -679,6 +684,12 @@ interface GenerationProgress {
 
 **预计工作量**：前端 ~200 行，后端 ~80 行
 
+**当前进展（2026-02-26）**：
+- `StudioSettingsRequest` 与 `/api/studio/settings` 已支持 `custom_prompts` 持久化
+- 新增 `GET /api/studio/prompt-templates/defaults`，提供默认模板与变量提示
+- `studio_service.py` 已接入三层提示词解析：默认模板 → 全局 `custom_prompts` → `series.settings.custom_prompts`
+- `split_script_to_acts` / `extract_shared_elements` / `plan_episode` / `enhance_episode` 已统一使用可配置模板渲染
+
 ---
 
 ### 5.3 Agent 编排协同逻辑优化（建议 #24）
@@ -696,6 +707,14 @@ interface GenerationProgress {
 - 新增 `POST /api/studio/episodes/{id}/import-from-agent` — 从 Agent 项目导入
 
 **预计工作量**：后端 ~200 行，前端 ~50 行
+
+**当前进展（2026-02-26）**：
+- 已新增 `POST /api/studio/episodes/{episode_id}/export-to-agent`，支持将当前集（镜头/元素/提示词/素材引用）导出为 Agent 项目 YAML
+- 已新增 `POST /api/studio/episodes/{episode_id}/import-from-agent`，支持按 `project_id` 回灌 Agent 项目到当前集
+- Studio 工作台头部已接入「导出到Agent / 导入Agent」操作按钮
+- 导出侧已升级为配置弹窗：支持「新建项目 / 覆盖已有项目」、元素同步范围、历史消息保留开关
+- 导入侧已升级为项目选择弹窗：支持项目列表搜索过滤与刷新
+- 新增 API 封装 `studioExportEpisodeToAgent` / `studioImportEpisodeFromAgent`
 
 ---
 

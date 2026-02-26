@@ -21,6 +21,8 @@ from services.api_monitor_service import api_monitor
 from services.studio_storage import StudioStorage
 from services.studio_service import StudioService, StudioServiceError
 from services.studio_export_service import StudioExportService
+from services.studio.prompt_sentinel import analyze_prompt_text, apply_prompt_suggestions
+from services.studio.prompts import build_default_custom_prompts, normalize_custom_prompts
 from services.fish_audio_service import FishAudioConfig, FishAudioService
 from services.tts_service import (
     DashScopeTTSConfig,
@@ -5869,6 +5871,55 @@ class StudioSettingsRequest(BaseModel):
     video: Optional[Dict[str, Any]] = None
     tts: Optional[Dict[str, Any]] = None
     generation_defaults: Optional[Dict[str, Any]] = None
+    custom_prompts: Optional[Dict[str, Any]] = None
+
+
+class StudioPromptCheckItem(BaseModel):
+    id: Optional[str] = None
+    field: Optional[str] = None
+    label: Optional[str] = None
+    prompt: str = ""
+
+
+class StudioPromptCheckRequest(BaseModel):
+    prompt: Optional[str] = None
+    items: Optional[List[StudioPromptCheckItem]] = None
+
+    @model_validator(mode="after")
+    def validate_payload(self):
+        has_single = bool((self.prompt or "").strip())
+        has_batch = bool(self.items and len(self.items) > 0)
+        if has_single or has_batch:
+            return self
+        raise ValueError("prompt 或 items 至少提供一项")
+
+
+class StudioPromptOptimizeRequest(BaseModel):
+    prompt: str
+    use_llm: bool = True
+
+
+class StudioExportToAgentRequest(BaseModel):
+    project_id: Optional[str] = None
+    project_name: Optional[str] = None
+    include_shared_elements: bool = True
+    include_episode_elements: bool = True
+    preserve_existing_messages: bool = True
+
+
+class StudioImportFromAgentRequest(BaseModel):
+    project_id: Optional[str] = None
+    projectId: Optional[str] = None
+    overwrite_episode_meta: bool = True
+    import_elements: bool = True
+
+    @model_validator(mode="after")
+    def validate_payload(self):
+        resolved = (self.project_id or self.projectId or "").strip()
+        if resolved:
+            self.project_id = resolved
+            return self
+        raise ValueError("project_id 不能为空")
 
 
 def _studio_error_payload(
@@ -5912,6 +5963,81 @@ def _studio_raise_from_exception(e: Exception) -> None:
         } else 500
         raise HTTPException(status, e.to_payload())
     _studio_raise(500, str(e), "studio_internal_error")
+
+
+def _studio_parse_float(value: Any, fallback: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return fallback
+
+
+def _studio_normalize_agent_element_id(raw_id: str, fallback: str) -> str:
+    source = str(raw_id or "").strip()
+    if not source:
+        source = fallback
+    normalized = re.sub(r"[^0-9A-Za-z_]+", "_", source).strip("_")
+    if not normalized:
+        normalized = fallback
+    if not normalized.startswith("Element_"):
+        normalized = f"Element_{normalized}"
+    return normalized
+
+
+def _studio_history_urls_to_agent_items(raw: Any) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    if not isinstance(raw, list):
+        return items
+
+    for index, value in enumerate(raw):
+        if isinstance(value, str) and value.strip():
+            items.append({
+                "id": f"img_{index+1}",
+                "url": value.strip(),
+                "created_at": datetime.now().isoformat(),
+                "is_favorite": False,
+            })
+            continue
+        if isinstance(value, dict):
+            url = str(value.get("url") or value.get("image_url") or "").strip()
+            if not url:
+                continue
+            items.append({
+                "id": str(value.get("id") or f"img_{index+1}"),
+                "url": url,
+                "created_at": str(value.get("created_at") or datetime.now().isoformat()),
+                "is_favorite": bool(value.get("is_favorite", False)),
+            })
+    return items
+
+
+def _studio_agent_history_to_urls(raw: Any) -> List[str]:
+    urls: List[str] = []
+    if not isinstance(raw, list):
+        return urls
+    for value in raw:
+        if isinstance(value, str) and value.strip():
+            urls.append(value.strip())
+            continue
+        if isinstance(value, dict):
+            url = str(value.get("url") or value.get("image_url") or "").strip()
+            if url:
+                urls.append(url)
+    return urls
+
+
+def _studio_pick_agent_project_id(req: StudioImportFromAgentRequest) -> str:
+    return str(req.project_id or req.projectId or "").strip()
+
+
+def _studio_summarize_agent_project(project: Dict[str, Any], shots_count: int, total_duration: float) -> str:
+    if isinstance(project.get("creative_brief"), dict):
+        brief = project.get("creative_brief") or {}
+        for key in ("summary", "logline", "hook", "title"):
+            value = brief.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return f"由 Agent 项目导入，镜头 {shots_count} 条，总时长约 {round(total_duration, 1)} 秒。"
 
 
 # --- 系列 CRUD ---
@@ -6318,12 +6444,53 @@ async def studio_get_settings():
     return studio_current_settings or {}
 
 
+@app.get("/api/studio/prompt-templates/defaults")
+async def studio_get_prompt_templates_defaults():
+    return {
+        "ok": True,
+        "custom_prompts": build_default_custom_prompts(),
+        "variable_hints": {
+            "script_split": [
+                "full_script",
+                "target_episode_count",
+                "episode_duration_seconds",
+                "visual_style",
+            ],
+            "element_extraction": [
+                "full_script",
+                "acts_summary",
+            ],
+            "episode_planning": [
+                "series_name",
+                "act_number",
+                "episode_title",
+                "series_bible",
+                "visual_style",
+                "shared_elements_list",
+                "prev_summary",
+                "script_excerpt",
+                "next_summary",
+                "target_duration_seconds",
+                "suggested_shot_count",
+            ],
+            "episode_enhance": [
+                "series_bible",
+                "shared_elements_list",
+                "episode_json",
+                "mode",
+            ],
+        },
+    }
+
+
 @app.put("/api/studio/settings")
 async def studio_save_settings(req: StudioSettingsRequest):
     global studio_current_settings
     service = _studio_ensure_service_ready()
 
     new_settings = {k: v for k, v in req.model_dump().items() if v is not None}
+    if "custom_prompts" in new_settings:
+        new_settings["custom_prompts"] = normalize_custom_prompts(new_settings["custom_prompts"])
     studio_current_settings.update(new_settings)
 
     # 持久化到 yaml
@@ -6340,10 +6507,436 @@ async def studio_save_settings(req: StudioSettingsRequest):
     return {"ok": True, "settings": studio_current_settings}
 
 
+@app.post("/api/studio/prompt-check")
+async def studio_prompt_check(req: StudioPromptCheckRequest):
+    if req.items and len(req.items) > 0:
+        results: List[Dict[str, Any]] = []
+        for item in req.items:
+            analysis = analyze_prompt_text(item.prompt or "")
+            results.append({
+                "id": item.id,
+                "field": item.field,
+                "label": item.label,
+                "prompt": item.prompt or "",
+                **analysis,
+            })
+        return {"ok": True, "results": results}
+
+    analysis = analyze_prompt_text(req.prompt or "")
+    return {"ok": True, **analysis}
+
+
+@app.post("/api/studio/prompt-optimize")
+async def studio_prompt_optimize(req: StudioPromptOptimizeRequest):
+    service = _studio_ensure_service_ready()
+    original = req.prompt or ""
+    before = analyze_prompt_text(original)
+    rule_based = apply_prompt_suggestions(original, before.get("suggestions") or [])
+
+    optimized = rule_based
+    used_llm = False
+    if req.use_llm and not before.get("safe", True):
+        llm_result = await service.optimize_prompt_with_llm(rule_based, before)
+        candidate = (llm_result.get("optimized_prompt") or "").strip()
+        if candidate:
+            optimized = candidate
+        used_llm = bool(llm_result.get("used_llm"))
+
+    after = analyze_prompt_text(optimized)
+    return {
+        "ok": True,
+        "optimized_prompt": optimized,
+        "changed": optimized.strip() != original.strip(),
+        "used_llm": used_llm,
+        "before": before,
+        "after": after,
+    }
+
+
 @app.get("/api/studio/config-check")
 async def studio_config_check():
     service = _studio_ensure_service_ready()
     return service.check_config()
+
+
+# --- Studio <-> Agent ---
+
+@app.post("/api/studio/episodes/{episode_id}/export-to-agent")
+async def studio_export_episode_to_agent(
+    episode_id: str,
+    req: Optional[StudioExportToAgentRequest] = None,
+):
+    service = _studio_ensure_service_ready()
+    payload = req or StudioExportToAgentRequest()
+
+    episode = service.storage.get_episode(episode_id)
+    if not episode:
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+    series = service.storage.get_series(episode["series_id"])
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": episode["series_id"]})
+
+    shots = service.storage.get_shots(episode_id)
+    episode_elements = service.storage.get_episode_elements(episode_id)
+    shared_elements = service.storage.get_shared_elements(series["id"]) if payload.include_shared_elements else []
+
+    target_project_id = (payload.project_id or "").strip()
+    existing_project: Optional[Dict[str, Any]] = None
+    if target_project_id:
+        existing_project = storage.get_agent_project(target_project_id)
+        if not existing_project:
+            _studio_raise(404, "Agent 项目不存在", "agent_project_not_found", {"project_id": target_project_id})
+
+    now = datetime.now().isoformat()
+    agent_project_id = target_project_id or f"agent_{uuid.uuid4().hex[:8]}"
+    default_project_name = f"{series.get('name') or '未命名系列'} · 第{episode.get('act_number') or 0}幕 {episode.get('title') or '未命名分幕'}"
+    project_name = (
+        (payload.project_name or "").strip()
+        or str((existing_project or {}).get("name") or "").strip()
+        or default_project_name
+    )
+
+    elements: Dict[str, Dict[str, Any]] = {}
+
+    def upsert_agent_element(source: Dict[str, Any], fallback_prefix: str) -> None:
+        raw_id = str(source.get("id") or source.get("shared_element_id") or "").strip()
+        fallback = f"{fallback_prefix}_{len(elements) + 1:03d}"
+        element_id = _studio_normalize_agent_element_id(raw_id, fallback)
+        existing = elements.get(element_id, {})
+
+        image_url = str(source.get("image_url") or "").strip()
+        image_history = _studio_history_urls_to_agent_items(source.get("image_history"))
+        reference_images = source.get("reference_images")
+        if not isinstance(reference_images, list):
+            reference_images = []
+
+        elements[element_id] = {
+            **existing,
+            "id": element_id,
+            "name": str(source.get("name") or existing.get("name") or element_id),
+            "type": str(source.get("type") or existing.get("type") or "character"),
+            "description": str(source.get("description") or existing.get("description") or ""),
+            "voice_profile": str(source.get("voice_profile") or existing.get("voice_profile") or ""),
+            "image_url": image_url or str(existing.get("image_url") or ""),
+            "cached_image_url": image_url or str(existing.get("cached_image_url") or ""),
+            "image_history": image_history or existing.get("image_history") or [],
+            "reference_images": reference_images or existing.get("reference_images") or [],
+            "created_at": str(source.get("created_at") or existing.get("created_at") or now),
+            "source": str(source.get("source") or existing.get("source") or "studio"),
+            "source_series_id": str(series["id"]),
+            "source_episode_id": str(episode_id),
+            "source_studio_element_id": str(source.get("id") or source.get("shared_element_id") or ""),
+        }
+
+    for shared in shared_elements:
+        if not isinstance(shared, dict):
+            continue
+        upsert_agent_element(
+            {
+                **shared,
+                "source": "studio_shared",
+            },
+            "SE",
+        )
+
+    if payload.include_episode_elements:
+        for element in episode_elements:
+            if not isinstance(element, dict):
+                continue
+            upsert_agent_element(
+                {
+                    **element,
+                    "source": "studio_episode",
+                },
+                "EE",
+            )
+
+    segments_by_name: Dict[str, Dict[str, Any]] = {}
+    segment_order: List[str] = []
+    timeline: List[Dict[str, Any]] = []
+    visual_assets: List[Dict[str, Any]] = []
+    audio_assets: List[Dict[str, Any]] = []
+    cursor = 0.0
+
+    sorted_shots = sorted(shots, key=lambda s: int(s.get("sort_order") or 0))
+    for shot_index, shot in enumerate(sorted_shots):
+        if not isinstance(shot, dict):
+            continue
+        segment_name = str(shot.get("segment_name") or "未分段")
+        if segment_name not in segments_by_name:
+            segment_id = f"Segment_{len(segment_order) + 1:02d}"
+            segment_order.append(segment_name)
+            segments_by_name[segment_name] = {
+                "id": segment_id,
+                "name": segment_name,
+                "description": "",
+                "shots": [],
+                "created_at": now,
+            }
+
+        duration = max(0.1, _studio_parse_float(shot.get("duration"), 5.0))
+        shot_id = str(shot.get("id") or f"Shot_{shot_index + 1:03d}")
+        frame_history_urls = _studio_agent_history_to_urls(shot.get("frame_history"))
+        video_history_urls = _studio_agent_history_to_urls(shot.get("video_history"))
+
+        start_image_url = str(shot.get("start_image_url") or "").strip()
+        if not start_image_url and frame_history_urls:
+            start_image_url = frame_history_urls[-1]
+        end_image_url = str(shot.get("end_image_url") or "").strip()
+        video_url = str(shot.get("video_url") or "").strip()
+        audio_url = str(shot.get("audio_url") or "").strip()
+
+        agent_shot: Dict[str, Any] = {
+            "id": shot_id,
+            "name": str(shot.get("name") or f"镜头 {shot_index + 1}"),
+            "type": str(shot.get("type") or "standard"),
+            "description": str(shot.get("description") or ""),
+            "prompt": str(shot.get("prompt") or ""),
+            "end_prompt": str(shot.get("end_prompt") or ""),
+            "video_prompt": str(shot.get("video_prompt") or ""),
+            "dialogue_script": str(shot.get("dialogue_script") or ""),
+            "narration": str(shot.get("narration") or ""),
+            "duration": duration,
+            "start_image_url": start_image_url,
+            "end_image_url": end_image_url,
+            "video_url": video_url,
+            "voice_audio_url": audio_url,
+            "audio_url": audio_url,
+            "status": str(shot.get("status") or ("video_ready" if video_url else "pending")),
+            "sort_order": int(shot.get("sort_order") or shot_index),
+            "created_at": str(shot.get("created_at") or now),
+            "updated_at": str(shot.get("updated_at") or now),
+            "source_shot_id": str(shot.get("id") or ""),
+            "source_episode_id": str(episode_id),
+        }
+        if frame_history_urls:
+            agent_shot["start_image_history"] = _studio_history_urls_to_agent_items(frame_history_urls)
+        if video_history_urls:
+            agent_shot["video_history"] = _studio_history_urls_to_agent_items(video_history_urls)
+
+        segments_by_name[segment_name]["shots"].append(agent_shot)
+        timeline.append({
+            "id": shot_id,
+            "type": "shot",
+            "start": round(cursor, 3),
+            "duration": round(duration, 3),
+        })
+        cursor += duration
+
+        if start_image_url:
+            visual_assets.append({
+                "id": f"asset_{shot_id}_start",
+                "type": "start_frame",
+                "url": start_image_url,
+            })
+        if end_image_url:
+            visual_assets.append({
+                "id": f"asset_{shot_id}_end",
+                "type": "end_frame",
+                "url": end_image_url,
+            })
+        if video_url:
+            visual_assets.append({
+                "id": f"asset_{shot_id}_video",
+                "type": "video",
+                "url": video_url,
+                "duration": round(duration, 3),
+            })
+        if audio_url:
+            audio_assets.append({
+                "id": f"asset_{shot_id}_audio",
+                "type": "voice",
+                "url": audio_url,
+            })
+
+    segments = [segments_by_name[name] for name in segment_order]
+    creative_brief = episode.get("creative_brief") if isinstance(episode.get("creative_brief"), dict) else {}
+    creative_brief = {
+        **creative_brief,
+        "title": episode.get("title") or creative_brief.get("title") or "",
+        "summary": episode.get("summary") or creative_brief.get("summary") or "",
+        "series_name": series.get("name") or "",
+        "series_bible": series.get("series_bible") or "",
+        "visual_style": series.get("visual_style") or "",
+        "episode_duration_seconds": _studio_parse_float(episode.get("target_duration_seconds"), 0.0),
+        "source_episode_id": episode_id,
+        "source_series_id": series["id"],
+    }
+
+    preserve_messages = bool(payload.preserve_existing_messages and existing_project)
+    project_payload: Dict[str, Any] = {
+        "id": agent_project_id,
+        "name": project_name,
+        "creative_brief": creative_brief,
+        "elements": elements,
+        "segments": segments,
+        "visual_assets": visual_assets,
+        "audio_assets": audio_assets,
+        "audio_timeline": (existing_project or {}).get("audio_timeline", {}) if preserve_messages else {},
+        "timeline": timeline,
+        "messages": (existing_project or {}).get("messages", []) if preserve_messages else [],
+        "agent_memory": (existing_project or {}).get("agent_memory", []) if preserve_messages else [],
+        "created_at": str((existing_project or {}).get("created_at") or now),
+        "updated_at": now,
+        "studio_bridge": {
+            "source": "studio",
+            "series_id": series["id"],
+            "episode_id": episode_id,
+            "exported_at": now,
+        },
+    }
+
+    storage.save_agent_project(project_payload)
+    shots_count = sum(len(seg.get("shots", [])) for seg in segments)
+    return {
+        "ok": True,
+        "episode_id": episode_id,
+        "project_id": agent_project_id,
+        "project_name": project_name,
+        "created": existing_project is None,
+        "elements_count": len(elements),
+        "segments_count": len(segments),
+        "shots_count": shots_count,
+    }
+
+
+@app.post("/api/studio/episodes/{episode_id}/import-from-agent")
+async def studio_import_episode_from_agent(
+    episode_id: str,
+    req: StudioImportFromAgentRequest,
+):
+    service = _studio_ensure_service_ready()
+    episode = service.storage.get_episode(episode_id)
+    if not episode:
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+
+    project_id = _studio_pick_agent_project_id(req)
+    project = storage.get_agent_project(project_id)
+    if not project:
+        _studio_raise(404, "Agent 项目不存在", "agent_project_not_found", {"project_id": project_id})
+
+    segments = project.get("segments")
+    if not isinstance(segments, list) or len(segments) == 0:
+        _studio_raise(400, "Agent 项目没有可导入的段落", "agent_project_invalid", {"project_id": project_id})
+
+    shots_payload: List[Dict[str, Any]] = []
+    total_duration = 0.0
+    for seg_index, segment in enumerate(segments):
+        if not isinstance(segment, dict):
+            continue
+        segment_name = str(segment.get("name") or f"段落 {seg_index + 1}")
+        segment_shots = segment.get("shots")
+        if not isinstance(segment_shots, list):
+            continue
+        for shot_index, shot in enumerate(segment_shots):
+            if not isinstance(shot, dict):
+                continue
+            duration = max(0.1, _studio_parse_float(shot.get("duration"), 5.0))
+            total_duration += duration
+
+            frame_history_urls = _studio_agent_history_to_urls(
+                shot.get("start_image_history") if shot.get("start_image_history") else shot.get("frame_history"),
+            )
+            video_history_urls = _studio_agent_history_to_urls(shot.get("video_history"))
+            start_image_url = str(shot.get("start_image_url") or shot.get("cached_start_image_url") or "").strip()
+            if not start_image_url and frame_history_urls:
+                start_image_url = frame_history_urls[-1]
+            video_url = str(shot.get("video_url") or "").strip()
+            audio_url = str(
+                shot.get("voice_audio_url")
+                or shot.get("audio_url")
+                or shot.get("narration_audio_url")
+                or "",
+            ).strip()
+
+            shots_payload.append({
+                "segment_name": segment_name,
+                "name": str(shot.get("name") or f"镜头 {seg_index + 1}-{shot_index + 1}"),
+                "type": str(shot.get("type") or "standard"),
+                "duration": duration,
+                "description": str(shot.get("description") or ""),
+                "prompt": str(shot.get("prompt") or shot.get("video_prompt") or ""),
+                "end_prompt": str(shot.get("end_prompt") or ""),
+                "video_prompt": str(shot.get("video_prompt") or shot.get("prompt") or ""),
+                "narration": str(shot.get("narration") or ""),
+                "dialogue_script": str(shot.get("dialogue_script") or ""),
+                "start_image_url": start_image_url,
+                "video_url": video_url,
+                "audio_url": audio_url,
+                "frame_history": frame_history_urls,
+                "video_history": video_history_urls,
+                "status": str(shot.get("status") or ("video_ready" if video_url else "pending")),
+            })
+
+    if len(shots_payload) == 0:
+        _studio_raise(400, "Agent 项目没有可导入的镜头", "agent_project_invalid", {"project_id": project_id})
+
+    created_shots = service.storage.bulk_add_shots(episode_id, shots_payload)
+
+    creative_brief = project.get("creative_brief") if isinstance(project.get("creative_brief"), dict) else {}
+    creative_brief = {
+        **creative_brief,
+        "source_agent_project_id": project_id,
+        "imported_at": datetime.now().isoformat(),
+    }
+    updates: Dict[str, Any] = {
+        "creative_brief": creative_brief,
+        "target_duration_seconds": round(total_duration, 3),
+        "status": "planned",
+    }
+    if req.overwrite_episode_meta:
+        project_name = str(project.get("name") or "").strip()
+        if project_name:
+            updates["title"] = project_name
+        updates["summary"] = _studio_summarize_agent_project(project, len(shots_payload), total_duration)
+    service.storage.update_episode(episode_id, updates)
+
+    imported_elements = 0
+    if req.import_elements:
+        source_elements = project.get("elements")
+        normalized_elements: List[Dict[str, Any]] = []
+        if isinstance(source_elements, dict):
+            iter_elements = source_elements.values()
+        elif isinstance(source_elements, list):
+            iter_elements = source_elements
+        else:
+            iter_elements = []
+
+        for element in iter_elements:
+            if not isinstance(element, dict):
+                continue
+            name = str(element.get("name") or "").strip()
+            if not name:
+                continue
+            normalized_elements.append({
+                "name": name,
+                "type": str(element.get("type") or "character"),
+                "description": str(element.get("description") or ""),
+                "voice_profile": str(element.get("voice_profile") or ""),
+                "image_url": str(element.get("image_url") or element.get("cached_image_url") or ""),
+                "is_override": 1,
+            })
+        service.storage.replace_episode_elements(
+            episode_id=episode_id,
+            elements_data=normalized_elements,
+            keep_shared_elements=True,
+        )
+        imported_elements = len(normalized_elements)
+
+    try:
+        service.storage.record_episode_history(episode_id, f"import_agent_{project_id}")
+    except Exception as e:
+        print(f"[Studio] 记录 import_agent 历史失败: {e}")
+
+    detail = service.get_episode_detail(episode_id)
+    return {
+        "ok": True,
+        "episode_id": episode_id,
+        "project_id": project_id,
+        "shots_imported": len(created_shots),
+        "elements_imported": imported_elements,
+        "episode": detail,
+    }
 
 
 # --- 导出 ---

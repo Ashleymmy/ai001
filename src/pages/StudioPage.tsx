@@ -9,8 +9,18 @@ import {
 } from 'lucide-react'
 import { useStudioStore } from '../store/studioStore'
 import axios from 'axios'
-import { studioCheckConfig, studioExportEpisode, studioExportSeries, studioGetSeriesStats, studioGetSettings, studioSaveSettings } from '../services/api'
-import type { StudioSeriesStats, StudioEpisodeHistoryEntry } from '../services/api'
+import {
+  studioCheckConfig, studioExportEpisode, studioExportSeries, studioGetSeriesStats, studioGetSettings, studioSaveSettings,
+  studioGetPromptTemplateDefaults,
+  listAgentProjects, studioExportEpisodeToAgent, studioImportEpisodeFromAgent,
+  studioPromptCheck, studioPromptBatchCheck, studioPromptOptimize,
+} from '../services/api'
+import type {
+  StudioSeriesStats,
+  StudioEpisodeHistoryEntry,
+  StudioPromptAnalysis,
+  StudioPromptBatchCheckItem,
+} from '../services/api'
 import type {
   StudioSeries,
   StudioEpisode,
@@ -55,6 +65,24 @@ interface StudioActivityIndicator {
   tone: StudioActivityTone
 }
 
+interface AgentProjectOption {
+  id: string
+  name: string
+  updated_at?: string
+  elements_count?: number
+  segments_count?: number
+  creative_brief?: Record<string, unknown>
+}
+
+interface AgentExportOptions {
+  mode: 'new' | 'existing'
+  projectName: string
+  selectedProjectId: string
+  includeSharedElements: boolean
+  includeEpisodeElements: boolean
+  preserveExistingMessages: boolean
+}
+
 type PreviewPanelRect = {
   x: number
   y: number
@@ -76,6 +104,18 @@ const LAYOUT_SIDEBAR_WIDTH_KEY = 'studio.layout.sidebarWidth'
 const LAYOUT_SIDEBAR_COLLAPSED_KEY = 'studio.layout.sidebarCollapsed'
 const LAYOUT_DETAIL_PANEL_WIDTH_KEY = 'studio.layout.detailPanelWidth'
 const LAYOUT_DETAIL_PANEL_COLLAPSED_KEY = 'studio.layout.detailPanelCollapsed'
+
+type PromptFieldKey = 'prompt' | 'end_prompt' | 'video_prompt'
+
+const PROMPT_FIELD_META: Array<{ field: PromptFieldKey; label: string }> = [
+  { field: 'prompt', label: '起始帧提示词' },
+  { field: 'end_prompt', label: '尾帧提示词' },
+  { field: 'video_prompt', label: '视频提示词' },
+]
+
+function isPromptFieldKey(value: string): value is PromptFieldKey {
+  return value === 'prompt' || value === 'end_prompt' || value === 'video_prompt'
+}
 
 function readStoredNumber(key: string, fallback: number, min: number, max: number): number {
   if (typeof window === 'undefined') return fallback
@@ -135,6 +175,17 @@ function defaultPreviewPanelRect(): PreviewPanelRect {
   const x = Math.max(8, Math.round((vw - width) / 2))
   const y = Math.max(44, Math.round((vh - height) / 2))
   return { x, y, width, height }
+}
+
+function createDefaultAgentExportOptions(): AgentExportOptions {
+  return {
+    mode: 'new',
+    projectName: '',
+    selectedProjectId: '',
+    includeSharedElements: true,
+    includeEpisodeElements: true,
+    preserveExistingMessages: true,
+  }
 }
 
 function clampPreviewPanelRect(next: PreviewPanelRect): PreviewPanelRect {
@@ -283,15 +334,6 @@ function HoverOverviewPanel({
   children: ReactNode
   maxWidthClass?: string
 }) {
-  const orderedFailedOperations = useMemo(
-    () => [...failedOperations].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
-    [failedOperations],
-  )
-  const orderedRetryHistory = useMemo(
-    () => [...retryHistory].sort((a, b) => new Date(b.finishedAt).getTime() - new Date(a.finishedAt).getTime()),
-    [retryHistory],
-  )
-
   return (
     <div className="pointer-events-none fixed inset-0 z-[120] flex items-center justify-center px-4 py-8 opacity-0 scale-[0.97] transition-all duration-150 delay-0 group-hover:delay-700 group-focus-within:delay-300 group-hover:opacity-100 group-hover:scale-100 group-focus-within:opacity-100 group-focus-within:scale-100">
       <div className={`w-full ${maxWidthClass} rounded-xl border border-gray-600 bg-gray-950/95 p-4 shadow-2xl backdrop-blur-sm`}>
@@ -395,6 +437,15 @@ function RecoveryCenterPanel({
   onClearHistory: () => void
   onClose: () => void
 }) {
+  const orderedFailedOperations = useMemo(
+    () => [...failedOperations].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
+    [failedOperations],
+  )
+  const orderedRetryHistory = useMemo(
+    () => [...retryHistory].sort((a, b) => new Date(b.finishedAt).getTime() - new Date(a.finishedAt).getTime()),
+    [retryHistory],
+  )
+
   return (
     <div className="fixed top-14 right-2 md:right-4 xl:right-[26rem] z-[69] w-[min(460px,calc(100vw-1rem))] rounded-xl border border-gray-700 bg-gray-950/96 shadow-2xl backdrop-blur">
       <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800">
@@ -516,7 +567,14 @@ export default function StudioPage() {
   const store = useStudioStore()
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [showAgentExportDialog, setShowAgentExportDialog] = useState(false)
+  const [showAgentImportDialog, setShowAgentImportDialog] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [bridgingAgent, setBridgingAgent] = useState(false)
+  const [agentProjectsLoading, setAgentProjectsLoading] = useState(false)
+  const [agentProjectOptions, setAgentProjectOptions] = useState<AgentProjectOption[]>([])
+  const [agentExportOptions, setAgentExportOptions] = useState<AgentExportOptions>(createDefaultAgentExportOptions)
+  const [selectedAgentProjectId, setSelectedAgentProjectId] = useState('')
   const [exportProgress, setExportProgress] = useState<StudioExportProgress | null>(null)
   const exportHideTimerRef = useRef<number | null>(null)
   const [toasts, setToasts] = useState<StudioToast[]>([])
@@ -957,6 +1015,138 @@ export default function StudioPage() {
     }
   }, [parseExportError, pushToast, saveBlob, scheduleHideExportProgress, store.currentSeriesId])
 
+  const loadAgentProjectOptions = useCallback(async () => {
+    setAgentProjectsLoading(true)
+    try {
+      const projects = await listAgentProjects(50)
+      const normalized: AgentProjectOption[] = projects.map((project) => ({
+        id: project.id,
+        name: project.name || project.id,
+        updated_at: project.updated_at,
+        creative_brief: project.creative_brief || {},
+        elements_count: (project as unknown as { elements_count?: number }).elements_count,
+        segments_count: (project as unknown as { segments_count?: number }).segments_count,
+      }))
+      setAgentProjectOptions(normalized)
+      setSelectedAgentProjectId((prev) => {
+        if (prev && normalized.some((item) => item.id === prev)) return prev
+        return normalized[0]?.id || ''
+      })
+      setAgentExportOptions((prev) => {
+        if (prev.selectedProjectId && normalized.some((item) => item.id === prev.selectedProjectId)) {
+          return prev
+        }
+        return {
+          ...prev,
+          selectedProjectId: normalized[0]?.id || '',
+        }
+      })
+    } catch (e) {
+      const message = await parseExportError(e)
+      setAgentProjectOptions([])
+      setSelectedAgentProjectId('')
+      setAgentExportOptions((prev) => ({
+        ...prev,
+        selectedProjectId: '',
+      }))
+      pushToast({ message: `获取 Agent 项目列表失败：${message}`, code: 'studio_agent_list_error' })
+    } finally {
+      setAgentProjectsLoading(false)
+    }
+  }, [parseExportError, pushToast])
+
+  const handleExportToAgent = useCallback(async () => {
+    if (!store.currentEpisodeId) return
+    setShowAgentImportDialog(false)
+    setAgentExportOptions((prev) => ({
+      ...createDefaultAgentExportOptions(),
+      selectedProjectId: prev.selectedProjectId,
+    }))
+    setShowAgentExportDialog(true)
+    await loadAgentProjectOptions()
+  }, [loadAgentProjectOptions, store.currentEpisodeId])
+
+  const handleConfirmExportToAgent = useCallback(async () => {
+    if (!store.currentEpisodeId) return
+    if (agentExportOptions.mode === 'existing' && !agentExportOptions.selectedProjectId) {
+      pushToast({ message: '请先选择要覆盖的 Agent 项目', code: 'studio_export_agent_missing_project' })
+      return
+    }
+
+    const payload: {
+      project_id?: string
+      project_name?: string
+      include_shared_elements: boolean
+      include_episode_elements: boolean
+      preserve_existing_messages: boolean
+    } = {
+      include_shared_elements: agentExportOptions.includeSharedElements,
+      include_episode_elements: agentExportOptions.includeEpisodeElements,
+      preserve_existing_messages: agentExportOptions.mode === 'existing'
+        ? agentExportOptions.preserveExistingMessages
+        : false,
+    }
+    if (agentExportOptions.mode === 'existing') {
+      payload.project_id = agentExportOptions.selectedProjectId
+    } else {
+      const nextName = agentExportOptions.projectName.trim()
+      if (nextName) payload.project_name = nextName
+    }
+
+    setBridgingAgent(true)
+    try {
+      const result = await studioExportEpisodeToAgent(store.currentEpisodeId, payload)
+      setShowAgentExportDialog(false)
+      pushToast({
+        message: `${result.created ? '已新建并导出' : '已更新并导出'} Agent 项目：${result.project_name}（${result.shots_count} 镜头）`,
+      })
+
+      const shouldOpen = window.confirm(
+        `导出完成：${result.project_name}\n项目ID：${result.project_id}\n\n是否立即前往 Agent 继续精修？`,
+      )
+      if (shouldOpen) {
+        navigate(`/agent/${result.project_id}`)
+      }
+    } catch (e) {
+      const message = await parseExportError(e)
+      pushToast({ message: `导出到 Agent 失败：${message}`, code: 'studio_export_agent_error' })
+    } finally {
+      setBridgingAgent(false)
+    }
+  }, [agentExportOptions, navigate, parseExportError, pushToast, store.currentEpisodeId])
+
+  const handleImportFromAgent = useCallback(async () => {
+    if (!store.currentEpisodeId) return
+    setShowAgentExportDialog(false)
+    setShowAgentImportDialog(true)
+    await loadAgentProjectOptions()
+  }, [loadAgentProjectOptions, store.currentEpisodeId])
+
+  const handleConfirmImportFromAgent = useCallback(async () => {
+    if (!store.currentEpisodeId || !selectedAgentProjectId) return
+    setBridgingAgent(true)
+    try {
+      const result = await studioImportEpisodeFromAgent(store.currentEpisodeId, {
+        project_id: selectedAgentProjectId,
+        overwrite_episode_meta: true,
+        import_elements: true,
+      })
+
+      await store.selectEpisode(store.currentEpisodeId)
+      await store.loadEpisodeHistory(store.currentEpisodeId, 80, true)
+      setShowAgentImportDialog(false)
+
+      pushToast({
+        message: `已从 Agent 导入：镜头 ${result.shots_imported} 条，元素 ${result.elements_imported} 个`,
+      })
+    } catch (e) {
+      const message = await parseExportError(e)
+      pushToast({ message: `从 Agent 导入失败：${message}`, code: 'studio_import_agent_error' })
+    } finally {
+      setBridgingAgent(false)
+    }
+  }, [parseExportError, pushToast, selectedAgentProjectId, store])
+
   useEffect(() => {
     const handleViewportResize = () => {
       setCompactLayout(window.innerWidth < 1100)
@@ -1318,7 +1508,10 @@ export default function StudioPage() {
               }}
               onExportAssets={() => handleExportEpisode('assets')}
               onExportVideo={() => handleExportEpisode('video')}
+              onExportToAgent={handleExportToAgent}
+              onImportFromAgent={handleImportFromAgent}
               exporting={exporting}
+              bridgingAgent={bridgingAgent}
               planning={store.planning}
               generating={store.generating}
             />
@@ -1382,6 +1575,34 @@ export default function StudioPage() {
             }
           }}
           creating={store.creating}
+        />
+      )}
+
+      {showAgentImportDialog && (
+        <AgentProjectImportDialog
+          projects={agentProjectOptions}
+          loading={agentProjectsLoading}
+          importing={bridgingAgent}
+          selectedProjectId={selectedAgentProjectId}
+          onSelectProject={setSelectedAgentProjectId}
+          onRefresh={loadAgentProjectOptions}
+          onClose={() => setShowAgentImportDialog(false)}
+          onConfirm={handleConfirmImportFromAgent}
+        />
+      )}
+
+      {showAgentExportDialog && (
+        <AgentProjectExportDialog
+          projects={agentProjectOptions}
+          loading={agentProjectsLoading}
+          exporting={bridgingAgent}
+          options={agentExportOptions}
+          onChangeOptions={(patch) => {
+            setAgentExportOptions((prev) => ({ ...prev, ...patch }))
+          }}
+          onRefresh={loadAgentProjectOptions}
+          onClose={() => setShowAgentExportDialog(false)}
+          onConfirm={handleConfirmExportToAgent}
         />
       )}
 
@@ -2044,7 +2265,10 @@ function EpisodeWorkbench({
   onRestoreHistory,
   onExportAssets,
   onExportVideo,
+  onExportToAgent,
+  onImportFromAgent,
   exporting,
+  bridgingAgent,
   planning,
   generating,
 }: {
@@ -2068,7 +2292,10 @@ function EpisodeWorkbench({
   onRestoreHistory: (historyId: string) => void | Promise<void>
   onExportAssets: () => void | Promise<void>
   onExportVideo: () => void | Promise<void>
+  onExportToAgent: () => void | Promise<void>
+  onImportFromAgent: () => void | Promise<void>
   exporting: boolean
+  bridgingAgent: boolean
   planning: boolean
   generating: boolean
 }) {
@@ -2082,6 +2309,11 @@ function EpisodeWorkbench({
   const [historyLoadedOnce, setHistoryLoadedOnce] = useState(false)
   const [restoringHistoryId, setRestoringHistoryId] = useState<string | null>(null)
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null)
+  const [showPromptHealthPanel, setShowPromptHealthPanel] = useState(false)
+  const [promptHealthLoading, setPromptHealthLoading] = useState(false)
+  const [promptHealthIssues, setPromptHealthIssues] = useState<StudioPromptBatchCheckItem[]>([])
+  const [promptHealthScannedAt, setPromptHealthScannedAt] = useState<string | null>(null)
+  const [optimizingPromptIssueId, setOptimizingPromptIssueId] = useState<string | null>(null)
   const [narrowWorkbench, setNarrowWorkbench] = useState<boolean>(() => (typeof window !== 'undefined' ? window.innerWidth < 1340 : false))
   const [titleDraft, setTitleDraft] = useState(episode.title || '')
   const [summaryDraft, setSummaryDraft] = useState(episode.summary || '')
@@ -2132,6 +2364,10 @@ function EpisodeWorkbench({
     setShowHistoryPanel(false)
     setHistoryLoadedOnce(false)
     setRestoringHistoryId(null)
+    setShowPromptHealthPanel(false)
+    setPromptHealthIssues([])
+    setPromptHealthScannedAt(null)
+    setOptimizingPromptIssueId(null)
   }, [episode.id, episode.title, episode.summary, episode.script_excerpt])
 
   useEffect(() => {
@@ -2333,6 +2569,71 @@ function EpisodeWorkbench({
     }
   }
 
+  const runPromptHealthScan = useCallback(async () => {
+    const items = shots.flatMap((shot, idx) => (
+      PROMPT_FIELD_META.map((meta) => {
+        const value = String((shot as Record<string, unknown>)[meta.field] || '').trim()
+        if (!value) return null
+        return {
+          id: `${shot.id}::${meta.field}`,
+          field: meta.field,
+          label: `#${idx + 1} ${shot.name || '未命名镜头'} · ${meta.label}`,
+          prompt: value,
+        }
+      }).filter((item): item is {
+        id: string
+        field: PromptFieldKey
+        label: string
+        prompt: string
+      } => Boolean(item))
+    ))
+
+    setPromptHealthLoading(true)
+    try {
+      if (items.length === 0) {
+        setPromptHealthIssues([])
+        setPromptHealthScannedAt(new Date().toISOString())
+        return
+      }
+      const results = await studioPromptBatchCheck(items)
+      const risky = results
+        .filter((item) => !item.safe && Array.isArray(item.matches) && item.matches.length > 0)
+        .sort((a, b) => (b.risk_score || 0) - (a.risk_score || 0))
+      setPromptHealthIssues(risky)
+      setPromptHealthScannedAt(new Date().toISOString())
+    } finally {
+      setPromptHealthLoading(false)
+    }
+  }, [shots])
+
+  const togglePromptHealthPanel = async () => {
+    const next = !showPromptHealthPanel
+    setShowPromptHealthPanel(next)
+    if (next) {
+      await runPromptHealthScan()
+    }
+  }
+
+  const handleOptimizePromptIssue = useCallback(async (issue: StudioPromptBatchCheckItem) => {
+    const issueId = issue.id || ''
+    const [shotId, fieldRaw] = issueId.split('::')
+    if (!shotId || !fieldRaw || !isPromptFieldKey(fieldRaw)) return
+
+    setOptimizingPromptIssueId(issueId)
+    try {
+      const optimized = await studioPromptOptimize(issue.prompt || '', { use_llm: true })
+      const nextPrompt = (optimized.optimized_prompt || issue.prompt || '').trim()
+      if (!nextPrompt) return
+
+      if (optimized.changed) {
+        await Promise.resolve(onUpdateShot(shotId, { [fieldRaw]: nextPrompt }))
+      }
+      await runPromptHealthScan()
+    } finally {
+      setOptimizingPromptIssueId(null)
+    }
+  }, [onUpdateShot, runPromptHealthScan])
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* 集头部 */}
@@ -2386,6 +2687,22 @@ function EpisodeWorkbench({
             <History className="w-3 h-3" />
             {showHistoryPanel ? '关闭历史' : '历史记录'}
           </button>
+          <button
+            onClick={togglePromptHealthPanel}
+            className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${
+              showPromptHealthPanel
+                ? 'bg-amber-700/60 text-amber-100'
+                : promptHealthIssues.length > 0
+                  ? 'bg-red-900/35 text-red-200 hover:bg-red-900/45'
+                  : 'bg-gray-800 hover:bg-gray-700 text-gray-300'
+            }`}
+          >
+            {promptHealthLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <AlertCircle className="w-3 h-3" />}
+            {showPromptHealthPanel ? '关闭体检' : '提示词体检'}
+            {!showPromptHealthPanel && promptHealthIssues.length > 0 && (
+              <span className="text-[10px] px-1 py-0.5 rounded bg-black/35">{promptHealthIssues.length}</span>
+            )}
+          </button>
           {showDetailPanel && (
             <button
               onClick={() => setDetailPanelCollapsed((v) => !v)}
@@ -2406,6 +2723,22 @@ function EpisodeWorkbench({
           >
             <Play className="w-3 h-3" />
             {showPreviewPanel ? '关闭预览面板' : '预览/时间线'}
+          </button>
+          <button
+            onClick={() => onExportToAgent()}
+            disabled={bridgingAgent}
+            className="flex items-center gap-1 px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-xs text-gray-300 disabled:opacity-50 transition-colors"
+          >
+            {bridgingAgent ? <Loader2 className="w-3 h-3 animate-spin" /> : <ChevronRight className="w-3 h-3" />}
+            导出到Agent
+          </button>
+          <button
+            onClick={() => onImportFromAgent()}
+            disabled={bridgingAgent}
+            className="flex items-center gap-1 px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-xs text-gray-300 disabled:opacity-50 transition-colors"
+          >
+            <RotateCcw className="w-3 h-3" />
+            导入Agent
           </button>
           <button
             onClick={() => onExportAssets()}
@@ -2573,6 +2906,106 @@ function EpisodeWorkbench({
             onCollapse={() => setDetailPanelCollapsed(true)}
             onClose={() => setSelectedShotId(null)}
           />
+        </div>
+      )}
+
+      {showPromptHealthPanel && (
+        <div className="fixed inset-0 z-[67] bg-black/45 flex items-start justify-center p-4 md:p-8">
+          <div className="w-[min(980px,98vw)] max-h-[92vh] rounded-xl border border-gray-700 bg-gray-950/98 backdrop-blur shadow-2xl flex flex-col overflow-hidden">
+            <div className="h-12 px-4 border-b border-gray-800 flex items-center justify-between shrink-0">
+              <div>
+                <p className="text-sm font-semibold text-gray-100">提示词体检</p>
+                <p className="text-[11px] text-gray-500">
+                  {promptHealthScannedAt
+                    ? `最近扫描：${new Date(promptHealthScannedAt).toLocaleTimeString()}`
+                    : '扫描起始帧/尾帧/视频提示词风险'}
+                </p>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={runPromptHealthScan}
+                  className="p-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"
+                  title="重新扫描"
+                >
+                  {promptHealthLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                </button>
+                <button
+                  onClick={() => setShowPromptHealthPanel(false)}
+                  className="p-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"
+                  title="关闭体检面板"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+            <div className="px-4 py-2 border-b border-gray-800 text-xs text-gray-400">
+              风险项 {promptHealthIssues.length} 条 · 镜头总数 {shots.length}
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {promptHealthLoading && (
+                <div className="h-44 flex items-center justify-center text-xs text-gray-500 gap-2">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  正在扫描提示词风险...
+                </div>
+              )}
+              {!promptHealthLoading && promptHealthIssues.length === 0 && (
+                <div className="h-44 flex items-center justify-center text-sm text-emerald-300">
+                  当前集提示词未发现明显风险
+                </div>
+              )}
+              {!promptHealthLoading && promptHealthIssues.map((issue) => {
+                const issueId = issue.id || ''
+                const [shotId, issueFieldRaw] = issueId.split('::')
+                const issueField = issueFieldRaw && isPromptFieldKey(issueFieldRaw) ? issueFieldRaw : null
+                const fieldLabel = issueField
+                  ? (PROMPT_FIELD_META.find((item) => item.field === issueField)?.label || issueField)
+                  : (issue.field || '提示词')
+                const optimizing = optimizingPromptIssueId === issueId
+                return (
+                  <div key={issueId || `${issue.field}_${issue.label}_${issue.prompt.slice(0, 12)}`} className="rounded-lg border border-red-800/45 bg-red-950/15 p-3 space-y-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-xs font-medium text-red-100 line-clamp-1">{issue.label || '未命名提示词'}</p>
+                        <p className="text-[11px] text-red-200/80">{fieldLabel} · 风险分 {issue.risk_score || 0}</p>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() => {
+                            if (!shotId) return
+                            setSelectedShotId(shotId)
+                            setPreviewShotId(shotId)
+                            setDetailPanelCollapsed(false)
+                          }}
+                          className="text-[11px] px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 transition-colors"
+                        >
+                          定位镜头
+                        </button>
+                        <button
+                          onClick={() => void handleOptimizePromptIssue(issue)}
+                          disabled={optimizing}
+                          className="text-[11px] px-2 py-1 rounded bg-amber-700/70 hover:bg-amber-600/70 text-white disabled:opacity-50 transition-colors inline-flex items-center gap-1"
+                        >
+                          {optimizing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                          优化
+                        </button>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-gray-300 rounded border border-gray-800 bg-gray-950/70 px-2 py-1.5 line-clamp-3">
+                      {issue.prompt}
+                    </p>
+                    <div className="text-[11px] text-red-200/85">
+                      命中词：{issue.matches.slice(0, 4).map((item) => item.term).join('、')}
+                    </div>
+                    {issue.suggestions.length > 0 && (
+                      <div className="text-[11px] text-gray-300">
+                        建议：{issue.suggestions.slice(0, 3).map((item) => `${item.source}→${item.replacement}`).join('；')}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
         </div>
       )}
 
@@ -3059,6 +3492,10 @@ function ShotDetailPanel({
   const [inpaintPrompt, setInpaintPrompt] = useState((shot.prompt || shot.description || '').trim())
   const [maskData, setMaskData] = useState('')
   const [inpainting, setInpainting] = useState(false)
+  const [promptAnalysis, setPromptAnalysis] = useState<Partial<Record<PromptFieldKey, StudioPromptAnalysis>>>({})
+  const [checkingPromptField, setCheckingPromptField] = useState<Partial<Record<PromptFieldKey, boolean>>>({})
+  const [optimizingPromptField, setOptimizingPromptField] = useState<PromptFieldKey | null>(null)
+  const promptCheckTimerRef = useRef<Partial<Record<PromptFieldKey, number>>>({})
 
   useEffect(() => {
     setInpaintPrompt((shot.prompt || shot.description || '').trim())
@@ -3092,6 +3529,122 @@ function ShotDetailPanel({
     } finally {
       setInpainting(false)
     }
+  }
+
+  const runPromptCheck = useCallback(async (field: PromptFieldKey, value: string) => {
+    const prompt = value.trim()
+    if (!prompt) {
+      setPromptAnalysis((prev) => {
+        const next = { ...prev }
+        delete next[field]
+        return next
+      })
+      setCheckingPromptField((prev) => ({ ...prev, [field]: false }))
+      return
+    }
+    setCheckingPromptField((prev) => ({ ...prev, [field]: true }))
+    try {
+      const analysis = await studioPromptCheck(prompt)
+      setPromptAnalysis((prev) => ({ ...prev, [field]: analysis }))
+    } catch {
+      // ignore prompt-check transient errors in local field validation
+    } finally {
+      setCheckingPromptField((prev) => ({ ...prev, [field]: false }))
+    }
+  }, [])
+
+  const schedulePromptCheck = useCallback((field: PromptFieldKey, value: string) => {
+    const timer = promptCheckTimerRef.current[field]
+    if (timer) {
+      window.clearTimeout(timer)
+    }
+    promptCheckTimerRef.current[field] = window.setTimeout(() => {
+      void runPromptCheck(field, value)
+    }, 720)
+  }, [runPromptCheck])
+
+  const optimizePromptField = useCallback(async (field: PromptFieldKey) => {
+    const current = fieldValue(field).trim()
+    if (!current) return
+
+    setOptimizingPromptField(field)
+    try {
+      const optimized = await studioPromptOptimize(current, { use_llm: true })
+      const nextPrompt = (optimized.optimized_prompt || current).trim()
+      setEditing((prev) => ({ ...prev, [field]: nextPrompt }))
+      onUpdate({ [field]: nextPrompt })
+      await runPromptCheck(field, nextPrompt)
+    } finally {
+      setOptimizingPromptField(null)
+    }
+  }, [onUpdate, runPromptCheck, fieldValue])
+
+  useEffect(() => {
+    const timers = promptCheckTimerRef.current
+    return () => {
+      Object.values(timers).forEach((timer) => {
+        if (timer) window.clearTimeout(timer)
+      })
+    }
+  }, [])
+
+  useEffect(() => {
+    Object.values(promptCheckTimerRef.current).forEach((timer) => {
+      if (timer) window.clearTimeout(timer)
+    })
+    promptCheckTimerRef.current = {}
+    setPromptAnalysis({})
+    setCheckingPromptField({})
+    setOptimizingPromptField(null)
+    PROMPT_FIELD_META.forEach((meta) => {
+      const value = String((shot as Record<string, unknown>)[meta.field] || '')
+      if (value.trim()) {
+        void runPromptCheck(meta.field, value)
+      }
+    })
+  }, [runPromptCheck, shot.id, shot.prompt, shot.end_prompt, shot.video_prompt])
+
+  const renderPromptFieldFooter = (field: PromptFieldKey) => {
+    const checking = Boolean(checkingPromptField[field])
+    const analysis = promptAnalysis[field]
+    const hasRisk = Boolean(analysis && !analysis.safe && analysis.matches.length > 0)
+    return (
+      <div className="mt-1.5 space-y-1">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-[11px] text-gray-400 flex items-center gap-1.5">
+            {checking ? (
+              <>
+                <Loader2 className="w-3 h-3 animate-spin text-gray-500" />
+                检测中...
+              </>
+            ) : analysis ? (
+              analysis.safe ? (
+                <span className="text-emerald-300">安全</span>
+              ) : (
+                <span className="text-amber-300">命中 {analysis.matches.length} 项风险</span>
+              )
+            ) : (
+              <span className="text-gray-500">输入后自动检测</span>
+            )}
+          </div>
+          {hasRisk && (
+            <button
+              onClick={() => void optimizePromptField(field)}
+              disabled={optimizingPromptField === field}
+              className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] bg-amber-700/65 hover:bg-amber-600/75 text-white disabled:opacity-50 transition-colors"
+            >
+              {optimizingPromptField === field ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+              一键优化
+            </button>
+          )}
+        </div>
+        {hasRisk && analysis && analysis.suggestions.length > 0 && (
+          <p className="text-[10px] text-gray-400 leading-relaxed">
+            建议：{analysis.suggestions.slice(0, 3).map((item) => `${item.source}→${item.replacement}`).join('；')}
+          </p>
+        )}
+      </div>
+    )
   }
 
   return (
@@ -3196,23 +3749,35 @@ function ShotDetailPanel({
         <DetailField
           label="起始帧提示词"
           value={fieldValue('prompt')}
-          onChange={(v) => setEditing((p) => ({ ...p, prompt: v }))}
+          onChange={(v) => {
+            setEditing((p) => ({ ...p, prompt: v }))
+            schedulePromptCheck('prompt', v)
+          }}
           onBlur={() => handleSave('prompt')}
           multiline
+          footer={renderPromptFieldFooter('prompt')}
         />
         <DetailField
           label="尾帧提示词"
           value={fieldValue('end_prompt')}
-          onChange={(v) => setEditing((p) => ({ ...p, end_prompt: v }))}
+          onChange={(v) => {
+            setEditing((p) => ({ ...p, end_prompt: v }))
+            schedulePromptCheck('end_prompt', v)
+          }}
           onBlur={() => handleSave('end_prompt')}
           multiline
+          footer={renderPromptFieldFooter('end_prompt')}
         />
         <DetailField
           label="视频提示词"
           value={fieldValue('video_prompt')}
-          onChange={(v) => setEditing((p) => ({ ...p, video_prompt: v }))}
+          onChange={(v) => {
+            setEditing((p) => ({ ...p, video_prompt: v }))
+            schedulePromptCheck('video_prompt', v)
+          }}
           onBlur={() => handleSave('video_prompt')}
           multiline
+          footer={renderPromptFieldFooter('video_prompt')}
         />
         <DetailField
           label="旁白"
@@ -3303,12 +3868,14 @@ function DetailField({
   onChange,
   onBlur,
   multiline = false,
+  footer,
 }: {
   label: string
   value: string
   onChange: (v: string) => void
   onBlur: () => void
   multiline?: boolean
+  footer?: ReactNode
 }) {
   return (
     <div>
@@ -3329,6 +3896,7 @@ function DetailField({
           onBlur={onBlur}
         />
       )}
+      {footer}
     </div>
   )
 }
@@ -3815,6 +4383,360 @@ function SimpleTextDialog({
   )
 }
 
+function AgentProjectExportDialog({
+  projects,
+  loading,
+  exporting,
+  options,
+  onChangeOptions,
+  onRefresh,
+  onClose,
+  onConfirm,
+}: {
+  projects: AgentProjectOption[]
+  loading: boolean
+  exporting: boolean
+  options: AgentExportOptions
+  onChangeOptions: (patch: Partial<AgentExportOptions>) => void
+  onRefresh: () => void | Promise<void>
+  onClose: () => void
+  onConfirm: () => void | Promise<void>
+}) {
+  const [keyword, setKeyword] = useState('')
+  const filteredProjects = useMemo(() => {
+    const normalizedKeyword = keyword.trim().toLowerCase()
+    if (!normalizedKeyword) return projects
+    return projects.filter((project) => {
+      const brief = (project.creative_brief || {}) as Record<string, unknown>
+      const briefTitle = typeof brief.title === 'string' ? brief.title : ''
+      return [project.name, project.id, briefTitle]
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedKeyword)
+    })
+  }, [keyword, projects])
+  const selectedProject = projects.find((project) => project.id === options.selectedProjectId)
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+      <div className="bg-gray-900 rounded-xl border border-gray-700 w-full max-w-3xl max-h-[88vh] overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-200">导出到 Agent</h3>
+            <p className="text-xs text-gray-500 mt-0.5">可选择新建项目或覆盖已有项目</p>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-white" disabled={exporting}>
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-4 space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => onChangeOptions({ mode: 'new' })}
+              className={`px-3 py-2 rounded border text-sm transition-colors ${
+                options.mode === 'new'
+                  ? 'border-purple-500/70 bg-purple-900/25 text-purple-100'
+                  : 'border-gray-700 bg-gray-800/70 text-gray-300 hover:bg-gray-800'
+              }`}
+              disabled={exporting}
+            >
+              新建 Agent 项目
+            </button>
+            <button
+              onClick={() => onChangeOptions({ mode: 'existing' })}
+              className={`px-3 py-2 rounded border text-sm transition-colors ${
+                options.mode === 'existing'
+                  ? 'border-purple-500/70 bg-purple-900/25 text-purple-100'
+                  : 'border-gray-700 bg-gray-800/70 text-gray-300 hover:bg-gray-800'
+              }`}
+              disabled={exporting}
+            >
+              覆盖已有项目
+            </button>
+          </div>
+
+          {options.mode === 'new' ? (
+            <div className="rounded-lg border border-gray-800 bg-gray-950/40 p-3 space-y-2">
+              <label className="text-xs text-gray-500">项目名称（可选，不填则自动生成）</label>
+              <input
+                value={options.projectName}
+                onChange={(e) => onChangeOptions({ projectName: e.target.value })}
+                disabled={exporting}
+                placeholder="例如：竹取物语 · 第1幕 精修"
+                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-purple-500 disabled:opacity-60"
+              />
+            </div>
+          ) : (
+            <div className="rounded-lg border border-gray-800 bg-gray-950/35">
+              <div className="p-3 pb-2 flex items-center gap-2">
+                <input
+                  value={keyword}
+                  onChange={(e) => setKeyword(e.target.value)}
+                  placeholder="搜索 Agent 项目（名称 / ID / 标题）"
+                  className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+                  disabled={loading || exporting}
+                />
+                <button
+                  onClick={() => onRefresh()}
+                  disabled={loading || exporting}
+                  className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+                  刷新
+                </button>
+              </div>
+
+              {loading ? (
+                <div className="h-52 flex items-center justify-center text-gray-400 text-sm gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
+                  正在加载 Agent 项目列表...
+                </div>
+              ) : filteredProjects.length === 0 ? (
+                <div className="h-52 flex items-center justify-center text-gray-500 text-sm">
+                  {projects.length === 0 ? '暂无可覆盖的 Agent 项目' : '没有匹配的项目'}
+                </div>
+              ) : (
+                <div className="max-h-60 overflow-y-auto p-2 space-y-2">
+                  {filteredProjects.map((project) => {
+                    const brief = (project.creative_brief || {}) as Record<string, unknown>
+                    const briefTitle = typeof brief.title === 'string' ? brief.title : ''
+                    const updatedLabel = project.updated_at ? formatRelativeTime(project.updated_at) : '--'
+                    return (
+                      <button
+                        key={project.id}
+                        onClick={() => onChangeOptions({ selectedProjectId: project.id })}
+                        className={`w-full text-left rounded-lg border px-3 py-2 transition-colors ${
+                          options.selectedProjectId === project.id
+                            ? 'border-purple-500/70 bg-purple-900/25'
+                            : 'border-gray-800 bg-gray-900/55 hover:border-gray-600'
+                        }`}
+                        disabled={exporting}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-medium text-gray-100 truncate">{project.name || project.id}</p>
+                          <span className="text-[11px] text-gray-500 shrink-0">{updatedLabel}</span>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-1 truncate">ID: {project.id}</p>
+                        {briefTitle && (
+                          <p className="text-xs text-gray-400 mt-1 line-clamp-1">{briefTitle}</p>
+                        )}
+                        <div className="mt-1.5 text-[11px] text-gray-500">
+                          段落 {project.segments_count ?? '--'} · 元素 {project.elements_count ?? '--'}
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="rounded-lg border border-gray-800 bg-gray-950/40 p-3 space-y-2">
+            <p className="text-xs text-gray-500">同步选项</p>
+            <label className="flex items-center gap-2 text-sm text-gray-300">
+              <input
+                type="checkbox"
+                checked={options.includeSharedElements}
+                onChange={(e) => onChangeOptions({ includeSharedElements: e.target.checked })}
+                disabled={exporting}
+              />
+              包含系列共享元素
+            </label>
+            <label className="flex items-center gap-2 text-sm text-gray-300">
+              <input
+                type="checkbox"
+                checked={options.includeEpisodeElements}
+                onChange={(e) => onChangeOptions({ includeEpisodeElements: e.target.checked })}
+                disabled={exporting}
+              />
+              包含当前分幕元素
+            </label>
+            {options.mode === 'existing' && (
+              <label className="flex items-center gap-2 text-sm text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={options.preserveExistingMessages}
+                  onChange={(e) => onChangeOptions({ preserveExistingMessages: e.target.checked })}
+                  disabled={exporting}
+                />
+                保留 Agent 历史消息与记忆
+              </label>
+            )}
+          </div>
+        </div>
+
+        <div className="px-4 py-3 border-t border-gray-800 flex items-center justify-between">
+          <div className="text-xs text-gray-500 truncate pr-3">
+            {options.mode === 'existing'
+              ? (selectedProject ? `将覆盖：${selectedProject.name || selectedProject.id}` : '请选择要覆盖的 Agent 项目')
+              : (options.projectName.trim() ? `新建项目：${options.projectName.trim()}` : '将自动生成 Agent 项目名称')}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onClose}
+              className="px-3 py-1.5 rounded text-sm text-gray-400 hover:text-white"
+              disabled={exporting}
+            >
+              取消
+            </button>
+            <button
+              onClick={() => onConfirm()}
+              disabled={loading || exporting || (options.mode === 'existing' && !options.selectedProjectId)}
+              className="px-4 py-1.5 rounded bg-purple-600 hover:bg-purple-500 text-white text-sm disabled:opacity-50 flex items-center gap-1.5"
+            >
+              {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ChevronRight className="w-3.5 h-3.5" />}
+              {options.mode === 'existing' ? '覆盖并导出' : '新建并导出'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AgentProjectImportDialog({
+  projects,
+  loading,
+  importing,
+  selectedProjectId,
+  onSelectProject,
+  onRefresh,
+  onClose,
+  onConfirm,
+}: {
+  projects: AgentProjectOption[]
+  loading: boolean
+  importing: boolean
+  selectedProjectId: string
+  onSelectProject: (projectId: string) => void
+  onRefresh: () => void | Promise<void>
+  onClose: () => void
+  onConfirm: () => void | Promise<void>
+}) {
+  const [keyword, setKeyword] = useState('')
+  const filteredProjects = useMemo(() => {
+    const normalizedKeyword = keyword.trim().toLowerCase()
+    if (!normalizedKeyword) return projects
+    return projects.filter((project) => {
+      const brief = (project.creative_brief || {}) as Record<string, unknown>
+      const briefTitle = typeof brief.title === 'string' ? brief.title : ''
+      return [project.name, project.id, briefTitle]
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedKeyword)
+    })
+  }, [keyword, projects])
+  const selectedProject = projects.find((project) => project.id === selectedProjectId)
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+      <div className="bg-gray-900 rounded-xl border border-gray-700 w-full max-w-3xl max-h-[85vh] overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-200">从 Agent 导入项目</h3>
+            <p className="text-xs text-gray-500 mt-0.5">选择一个 Agent 项目并导入到当前分幕</p>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-4 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs text-gray-500">
+              导入将覆盖当前分幕的镜头内容，并同步 Agent 项目的元素信息。
+            </p>
+            <button
+              onClick={() => onRefresh()}
+              disabled={loading || importing}
+              className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+              刷新列表
+            </button>
+          </div>
+
+          <input
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            placeholder="搜索 Agent 项目（名称 / ID / 标题）"
+            className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+            disabled={loading || importing}
+          />
+
+          <div className="rounded-lg border border-gray-800 bg-gray-950/35">
+            {loading ? (
+              <div className="h-56 flex items-center justify-center text-gray-400 text-sm gap-2">
+                <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
+                正在加载 Agent 项目列表...
+              </div>
+            ) : filteredProjects.length === 0 ? (
+              <div className="h-56 flex items-center justify-center text-gray-500 text-sm">
+                {projects.length === 0 ? '暂无可导入的 Agent 项目' : '没有匹配的项目'}
+              </div>
+            ) : (
+              <div className="max-h-72 overflow-y-auto p-2 space-y-2">
+                {filteredProjects.map((project) => {
+                  const brief = (project.creative_brief || {}) as Record<string, unknown>
+                  const briefTitle = typeof brief.title === 'string' ? brief.title : ''
+                  const updatedLabel = project.updated_at ? formatRelativeTime(project.updated_at) : '--'
+                  return (
+                    <button
+                      key={project.id}
+                      onClick={() => onSelectProject(project.id)}
+                      className={`w-full text-left rounded-lg border px-3 py-2 transition-colors ${
+                        selectedProjectId === project.id
+                          ? 'border-purple-500/70 bg-purple-900/25'
+                          : 'border-gray-800 bg-gray-900/55 hover:border-gray-600'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-medium text-gray-100 truncate">{project.name || project.id}</p>
+                        <span className="text-[11px] text-gray-500 shrink-0">{updatedLabel}</span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1 truncate">ID: {project.id}</p>
+                      {briefTitle && (
+                        <p className="text-xs text-gray-400 mt-1 line-clamp-1">{briefTitle}</p>
+                      )}
+                      <div className="mt-1.5 text-[11px] text-gray-500">
+                        镜头段落 {project.segments_count ?? '--'} · 元素 {project.elements_count ?? '--'}
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="px-4 py-3 border-t border-gray-800 flex items-center justify-between">
+          <div className="text-xs text-gray-500 truncate pr-3">
+            {selectedProject ? `已选：${selectedProject.name || selectedProject.id}` : '请选择要导入的 Agent 项目'}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onClose}
+              className="px-3 py-1.5 rounded text-sm text-gray-400 hover:text-white"
+              disabled={importing}
+            >
+              取消
+            </button>
+            <button
+              onClick={() => onConfirm()}
+              disabled={!selectedProjectId || loading || importing}
+              className="px-4 py-1.5 rounded bg-purple-600 hover:bg-purple-500 text-white text-sm disabled:opacity-50 flex items-center gap-1.5"
+            >
+              {importing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+              导入所选项目
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ToastStack({
   toasts,
   onClose,
@@ -4077,9 +4999,120 @@ interface GenerationDefaults {
   enhance_max_tokens: number
 }
 
+type PromptModuleKey =
+  | 'script_split'
+  | 'element_extraction'
+  | 'episode_planning'
+  | 'episode_enhance'
+
+interface PromptTemplateConfig {
+  system: string
+  user: string
+}
+
+type CustomPromptsConfig = Record<PromptModuleKey, PromptTemplateConfig>
+
+const PROMPT_MODULE_META: Array<{ key: PromptModuleKey; label: string; description: string }> = [
+  {
+    key: 'script_split',
+    label: '脚本拆分',
+    description: '将完整脚本拆分为若干幕',
+  },
+  {
+    key: 'element_extraction',
+    label: '元素提取',
+    description: '提取角色/场景/道具等共享元素',
+  },
+  {
+    key: 'episode_planning',
+    label: '分集规划',
+    description: '为单集生成分镜与提示词',
+  },
+  {
+    key: 'episode_enhance',
+    label: '分镜增强',
+    description: '对既有分镜做 Script Doctor 式增强',
+  },
+]
+
+const DEFAULT_PROMPT_VARIABLE_HINTS: Record<PromptModuleKey, string[]> = {
+  script_split: ['full_script', 'target_episode_count', 'episode_duration_seconds', 'visual_style'],
+  element_extraction: ['full_script', 'acts_summary'],
+  episode_planning: [
+    'series_name',
+    'act_number',
+    'episode_title',
+    'series_bible',
+    'visual_style',
+    'shared_elements_list',
+    'prev_summary',
+    'script_excerpt',
+    'next_summary',
+    'target_duration_seconds',
+    'suggested_shot_count',
+  ],
+  episode_enhance: ['series_bible', 'shared_elements_list', 'episode_json', 'mode'],
+}
+
+function createEmptyCustomPrompts(): CustomPromptsConfig {
+  return {
+    script_split: { system: '', user: '' },
+    element_extraction: { system: '', user: '' },
+    episode_planning: { system: '', user: '' },
+    episode_enhance: { system: '', user: '' },
+  }
+}
+
+function normalizePromptTemplateConfig(raw: unknown): PromptTemplateConfig {
+  if (!raw || typeof raw !== 'object') return { system: '', user: '' }
+  const obj = raw as Record<string, unknown>
+  return {
+    system: typeof obj.system === 'string' ? obj.system : '',
+    user: typeof obj.user === 'string' ? obj.user : '',
+  }
+}
+
+function normalizeCustomPrompts(raw: unknown): CustomPromptsConfig {
+  const empty = createEmptyCustomPrompts()
+  if (!raw || typeof raw !== 'object') return empty
+  const obj = raw as Record<string, unknown>
+  const normalized: CustomPromptsConfig = { ...empty }
+  for (const module of PROMPT_MODULE_META) {
+    normalized[module.key] = normalizePromptTemplateConfig(obj[module.key])
+  }
+  return normalized
+}
+
+function normalizePromptVariableHints(raw: unknown): Record<PromptModuleKey, string[]> {
+  const normalized: Record<PromptModuleKey, string[]> = { ...DEFAULT_PROMPT_VARIABLE_HINTS }
+  if (!raw || typeof raw !== 'object') return normalized
+  const obj = raw as Record<string, unknown>
+  for (const module of PROMPT_MODULE_META) {
+    const list = obj[module.key]
+    if (Array.isArray(list)) {
+      normalized[module.key] = list.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    }
+  }
+  return normalized
+}
+
+function compactCustomPrompts(raw: CustomPromptsConfig): Record<string, PromptTemplateConfig> {
+  const compacted: Record<string, PromptTemplateConfig> = {}
+  for (const module of PROMPT_MODULE_META) {
+    const value = raw[module.key]
+    const system = value.system || ''
+    const user = value.user || ''
+    if (!system.trim() && !user.trim()) continue
+    compacted[module.key] = { system, user }
+  }
+  return compacted
+}
+
 function StudioSettingsPanel({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [activeTab, setActiveTab] = useState<'services' | 'prompts'>('services')
+  const [promptModule, setPromptModule] = useState<PromptModuleKey>('script_split')
   const [llm, setLlm] = useState<ServiceConfig>({ protocol: 'openai', apiKey: '', baseUrl: '', model: '' })
   const [image, setImage] = useState<ServiceConfig>({ protocol: 'wanxiang', apiKey: '', baseUrl: '', model: '' })
   const [video, setVideo] = useState<ServiceConfig>({ protocol: 'volcano', apiKey: '', baseUrl: '', model: '' })
@@ -4092,9 +5125,42 @@ function StudioSettingsPanel({ onClose }: { onClose: () => void }) {
     plan_max_tokens: 16000,
     enhance_max_tokens: 16000,
   })
+  const [customPrompts, setCustomPrompts] = useState<CustomPromptsConfig>(createEmptyCustomPrompts())
+  const [promptDefaults, setPromptDefaults] = useState<CustomPromptsConfig>(createEmptyCustomPrompts())
+  const [promptVariableHints, setPromptVariableHints] = useState<Record<PromptModuleKey, string[]>>(DEFAULT_PROMPT_VARIABLE_HINTS)
+
+  const currentPromptMeta = useMemo(
+    () => PROMPT_MODULE_META.find((item) => item.key === promptModule) || PROMPT_MODULE_META[0],
+    [promptModule],
+  )
+  const currentPromptCustom = customPrompts[promptModule]
+  const currentPromptDefaults = promptDefaults[promptModule]
+  const currentPromptVariableHints = promptVariableHints[promptModule] || []
+  const currentPromptUsesDefault =
+    !currentPromptCustom.system.trim() && !currentPromptCustom.user.trim()
 
   useEffect(() => {
-    studioGetSettings().then((data) => {
+    let mounted = true
+    const loadSettings = async () => {
+      const [settings, promptDefaultsResp] = await Promise.all([
+        studioGetSettings().catch(() => null),
+        studioGetPromptTemplateDefaults().catch(() => null),
+      ])
+
+      if (!mounted) return
+
+      if (promptDefaultsResp?.custom_prompts) {
+        setPromptDefaults(normalizeCustomPrompts(promptDefaultsResp.custom_prompts))
+      }
+      if (promptDefaultsResp?.variable_hints) {
+        setPromptVariableHints(normalizePromptVariableHints(promptDefaultsResp.variable_hints))
+      }
+
+      if (!settings) {
+        setLoading(false)
+        return
+      }
+
       const mapLoad = (raw: Record<string, unknown>): ServiceConfig => {
         const provider = (raw.provider as string) || ''
         return {
@@ -4104,11 +5170,11 @@ function StudioSettingsPanel({ onClose }: { onClose: () => void }) {
           model: (raw.model as string) || '',
         }
       }
-      if (data.llm) setLlm(mapLoad(data.llm as Record<string, unknown>))
-      if (data.image) setImage(mapLoad(data.image as Record<string, unknown>))
-      if (data.video) setVideo(mapLoad(data.video as Record<string, unknown>))
-      if (data.tts && typeof data.tts === 'object') {
-        const raw = data.tts as Record<string, unknown>
+      if (settings.llm) setLlm(mapLoad(settings.llm as Record<string, unknown>))
+      if (settings.image) setImage(mapLoad(settings.image as Record<string, unknown>))
+      if (settings.video) setVideo(mapLoad(settings.video as Record<string, unknown>))
+      if (settings.tts && typeof settings.tts === 'object') {
+        const raw = settings.tts as Record<string, unknown>
         setTts({
           appid: (raw.appid as string) || '',
           accessToken: (raw.accessToken as string) || '',
@@ -4116,8 +5182,8 @@ function StudioSettingsPanel({ onClose }: { onClose: () => void }) {
           voiceType: (raw.voiceType as string) || 'BV700_V2_streaming',
         })
       }
-      if (data.generation_defaults && typeof data.generation_defaults === 'object') {
-        const raw = data.generation_defaults as Record<string, unknown>
+      if (settings.generation_defaults && typeof settings.generation_defaults === 'object') {
+        const raw = settings.generation_defaults as Record<string, unknown>
         setDefaults((prev) => ({
           frame_width: Number(raw.frame_width) || prev.frame_width,
           frame_height: Number(raw.frame_height) || prev.frame_height,
@@ -4127,9 +5193,33 @@ function StudioSettingsPanel({ onClose }: { onClose: () => void }) {
           enhance_max_tokens: Number(raw.enhance_max_tokens) || prev.enhance_max_tokens,
         }))
       }
+
+      if (settings.custom_prompts) {
+        setCustomPrompts(normalizeCustomPrompts(settings.custom_prompts))
+      }
       setLoading(false)
-    }).catch(() => setLoading(false))
+    }
+
+    loadSettings().catch(() => {
+      if (mounted) setLoading(false)
+    })
+    return () => {
+      mounted = false
+    }
   }, [])
+
+  const updateCustomPrompt = useCallback(
+    (module: PromptModuleKey, field: keyof PromptTemplateConfig, value: string) => {
+      setCustomPrompts((prev) => ({
+        ...prev,
+        [module]: {
+          ...prev[module],
+          [field]: value,
+        },
+      }))
+    },
+    [],
+  )
 
   const handleSave = async () => {
     setSaving(true)
@@ -4152,6 +5242,7 @@ function StudioSettingsPanel({ onClose }: { onClose: () => void }) {
           voiceType: tts.voiceType,
         },
         generation_defaults: defaults,
+        custom_prompts: compactCustomPrompts(customPrompts),
       })
       onClose()
     } catch (e) {
@@ -4163,7 +5254,7 @@ function StudioSettingsPanel({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-      <div className="bg-gray-900 rounded-xl border border-gray-700 w-full max-w-xl max-h-[85vh] overflow-y-auto p-6">
+      <div className="bg-gray-900 rounded-xl border border-gray-700 w-full max-w-6xl max-h-[85vh] overflow-y-auto p-6">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-lg font-semibold text-gray-100 flex items-center gap-2">
             <Settings2 className="w-5 h-5 text-purple-400" />
@@ -4184,140 +5275,270 @@ function StudioSettingsPanel({ onClose }: { onClose: () => void }) {
               Studio 工作台拥有独立配置，不与 Agent / Module 共享。未配置时自动复用 Module 设置。
             </p>
 
-            <ServiceConfigForm
-              title="LLM 大语言模型"
-              description="用于脚本分幕、元素提取、分镜规划"
-              serviceKey="llm"
-              config={llm}
-              onChange={setLlm}
-            />
+            <div className="inline-flex bg-gray-800/70 border border-gray-700 rounded-lg p-1">
+              <button
+                onClick={() => setActiveTab('services')}
+                className={`px-3 py-1.5 text-xs rounded transition-colors ${
+                  activeTab === 'services'
+                    ? 'bg-purple-600 text-white'
+                    : 'text-gray-300 hover:text-white hover:bg-gray-700'
+                }`}
+              >
+                服务配置
+              </button>
+              <button
+                onClick={() => setActiveTab('prompts')}
+                className={`px-3 py-1.5 text-xs rounded transition-colors ${
+                  activeTab === 'prompts'
+                    ? 'bg-purple-600 text-white'
+                    : 'text-gray-300 hover:text-white hover:bg-gray-700'
+                }`}
+              >
+                提示词管理
+              </button>
+            </div>
 
-            <ServiceConfigForm
-              title="图像生成"
-              description="用于共享元素参考图、镜头起始帧"
-              serviceKey="image"
-              config={image}
-              onChange={setImage}
-            />
+            {activeTab === 'services' ? (
+              <div className="space-y-6">
+                <ServiceConfigForm
+                  title="LLM 大语言模型"
+                  description="用于脚本分幕、元素提取、分镜规划"
+                  serviceKey="llm"
+                  config={llm}
+                  onChange={setLlm}
+                />
 
-            <ServiceConfigForm
-              title="视频生成"
-              description="用于镜头视频生成"
-              serviceKey="video"
-              config={video}
-              onChange={setVideo}
-            />
+                <ServiceConfigForm
+                  title="图像生成"
+                  description="用于共享元素参考图、镜头起始帧"
+                  serviceKey="image"
+                  config={image}
+                  onChange={setImage}
+                />
 
-            <div className="p-4 rounded-lg bg-gray-800/50 border border-gray-700">
-              <h3 className="text-sm font-semibold text-gray-200 mb-1">语音合成（TTS）</h3>
-              <p className="text-xs text-gray-500 mb-3">用于镜头旁白/对白音频生成</p>
-              <div className="space-y-3">
-                <div>
-                  <label className="text-xs text-gray-400 block mb-1">App ID</label>
-                  <input
-                    value={tts.appid}
-                    onChange={(e) => setTts((prev) => ({ ...prev, appid: e.target.value }))}
-                    className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
-                    placeholder="火山引擎 App ID"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-gray-400 block mb-1">Access Token</label>
-                  <input
-                    type="password"
-                    value={tts.accessToken}
-                    onChange={(e) => setTts((prev) => ({ ...prev, accessToken: e.target.value }))}
-                    className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
-                    placeholder="火山引擎 Access Token"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-xs text-gray-400 block mb-1">Cluster</label>
-                    <input
-                      value={tts.cluster}
-                      onChange={(e) => setTts((prev) => ({ ...prev, cluster: e.target.value }))}
-                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
-                      placeholder="volcano_tts"
-                    />
+                <ServiceConfigForm
+                  title="视频生成"
+                  description="用于镜头视频生成"
+                  serviceKey="video"
+                  config={video}
+                  onChange={setVideo}
+                />
+
+                <div className="p-4 rounded-lg bg-gray-800/50 border border-gray-700">
+                  <h3 className="text-sm font-semibold text-gray-200 mb-1">语音合成（TTS）</h3>
+                  <p className="text-xs text-gray-500 mb-3">用于镜头旁白/对白音频生成</p>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">App ID</label>
+                      <input
+                        value={tts.appid}
+                        onChange={(e) => setTts((prev) => ({ ...prev, appid: e.target.value }))}
+                        className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                        placeholder="火山引擎 App ID"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Access Token</label>
+                      <input
+                        type="password"
+                        value={tts.accessToken}
+                        onChange={(e) => setTts((prev) => ({ ...prev, accessToken: e.target.value }))}
+                        className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                        placeholder="火山引擎 Access Token"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs text-gray-400 block mb-1">Cluster</label>
+                        <input
+                          value={tts.cluster}
+                          onChange={(e) => setTts((prev) => ({ ...prev, cluster: e.target.value }))}
+                          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                          placeholder="volcano_tts"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-400 block mb-1">默认音色</label>
+                        <input
+                          value={tts.voiceType}
+                          onChange={(e) => setTts((prev) => ({ ...prev, voiceType: e.target.value }))}
+                          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                          placeholder="BV700_V2_streaming"
+                        />
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <label className="text-xs text-gray-400 block mb-1">默认音色</label>
-                    <input
-                      value={tts.voiceType}
-                      onChange={(e) => setTts((prev) => ({ ...prev, voiceType: e.target.value }))}
-                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
-                      placeholder="BV700_V2_streaming"
-                    />
+                </div>
+
+                <div className="p-4 rounded-lg bg-gray-800/50 border border-gray-700">
+                  <h3 className="text-sm font-semibold text-gray-200 mb-1">默认生成参数</h3>
+                  <p className="text-xs text-gray-500 mb-3">用于控制默认画面、视频和 LLM token 配置</p>
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-3 gap-3">
+                      <div>
+                        <label className="text-xs text-gray-400 block mb-1">帧宽度</label>
+                        <input
+                          type="number"
+                          value={defaults.frame_width}
+                          onChange={(e) => setDefaults((prev) => ({ ...prev, frame_width: parseInt(e.target.value) || 1280 }))}
+                          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-400 block mb-1">帧高度</label>
+                        <input
+                          type="number"
+                          value={defaults.frame_height}
+                          onChange={(e) => setDefaults((prev) => ({ ...prev, frame_height: parseInt(e.target.value) || 720 }))}
+                          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-400 block mb-1">默认视频时长(s)</label>
+                        <input
+                          type="number"
+                          value={defaults.video_duration_seconds}
+                          onChange={(e) => setDefaults((prev) => ({ ...prev, video_duration_seconds: parseInt(e.target.value) || 6 }))}
+                          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                        />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div>
+                        <label className="text-xs text-gray-400 block mb-1">split max_tokens</label>
+                        <input
+                          type="number"
+                          value={defaults.split_max_tokens}
+                          onChange={(e) => setDefaults((prev) => ({ ...prev, split_max_tokens: parseInt(e.target.value) || 8000 }))}
+                          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-400 block mb-1">plan max_tokens</label>
+                        <input
+                          type="number"
+                          value={defaults.plan_max_tokens}
+                          onChange={(e) => setDefaults((prev) => ({ ...prev, plan_max_tokens: parseInt(e.target.value) || 16000 }))}
+                          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-400 block mb-1">enhance max_tokens</label>
+                        <input
+                          type="number"
+                          value={defaults.enhance_max_tokens}
+                          onChange={(e) => setDefaults((prev) => ({ ...prev, enhance_max_tokens: parseInt(e.target.value) || 16000 }))}
+                          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
-
-            <div className="p-4 rounded-lg bg-gray-800/50 border border-gray-700">
-              <h3 className="text-sm font-semibold text-gray-200 mb-1">默认生成参数</h3>
-              <p className="text-xs text-gray-500 mb-3">用于控制默认画面、视频和 LLM token 配置</p>
-              <div className="space-y-3">
-                <div className="grid grid-cols-3 gap-3">
-                  <div>
-                    <label className="text-xs text-gray-400 block mb-1">帧宽度</label>
-                    <input
-                      type="number"
-                      value={defaults.frame_width}
-                      onChange={(e) => setDefaults((prev) => ({ ...prev, frame_width: parseInt(e.target.value) || 1280 }))}
-                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-400 block mb-1">帧高度</label>
-                    <input
-                      type="number"
-                      value={defaults.frame_height}
-                      onChange={(e) => setDefaults((prev) => ({ ...prev, frame_height: parseInt(e.target.value) || 720 }))}
-                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-400 block mb-1">默认视频时长(s)</label>
-                    <input
-                      type="number"
-                      value={defaults.video_duration_seconds}
-                      onChange={(e) => setDefaults((prev) => ({ ...prev, video_duration_seconds: parseInt(e.target.value) || 6 }))}
-                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
-                    />
-                  </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex flex-wrap gap-2">
+                  {PROMPT_MODULE_META.map((module) => (
+                    <button
+                      key={module.key}
+                      onClick={() => setPromptModule(module.key)}
+                      className={`px-3 py-2 text-xs rounded-lg border transition-colors ${
+                        promptModule === module.key
+                          ? 'bg-purple-600/20 text-purple-100 border-purple-500/60'
+                          : 'bg-gray-800/60 text-gray-300 border-gray-700 hover:border-gray-500 hover:text-gray-100'
+                      }`}
+                    >
+                      {module.label}
+                    </button>
+                  ))}
                 </div>
-                <div className="grid grid-cols-3 gap-3">
-                  <div>
-                    <label className="text-xs text-gray-400 block mb-1">split max_tokens</label>
-                    <input
-                      type="number"
-                      value={defaults.split_max_tokens}
-                      onChange={(e) => setDefaults((prev) => ({ ...prev, split_max_tokens: parseInt(e.target.value) || 8000 }))}
-                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
-                    />
+
+                <div className="rounded-lg border border-gray-700 bg-gray-800/40 p-4 space-y-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-gray-100">{currentPromptMeta.label}</p>
+                      <p className="text-xs text-gray-500 mt-1">{currentPromptMeta.description}</p>
+                      <div className="mt-2">
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] border ${
+                            currentPromptUsesDefault
+                              ? 'border-gray-600 text-gray-300 bg-gray-800/70'
+                              : 'border-purple-500/50 text-purple-100 bg-purple-500/15'
+                          }`}
+                        >
+                          {currentPromptUsesDefault ? '使用系统默认模板' : '已自定义模板'}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() =>
+                        setCustomPrompts((prev) => ({
+                          ...prev,
+                          [promptModule]: { system: '', user: '' },
+                        }))
+                      }
+                      className="px-3 py-1.5 text-xs rounded border border-gray-600 text-gray-300 hover:text-gray-100 hover:border-gray-500"
+                    >
+                      恢复当前模块默认
+                    </button>
                   </div>
+
                   <div>
-                    <label className="text-xs text-gray-400 block mb-1">plan max_tokens</label>
-                    <input
-                      type="number"
-                      value={defaults.plan_max_tokens}
-                      onChange={(e) => setDefaults((prev) => ({ ...prev, plan_max_tokens: parseInt(e.target.value) || 16000 }))}
-                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
-                    />
+                    <p className="text-xs text-gray-500 mb-2">可用变量</p>
+                    <div className="flex flex-wrap gap-2">
+                      {currentPromptVariableHints.map((token) => (
+                        <code
+                          key={token}
+                          className="px-2 py-0.5 rounded text-[11px] bg-gray-800 border border-gray-700 text-gray-300"
+                        >
+                          {`{${token}}`}
+                        </code>
+                      ))}
+                    </div>
                   </div>
-                  <div>
-                    <label className="text-xs text-gray-400 block mb-1">enhance max_tokens</label>
-                    <input
-                      type="number"
-                      value={defaults.enhance_max_tokens}
-                      onChange={(e) => setDefaults((prev) => ({ ...prev, enhance_max_tokens: parseInt(e.target.value) || 16000 }))}
-                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
-                    />
+
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs text-gray-300">系统提示词（System Prompt）</p>
+                        <button
+                          onClick={() => updateCustomPrompt(promptModule, 'system', currentPromptDefaults.system)}
+                          className="text-[11px] px-2 py-1 rounded border border-gray-600 text-gray-400 hover:text-gray-200 hover:border-gray-500"
+                        >
+                          填入默认模板
+                        </button>
+                      </div>
+                      <textarea
+                        value={currentPromptCustom.system}
+                        onChange={(e) => updateCustomPrompt(promptModule, 'system', e.target.value)}
+                        rows={12}
+                        className="w-full resize-y bg-gray-800 border border-gray-700 rounded px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+                        placeholder="留空时自动使用系统默认模板"
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs text-gray-300">用户提示词模板（User Prompt）</p>
+                        <button
+                          onClick={() => updateCustomPrompt(promptModule, 'user', currentPromptDefaults.user)}
+                          className="text-[11px] px-2 py-1 rounded border border-gray-600 text-gray-400 hover:text-gray-200 hover:border-gray-500"
+                        >
+                          填入默认模板
+                        </button>
+                      </div>
+                      <textarea
+                        value={currentPromptCustom.user}
+                        onChange={(e) => updateCustomPrompt(promptModule, 'user', e.target.value)}
+                        rows={12}
+                        className="w-full resize-y bg-gray-800 border border-gray-700 rounded px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+                        placeholder="留空时自动使用系统默认模板"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
+            )}
 
             <div className="flex justify-end gap-3 pt-4 border-t border-gray-800">
               <button
