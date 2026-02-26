@@ -3,6 +3,7 @@
 独立于 Agent 模块，复用工具服务类（LLMService / ImageService / VideoService / TTSService），
 拥有自己的实例和配置。
 """
+import asyncio
 import json
 import math
 import re
@@ -69,10 +70,11 @@ class StudioService:
 
         # LLM
         llm_cfg = settings.get("llm") or {}
-        if llm_cfg.get("apiKey"):
+        llm_api_key = str(llm_cfg.get("apiKey") or "").strip()
+        if llm_api_key:
             self.llm = LLMService(
                 provider=llm_cfg.get("provider", "qwen"),
-                api_key=llm_cfg["apiKey"],
+                api_key=llm_api_key,
                 base_url=llm_cfg.get("baseUrl"),
                 model=llm_cfg.get("model"),
             )
@@ -80,23 +82,33 @@ class StudioService:
 
         # Image
         img_cfg = settings.get("image") or {}
-        if img_cfg.get("provider"):
-            self.image = ImageService(
-                provider=img_cfg["provider"],
-                api_key=img_cfg.get("apiKey", ""),
-                base_url=img_cfg.get("baseUrl", ""),
-                model=img_cfg.get("model", ""),
-            )
+        img_provider = str(img_cfg.get("provider") or "").strip()
+        img_api_key = str(img_cfg.get("apiKey") or "").strip()
+        if img_provider and img_provider != "placeholder":
+            if img_provider in {"comfyui", "sd-webui"} or img_api_key:
+                self.image = ImageService(
+                    provider=img_provider,
+                    api_key=img_api_key,
+                    base_url=img_cfg.get("baseUrl", ""),
+                    model=img_cfg.get("model", ""),
+                )
+            else:
+                print(f"[Studio] 图像服务未激活：provider={img_provider} 缺少 API Key")
 
         # Video
         vid_cfg = settings.get("video") or {}
-        if vid_cfg.get("provider"):
-            self.video = VideoService(
-                provider=vid_cfg["provider"],
-                api_key=vid_cfg.get("apiKey", ""),
-                base_url=vid_cfg.get("baseUrl", ""),
-                model=vid_cfg.get("model", ""),
-            )
+        vid_provider = str(vid_cfg.get("provider") or "").strip()
+        vid_api_key = str(vid_cfg.get("apiKey") or "").strip()
+        if vid_provider and vid_provider != "none":
+            if vid_api_key:
+                self.video = VideoService(
+                    provider=vid_provider,
+                    api_key=vid_api_key,
+                    base_url=vid_cfg.get("baseUrl", ""),
+                    model=vid_cfg.get("model", ""),
+                )
+            else:
+                print(f"[Studio] 视频服务未激活：provider={vid_provider} 缺少 API Key")
 
         # TTS
         tts_cfg = settings.get("tts") or {}
@@ -117,15 +129,15 @@ class StudioService:
         services = {
             "llm": {
                 "configured": self.llm is not None,
-                "message": "" if self.llm else "请先在设置中配置 LLM 服务",
+                "message": "" if self.llm else "请先在设置中配置 LLM 服务（含 API Key）",
             },
             "image": {
                 "configured": self.image is not None,
-                "message": "" if self.image else "请先在设置中配置图像服务",
+                "message": "" if self.image else "请先在设置中配置图像服务（含 API Key）",
             },
             "video": {
                 "configured": self.video is not None,
-                "message": "" if self.video else "请先在设置中配置视频服务",
+                "message": "" if self.video else "请先在设置中配置视频服务（含 API Key）",
             },
             "tts": {
                 "configured": self.tts is not None,
@@ -140,6 +152,250 @@ class StudioService:
     # ------------------------------------------------------------------
     # 内部工具
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _looks_like_base64_image(value: str) -> bool:
+        candidate = (value or "").strip()
+        if len(candidate) < 128:
+            return False
+        if candidate.startswith(("http://", "https://", "data:image/")):
+            return False
+        if not re.fullmatch(r"[A-Za-z0-9+/=\s]+", candidate):
+            return False
+        # 删除空白后长度需要是 4 的倍数，尽量降低误判
+        compact = re.sub(r"\s+", "", candidate)
+        return len(compact) % 4 == 0
+
+    @staticmethod
+    def _is_placeholder_image_url(url: str) -> bool:
+        lowered = (url or "").strip().lower()
+        return "picsum.photos/" in lowered
+
+    def _normalize_image_result_url(self, result: Dict[str, Any]) -> str:
+        if not isinstance(result, dict):
+            return ""
+
+        url = str(result.get("url") or result.get("image_url") or result.get("output_url") or "").strip()
+        if not url:
+            b64 = str(result.get("b64_json") or "").strip()
+            if b64:
+                url = b64
+
+        if not url:
+            data = result.get("data")
+            if isinstance(data, list) and data:
+                first = data[0] if isinstance(data[0], dict) else {}
+                if isinstance(first, dict):
+                    url = str(
+                        first.get("url")
+                        or first.get("image_url")
+                        or first.get("b64_json")
+                        or ""
+                    ).strip()
+
+        if not url:
+            return ""
+        if url.startswith(("http://", "https://", "data:image/")):
+            return url
+
+        if self._looks_like_base64_image(url):
+            compact = re.sub(r"\s+", "", url)
+            return f"data:image/png;base64,{compact}"
+
+        return url
+
+    def _validate_generated_image_url(
+        self,
+        url: str,
+        *,
+        error_code_empty: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        normalized = (url or "").strip()
+        provider = str(getattr(self.image, "provider", "") or "")
+        payload_context = {
+            "provider": provider,
+            **(context or {}),
+        }
+
+        if not normalized:
+            raise StudioServiceError(
+                "图像服务未返回有效图片，请检查模型和提示词后重试",
+                error_code=error_code_empty,
+                context=payload_context,
+            )
+
+        if provider and provider != "placeholder" and self._is_placeholder_image_url(normalized):
+            raise StudioServiceError(
+                "图像服务返回占位图，通常表示接口调用失败或配置无效",
+                error_code="image_placeholder_result",
+                context={
+                    **payload_context,
+                    "url_preview": normalized[:160],
+                },
+            )
+
+        return normalized
+
+    @staticmethod
+    def _normalize_video_status(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        if raw in {"completed", "succeeded", "success", "done", "video_ready"}:
+            return "completed"
+        if raw in {"processing", "pending", "submitted", "queued", "running", "in_progress", "video_processing"}:
+            return "processing"
+        if raw in {"failed", "error", "timeout", "cancelled", "canceled", "video_failed", "video_timeout"}:
+            return "error"
+        return raw or "unknown"
+
+    @staticmethod
+    def _extract_video_url(payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return ""
+
+        for key in ("video_url", "videoUrl", "url"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        output = payload.get("output")
+        if isinstance(output, dict):
+            for key in ("video_url", "videoUrl", "url"):
+                value = output.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+
+        data = payload.get("data")
+        if isinstance(data, list) and data:
+            first = data[0]
+            if isinstance(first, dict):
+                for key in ("video_url", "videoUrl", "url"):
+                    value = first.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+
+        return ""
+
+    def _video_poll_interval_seconds(self) -> float:
+        raw = self.generation_defaults.get("video_poll_interval_seconds", 5)
+        try:
+            value = float(raw)
+        except Exception:
+            value = 5.0
+        return max(1.0, min(30.0, value))
+
+    def _video_poll_timeout_seconds(self) -> float:
+        raw = self.generation_defaults.get("video_poll_timeout_seconds", 600)
+        try:
+            value = float(raw)
+        except Exception:
+            value = 600.0
+        return max(30.0, min(1800.0, value))
+
+    async def _wait_video_result(
+        self,
+        shot_id: str,
+        initial_result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not isinstance(initial_result, dict):
+            raise StudioServiceError(
+                "视频服务返回格式无效",
+                error_code="video_invalid_result",
+                context={"shot_id": shot_id},
+            )
+
+        task_id = str(initial_result.get("task_id") or initial_result.get("taskId") or "").strip()
+        first_url = self._extract_video_url(initial_result)
+        first_status = self._normalize_video_status(initial_result.get("status"))
+
+        if first_url:
+            return {
+                "task_id": task_id,
+                "video_url": first_url,
+                "status": "completed",
+                "poll_elapsed": 0.0,
+                "raw": initial_result,
+            }
+
+        if first_status == "error":
+            raise StudioServiceError(
+                f"视频生成失败: {str(initial_result.get('error') or '未知错误')}",
+                error_code="video_generation_failed",
+                context={"shot_id": shot_id, "task_id": task_id or None},
+            )
+
+        if first_status == "completed" and not first_url and not task_id:
+            raise StudioServiceError(
+                "视频任务已完成但未返回视频地址",
+                error_code="video_result_missing_url",
+                context={"shot_id": shot_id},
+            )
+
+        if not task_id and first_status != "processing":
+            raise StudioServiceError(
+                "视频任务未返回 task_id，无法继续查询状态",
+                error_code="video_missing_task_id",
+                context={"shot_id": shot_id, "status": first_status},
+            )
+
+        if not task_id:
+            raise StudioServiceError(
+                "视频任务未返回 task_id，无法继续查询状态",
+                error_code="video_missing_task_id",
+                context={"shot_id": shot_id},
+            )
+
+        interval = self._video_poll_interval_seconds()
+        timeout = self._video_poll_timeout_seconds()
+        elapsed = 0.0
+        last_error = ""
+
+        while elapsed < timeout:
+            await asyncio.sleep(interval)
+            elapsed += interval
+
+            try:
+                polled = await self.video.check_task_status(task_id)
+            except Exception as e:
+                last_error = str(e)
+                continue
+
+            polled_status = self._normalize_video_status(polled.get("status"))
+            polled_url = self._extract_video_url(polled)
+
+            if polled_url:
+                return {
+                    "task_id": task_id,
+                    "video_url": polled_url,
+                    "status": "completed",
+                    "poll_elapsed": round(elapsed, 2),
+                    "raw": polled,
+                }
+
+            if polled_status == "error":
+                raise StudioServiceError(
+                    f"视频生成失败: {str(polled.get('error') or '未知错误')}",
+                    error_code="video_generation_failed",
+                    context={"shot_id": shot_id, "task_id": task_id},
+                )
+
+            if polled_status == "completed":
+                raise StudioServiceError(
+                    "视频任务已完成但未返回视频地址",
+                    error_code="video_result_missing_url",
+                    context={"shot_id": shot_id, "task_id": task_id},
+                )
+
+        raise StudioServiceError(
+            "视频生成超时，请稍后重试",
+            error_code="video_generation_timeout",
+            context={
+                "shot_id": shot_id,
+                "task_id": task_id,
+                "timeout_seconds": timeout,
+                "last_error": last_error or None,
+            },
+        )
 
     @staticmethod
     def _extract_json(reply: str) -> Optional[Any]:
@@ -804,16 +1060,21 @@ class StudioService:
             height=height,
         )
 
-        url = result.get("url", "")
-        if url:
-            # 更新元素的 image_url 和 image_history
-            history = el.get("image_history") or []
-            if el.get("image_url"):
-                history.append(el["image_url"])
-            self.storage.update_shared_element(element_id, {
-                "image_url": url,
-                "image_history": history,
-            })
+        url = self._normalize_image_result_url(result)
+        url = self._validate_generated_image_url(
+            url,
+            error_code_empty="element_image_empty_result",
+            context={"element_id": element_id, "stage": "element"},
+        )
+
+        # 更新元素的 image_url 和 image_history
+        history = el.get("image_history") or []
+        if el.get("image_url"):
+            history.append(el["image_url"])
+        self.storage.update_shared_element(element_id, {
+            "image_url": url,
+            "image_history": history,
+        })
 
         return {"element_id": element_id, "image_url": url, "result": result}
 
@@ -855,17 +1116,21 @@ class StudioService:
             height=height,
         )
 
-        url = result.get("url", "")
-        if url:
-            history = shot.get("frame_history") or []
-            if not isinstance(history, list):
-                history = []
-            if shot.get("start_image_url"):
-                history.append(shot["start_image_url"])
-            self.storage.update_shot(shot_id, {
-                "start_image_url": url,
-                "frame_history": history,
-            })
+        url = self._normalize_image_result_url(result)
+        url = self._validate_generated_image_url(
+            url,
+            error_code_empty="shot_frame_empty_result",
+            context={"shot_id": shot_id, "stage": "frame"},
+        )
+        history = shot.get("frame_history") or []
+        if not isinstance(history, list):
+            history = []
+        if shot.get("start_image_url"):
+            history.append(shot["start_image_url"])
+        self.storage.update_shot(shot_id, {
+            "start_image_url": url,
+            "frame_history": history,
+        })
 
         return {"shot_id": shot_id, "start_image_url": url, "result": result}
 
@@ -907,9 +1172,13 @@ class StudioService:
             height=height,
         )
 
-        url = result.get("url", "")
-        if url:
-            self.storage.update_shot(shot_id, {"end_image_url": url})
+        url = self._normalize_image_result_url(result)
+        url = self._validate_generated_image_url(
+            url,
+            error_code_empty="shot_end_frame_empty_result",
+            context={"shot_id": shot_id, "stage": "end_frame"},
+        )
+        self.storage.update_shot(shot_id, {"end_image_url": url})
 
         return {"shot_id": shot_id, "end_image_url": url, "result": result}
 
@@ -1011,13 +1280,12 @@ class StudioService:
                 height=frame_h,
             )
 
-        url = result.get("url", "")
-        if not url:
-            raise StudioServiceError(
-                "局部重绘未返回有效图片",
-                error_code="inpaint_empty_result",
-                context={"shot_id": shot_id, "mode": mode},
-            )
+        url = self._normalize_image_result_url(result)
+        url = self._validate_generated_image_url(
+            url,
+            error_code_empty="inpaint_empty_result",
+            context={"shot_id": shot_id, "mode": mode, "stage": "inpaint"},
+        )
 
         history = shot.get("frame_history") or []
         if not isinstance(history, list):
@@ -1077,7 +1345,7 @@ class StudioService:
             video_history = shot.get("video_history") or []
             if not isinstance(video_history, list):
                 video_history = []
-            result = await self.video.generate(
+            submit_result = await self.video.generate(
                 image_url=shot["start_image_url"],
                 prompt=video_prompt,
                 duration=duration,
@@ -1086,15 +1354,24 @@ class StudioService:
                 last_frame_url=shot.get("end_image_url"),
             )
 
-            video_url = result.get("video_url", "")
-            if existing_video:
+            final_result = await self._wait_video_result(shot_id, submit_result)
+            video_url = str(final_result.get("video_url") or "").strip()
+
+            if existing_video and existing_video != video_url:
                 video_history.append(existing_video)
+
             self.storage.update_shot(shot_id, {
                 "video_url": video_url,
                 "video_history": video_history,
-                "status": "completed" if video_url else "failed",
+                "status": "completed",
             })
-            return {"shot_id": shot_id, "video_url": video_url, "result": result}
+            return {
+                "shot_id": shot_id,
+                "video_url": video_url,
+                "task_id": final_result.get("task_id"),
+                "poll_elapsed": final_result.get("poll_elapsed", 0),
+                "result": final_result.get("raw") or submit_result,
+            }
 
         except Exception as e:
             self.storage.update_shot(shot_id, {"status": "failed"})

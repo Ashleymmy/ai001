@@ -1510,6 +1510,13 @@ export default function StudioPage() {
               onExportVideo={() => handleExportEpisode('video')}
               onExportToAgent={handleExportToAgent}
               onImportFromAgent={handleImportFromAgent}
+              onUpdateElement={(elementId, updates) => store.updateElement(elementId, updates)}
+              onDeleteElement={(elementId) => store.deleteElement(elementId)}
+              onGenerateElementImage={async (elementId) => {
+                const ok = await ensureConfigReady(['image'])
+                if (!ok) return
+                await store.generateElementImage(elementId)
+              }}
               exporting={exporting}
               bridgingAgent={bridgingAgent}
               planning={store.planning}
@@ -2233,6 +2240,10 @@ function SeriesOverview({
         <ElementLibraryPanel
           sharedElements={elements}
           episodeElements={[]}
+          onUpdateSharedElement={onUpdateElement}
+          onDeleteSharedElement={onDeleteElement}
+          onGenerateSharedElementImage={onGenerateElementImage}
+          generating={generating}
           onClose={() => setShowElementLibrary(false)}
         />
       )}
@@ -2267,6 +2278,9 @@ function EpisodeWorkbench({
   onExportVideo,
   onExportToAgent,
   onImportFromAgent,
+  onUpdateElement,
+  onDeleteElement,
+  onGenerateElementImage,
   exporting,
   bridgingAgent,
   planning,
@@ -2294,6 +2308,9 @@ function EpisodeWorkbench({
   onExportVideo: () => void | Promise<void>
   onExportToAgent: () => void | Promise<void>
   onImportFromAgent: () => void | Promise<void>
+  onUpdateElement: (elementId: string, updates: Record<string, unknown>) => void | Promise<void>
+  onDeleteElement: (elementId: string) => void | Promise<void>
+  onGenerateElementImage: (elementId: string) => void | Promise<void>
   exporting: boolean
   bridgingAgent: boolean
   planning: boolean
@@ -3263,6 +3280,10 @@ function EpisodeWorkbench({
         <ElementLibraryPanel
           sharedElements={elements}
           episodeElements={episodeElements}
+          onUpdateSharedElement={onUpdateElement}
+          onDeleteSharedElement={onDeleteElement}
+          onGenerateSharedElementImage={onGenerateElementImage}
+          generating={generating}
           onClose={() => setShowElementLibrary(false)}
         />
       )}
@@ -3904,15 +3925,25 @@ function DetailField({
 function ElementLibraryPanel({
   sharedElements,
   episodeElements,
+  onUpdateSharedElement,
+  onDeleteSharedElement,
+  onGenerateSharedElementImage,
+  generating = false,
   onClose,
 }: {
   sharedElements: StudioElement[]
   episodeElements: StudioEpisodeElement[]
+  onUpdateSharedElement?: (elementId: string, updates: Record<string, unknown>) => void | Promise<void>
+  onDeleteSharedElement?: (elementId: string) => void | Promise<void>
+  onGenerateSharedElementImage?: (elementId: string) => void | Promise<void>
+  generating?: boolean
   onClose: () => void
 }) {
   const [keyword, setKeyword] = useState('')
   const [typeFilter, setTypeFilter] = useState<'all' | 'character' | 'scene' | 'object'>('all')
   const [favoriteOnly, setFavoriteOnly] = useState(false)
+  const [editingElement, setEditingElement] = useState<StudioElement | null>(null)
+  const [historyElement, setHistoryElement] = useState<StudioElement | null>(null)
 
   const norm = keyword.trim().toLowerCase()
   const filterByKeyword = (name: string, desc: string) =>
@@ -3977,7 +4008,37 @@ function ElementLibraryPanel({
                   <div className="flex items-center gap-2 mb-2">
                     <span className="text-xs px-1.5 py-0.5 rounded bg-gray-800 text-gray-400">{el.type}</span>
                     <span className="text-sm text-gray-200 truncate">{el.name}</span>
-                    {el.is_favorite === 1 && <Star className="w-3.5 h-3.5 text-yellow-300 ml-auto" />}
+                    <div className="ml-auto flex items-center gap-1">
+                      {onUpdateSharedElement && (
+                        <button
+                          onClick={() => onUpdateSharedElement(el.id, { is_favorite: el.is_favorite === 1 ? 0 : 1 })}
+                          className={`${el.is_favorite === 1 ? 'text-yellow-300' : 'text-gray-500 hover:text-yellow-300'} transition-colors`}
+                          title={el.is_favorite === 1 ? '取消收藏' : '收藏'}
+                        >
+                          <Star className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      {onUpdateSharedElement && (
+                        <button
+                          onClick={() => setEditingElement(el)}
+                          className="text-gray-500 hover:text-white transition-colors"
+                          title="编辑素材"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      {onDeleteSharedElement && (
+                        <button
+                          onClick={() => {
+                            if (confirm(`确定删除素材「${el.name}」吗？`)) onDeleteSharedElement(el.id)
+                          }}
+                          className="text-gray-500 hover:text-red-400 transition-colors"
+                          title="删除素材"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                   {el.image_url ? (
                     <img src={el.image_url} alt={el.name} className="w-full h-24 rounded object-cover mb-2" />
@@ -3987,6 +4048,26 @@ function ElementLibraryPanel({
                     </div>
                   )}
                   <p className="text-xs text-gray-400 line-clamp-3">{el.description}</p>
+                  <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+                    {onGenerateSharedElementImage && (
+                      <button
+                        onClick={() => onGenerateSharedElementImage(el.id)}
+                        disabled={generating}
+                        className="text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 disabled:opacity-50 inline-flex items-center gap-1 transition-colors"
+                      >
+                        {generating ? <Loader2 className="w-3 h-3 animate-spin" /> : <ImageIcon className="w-3 h-3" />}
+                        {el.image_url ? '重做参考图' : '生成参考图'}
+                      </button>
+                    )}
+                    {onUpdateSharedElement && el.image_history && el.image_history.length > 0 && (
+                      <button
+                        onClick={() => setHistoryElement(el)}
+                        className="text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"
+                      >
+                        历史({el.image_history.length})
+                      </button>
+                    )}
+                  </div>
 
                   <HoverOverviewPanel maxWidthClass="max-w-4xl">
                     <div className="grid gap-4 md:grid-cols-[1.3fr_1fr]">
@@ -4026,7 +4107,10 @@ function ElementLibraryPanel({
           </section>
 
           <section>
-            <h4 className="text-sm font-medium text-gray-300 mb-2">本集特有素材（{episodeOnly.length}）</h4>
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <h4 className="text-sm font-medium text-gray-300">本集特有素材（{episodeOnly.length}）</h4>
+              <span className="text-[11px] text-gray-500">当前支持在镜头详情中直接生成，后续会补齐独立生成</span>
+            </div>
             {episodeOnly.length === 0 ? (
               <p className="text-xs text-gray-500">暂无本集特有素材</p>
             ) : (
@@ -4061,6 +4145,30 @@ function ElementLibraryPanel({
           </section>
         </div>
       </div>
+
+      {editingElement && onUpdateSharedElement && (
+        <ElementEditDialog
+          initial={editingElement}
+          onClose={() => setEditingElement(null)}
+          onSubmit={(payload) => {
+            onUpdateSharedElement(editingElement.id, payload)
+            setEditingElement(null)
+          }}
+        />
+      )}
+
+      {historyElement && onUpdateSharedElement && (
+        <ImageHistoryDialog
+          title={`${historyElement.name} · 图片历史`}
+          current={historyElement.image_url}
+          history={historyElement.image_history || []}
+          onClose={() => setHistoryElement(null)}
+          onApply={(url) => {
+            onUpdateSharedElement(historyElement.id, { image_url: url })
+            setHistoryElement(null)
+          }}
+        />
+      )}
 
     </div>
   )

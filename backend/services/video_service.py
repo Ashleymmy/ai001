@@ -136,6 +136,7 @@ class VideoService:
     
     async def check_task_status(self, task_id: str) -> Dict[str, Any]:
         """检查异步任务状态"""
+        base_url = (self.base_url or "").lower()
         if self.provider == "kling":
             return await self._check_kling_status(task_id)
         elif self.provider == "runway":
@@ -144,13 +145,17 @@ class VideoService:
             return await self._check_minimax_status(task_id)
         elif self.provider == "luma":
             return await self._check_luma_status(task_id)
-        elif self.provider == "custom" and self.base_url and "dashscope" in self.base_url:
+        elif self.provider == "qwen-video":
             return await self._check_dashscope_status(task_id)
+        elif self.provider == "custom" and "dashscope" in base_url:
+            return await self._check_dashscope_status(task_id)
+        elif self.provider == "custom" and ("volces.com" in base_url or "ark.cn" in base_url):
+            return await self._check_volcengine_status(task_id)
         elif self.provider.startswith("custom_"):
             # 自定义配置，根据 base_url 判断
-            if self.base_url and ("dashscope" in self.base_url):
+            if "dashscope" in base_url:
                 return await self._check_dashscope_status(task_id)
-            elif self.base_url and ("volces.com" in self.base_url or "ark.cn" in self.base_url):
+            elif "volces.com" in base_url or "ark.cn" in base_url:
                 return await self._check_volcengine_status(task_id)
             # 其他自定义 API 暂不支持状态查询
             return {"status": "completed", "video_url": None}

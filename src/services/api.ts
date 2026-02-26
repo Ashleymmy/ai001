@@ -2314,7 +2314,8 @@ export async function studioGenerateShotAsset(
   shotId: string,
   params: { stage: 'frame' | 'end_frame' | 'video' | 'audio'; width?: number; height?: number; voice_type?: string }
 ): Promise<Record<string, unknown>> {
-  const response = await api.post(`/api/studio/shots/${shotId}/generate`, params)
+  const timeout = params.stage === 'video' ? 1800000 : 600000
+  const response = await studioApi.post(`/api/studio/shots/${shotId}/generate`, params, { timeout })
   return response.data
 }
 

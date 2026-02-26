@@ -82,6 +82,10 @@ class ImageService:
                 result["url"] = await self._call_comfyui(prompt, reference_image, negative_prompt, width, height, steps, actual_seed)
             elif self.provider == "sd-webui":
                 result["url"] = await self._call_sd_webui(prompt, reference_image, negative_prompt, width, height, steps, actual_seed)
+            elif self.provider in {"doubao", "volcengine", "ark"}:
+                result["url"] = await self._call_volcengine_custom(prompt, width, height, all_ref_images)
+            elif self.provider in {"dashscope", "wanxiang"}:
+                result["url"] = await self._call_dashscope_custom(prompt, width, height)
             elif self.provider == "qwen-image":
                 result["url"] = await self._call_qwen_image(prompt, reference_image, width, height)
             elif self.provider == "dalle":
