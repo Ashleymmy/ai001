@@ -105,10 +105,20 @@ CREATE TABLE IF NOT EXISTS episode_elements (
     created_at          TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS studio_history (
+    id              TEXT PRIMARY KEY,
+    series_id       TEXT NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+    episode_id      TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+    action          TEXT NOT NULL,
+    snapshot_json   TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_episodes_series ON episodes(series_id);
 CREATE INDEX IF NOT EXISTS idx_shared_elements_series ON shared_elements(series_id);
 CREATE INDEX IF NOT EXISTS idx_shots_episode ON shots(episode_id);
 CREATE INDEX IF NOT EXISTS idx_episode_elements_episode ON episode_elements(episode_id);
+CREATE INDEX IF NOT EXISTS idx_studio_history_episode ON studio_history(episode_id, created_at DESC);
 """
 
 
@@ -172,7 +182,7 @@ class StudioStorage:
         # 自动反序列化 JSON 字段
         for key in ("settings", "creative_brief", "image_history",
                      "reference_images", "appears_in_episodes",
-                     "frame_history", "video_history", "visual_action"):
+                     "frame_history", "video_history", "visual_action", "snapshot_json"):
             if key in d and isinstance(d[key], str):
                 try:
                     d[key] = json.loads(d[key])
@@ -898,3 +908,265 @@ class StudioStorage:
         for ep in series["episodes"]:
             ep["shots"] = self.get_shots(ep["id"])
         return series
+
+    # ==================================================================
+    # 历史记录（版本快照）
+    # ==================================================================
+
+    def create_history_entry(
+        self,
+        series_id: str,
+        episode_id: str,
+        action: str,
+        snapshot_json: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        history_id = _gen_id("hist_")
+        now = _now()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """INSERT INTO studio_history
+                   (id, series_id, episode_id, action, snapshot_json, created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (
+                    history_id,
+                    series_id,
+                    episode_id,
+                    action,
+                    self._json_field(snapshot_json or {}),
+                    now,
+                ),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT * FROM studio_history WHERE id=?",
+                (history_id,),
+            ).fetchone()
+            return self._row_to_dict(row)  # type: ignore[return-value]
+        finally:
+            conn.close()
+
+    def record_episode_history(self, episode_id: str, action: str) -> Optional[Dict[str, Any]]:
+        snapshot = self.get_episode_snapshot(episode_id)
+        if not snapshot:
+            return None
+        series_id = str(snapshot.get("series_id") or "")
+        if not series_id:
+            return None
+        return self.create_history_entry(
+            series_id=series_id,
+            episode_id=episode_id,
+            action=action,
+            snapshot_json=snapshot,
+        )
+
+    def get_history_entry(self, history_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM studio_history WHERE id=?",
+                (history_id,),
+            ).fetchone()
+            return self._row_to_dict(row)
+        finally:
+            conn.close()
+
+    def list_episode_history(
+        self,
+        episode_id: str,
+        limit: int = 50,
+        include_snapshot: bool = False,
+    ) -> List[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM studio_history
+                WHERE episode_id=?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (episode_id, max(1, int(limit))),
+            ).fetchall()
+
+            result: List[Dict[str, Any]] = []
+            for row in rows:
+                item = self._row_to_dict(row) or {}
+                snapshot = item.get("snapshot_json")
+                shot_count = 0
+                title = ""
+                summary = ""
+                status = ""
+                duration = 0.0
+                if isinstance(snapshot, dict):
+                    shots = snapshot.get("shots")
+                    if isinstance(shots, list):
+                        shot_count = len(shots)
+                    title = str(snapshot.get("title") or "")
+                    summary = str(snapshot.get("summary") or "")
+                    status = str(snapshot.get("status") or "")
+                    try:
+                        duration = float(snapshot.get("target_duration_seconds") or 0)
+                    except (TypeError, ValueError):
+                        duration = 0.0
+
+                payload: Dict[str, Any] = {
+                    "id": item.get("id"),
+                    "series_id": item.get("series_id"),
+                    "episode_id": item.get("episode_id"),
+                    "action": item.get("action"),
+                    "created_at": item.get("created_at"),
+                    "shot_count": shot_count,
+                    "title": title,
+                    "summary": summary,
+                    "status": status,
+                    "target_duration_seconds": duration,
+                }
+                if include_snapshot and isinstance(snapshot, dict):
+                    payload["snapshot"] = snapshot
+                result.append(payload)
+            return result
+        finally:
+            conn.close()
+
+    def restore_episode_from_history(
+        self,
+        episode_id: str,
+        history_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            episode_row = conn.execute(
+                "SELECT * FROM episodes WHERE id=?",
+                (episode_id,),
+            ).fetchone()
+            if not episode_row:
+                return None
+
+            history_row = conn.execute(
+                "SELECT * FROM studio_history WHERE id=? AND episode_id=?",
+                (history_id, episode_id),
+            ).fetchone()
+            history = self._row_to_dict(history_row)
+            if not history:
+                return None
+
+            snapshot = history.get("snapshot_json")
+            if not isinstance(snapshot, dict):
+                return None
+
+            now = _now()
+            episode_updates = {
+                "title": snapshot.get("title", ""),
+                "summary": snapshot.get("summary", ""),
+                "script_excerpt": snapshot.get("script_excerpt", ""),
+                "creative_brief": self._json_field(snapshot.get("creative_brief", {})),
+                "target_duration_seconds": snapshot.get("target_duration_seconds", 60.0),
+                "status": snapshot.get("status", "draft"),
+                "updated_at": now,
+            }
+            conn.execute(
+                """
+                UPDATE episodes
+                SET title=?, summary=?, script_excerpt=?, creative_brief=?,
+                    target_duration_seconds=?, status=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    episode_updates["title"],
+                    episode_updates["summary"],
+                    episode_updates["script_excerpt"],
+                    episode_updates["creative_brief"],
+                    episode_updates["target_duration_seconds"],
+                    episode_updates["status"],
+                    episode_updates["updated_at"],
+                    episode_id,
+                ),
+            )
+
+            conn.execute("DELETE FROM shots WHERE episode_id=?", (episode_id,))
+            snapshot_shots = snapshot.get("shots")
+            shots = snapshot_shots if isinstance(snapshot_shots, list) else []
+            def _shot_order_value(data: Dict[str, Any]) -> int:
+                try:
+                    return int(data.get("sort_order"))
+                except (TypeError, ValueError):
+                    return 0
+            ordered_shots = sorted(
+                [s for s in shots if isinstance(s, dict)],
+                key=_shot_order_value,
+            )
+            for idx, shot in enumerate(ordered_shots):
+                shot_id = str(shot.get("id") or _gen_id("shot_"))
+                created_at = str(shot.get("created_at") or now)
+                sort_order_raw = shot.get("sort_order")
+                try:
+                    sort_order = int(sort_order_raw)
+                except (TypeError, ValueError):
+                    sort_order = idx
+                conn.execute(
+                    """INSERT INTO shots
+                       (id, episode_id, segment_name, sort_order, name, type,
+                        duration, description, prompt, end_prompt, video_prompt,
+                        narration, dialogue_script,
+                        start_image_url, end_image_url, frame_history, video_url, video_history, audio_url, visual_action,
+                        status, created_at, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        shot_id,
+                        episode_id,
+                        str(shot.get("segment_name") or ""),
+                        sort_order,
+                        str(shot.get("name") or ""),
+                        str(shot.get("type") or "standard"),
+                        float(shot.get("duration") or 5.0),
+                        str(shot.get("description") or ""),
+                        str(shot.get("prompt") or ""),
+                        str(shot.get("end_prompt") or ""),
+                        str(shot.get("video_prompt") or ""),
+                        str(shot.get("narration") or ""),
+                        str(shot.get("dialogue_script") or ""),
+                        str(shot.get("start_image_url") or ""),
+                        str(shot.get("end_image_url") or ""),
+                        self._json_field(shot.get("frame_history") or []),
+                        str(shot.get("video_url") or ""),
+                        self._json_field(shot.get("video_history") or []),
+                        str(shot.get("audio_url") or ""),
+                        self._json_field(shot.get("visual_action") or {}),
+                        str(shot.get("status") or "pending"),
+                        created_at,
+                        now,
+                    ),
+                )
+
+            conn.execute("DELETE FROM episode_elements WHERE episode_id=?", (episode_id,))
+            snapshot_elements = snapshot.get("elements")
+            elements = snapshot_elements if isinstance(snapshot_elements, list) else []
+            for element in elements:
+                if not isinstance(element, dict):
+                    continue
+                element_id = str(element.get("id") or _gen_id("ee_"))
+                conn.execute(
+                    """INSERT INTO episode_elements
+                       (id, episode_id, shared_element_id, name, type,
+                        description, voice_profile, image_url, is_override, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        element_id,
+                        episode_id,
+                        element.get("shared_element_id"),
+                        str(element.get("name") or ""),
+                        str(element.get("type") or "character"),
+                        str(element.get("description") or ""),
+                        str(element.get("voice_profile") or ""),
+                        str(element.get("image_url") or ""),
+                        int(element.get("is_override") or 0),
+                        str(element.get("created_at") or now),
+                    ),
+                )
+
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_episode_snapshot(episode_id)

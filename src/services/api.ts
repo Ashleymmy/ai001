@@ -2038,6 +2038,26 @@ export interface StudioEpisodeElement {
   created_at: string
 }
 
+export interface StudioEpisodeHistoryEntry {
+  id: string
+  series_id: string
+  episode_id: string
+  action: string
+  created_at: string
+  shot_count: number
+  title: string
+  summary: string
+  status: string
+  target_duration_seconds: number
+  snapshot?: {
+    title?: string
+    summary?: string
+    status?: string
+    target_duration_seconds?: number
+    shots?: StudioShot[]
+  }
+}
+
 // --- 系列 ---
 
 export async function studioCreateSeries(params: {
@@ -2219,6 +2239,26 @@ export async function studioInpaintShotFrame(
 
 // --- 批量生成 ---
 
+export interface StudioBatchGenerateStreamEvent {
+  type: 'start' | 'stage_start' | 'item_start' | 'item_complete' | 'done' | 'error'
+  episode_id?: string
+  stages?: string[]
+  stage?: 'elements' | 'frames' | 'end_frames' | 'videos' | 'audio'
+  stage_total?: number
+  item_id?: string
+  item_name?: string
+  stage_index?: number
+  ok?: boolean
+  error?: string
+  detail?: string
+  error_code?: string
+  context?: Record<string, unknown>
+  processed?: number
+  failed?: number
+  total?: number
+  percent?: number
+}
+
 export async function studioBatchGenerate(
   episodeId: string,
   stages?: string[]
@@ -2226,6 +2266,76 @@ export async function studioBatchGenerate(
   const response = await studioApi.post(`/api/studio/episodes/${episodeId}/batch-generate`, {
     stages: stages || ['elements', 'frames', 'end_frames', 'videos', 'audio'],
   })
+  return response.data
+}
+
+export function studioBatchGenerateStream(
+  episodeId: string,
+  stages: string[] | undefined,
+  onEvent: (event: StudioBatchGenerateStreamEvent) => void,
+  onError?: (error: Error) => void
+): () => void {
+  const stageList = (stages || ['elements', 'frames', 'end_frames', 'videos', 'audio'])
+    .map((stage) => stage?.trim())
+    .filter((stage): stage is string => Boolean(stage))
+  const query = new URLSearchParams()
+  if (stageList.length > 0) {
+    query.set('stages', stageList.join(','))
+  }
+
+  const url = `${API_BASE}/api/studio/episodes/${episodeId}/batch-generate-stream${query.toString() ? `?${query.toString()}` : ''}`
+  const eventSource = new EventSource(url)
+  let closed = false
+
+  const close = () => {
+    if (closed) return
+    closed = true
+    eventSource.close()
+  }
+
+  eventSource.onmessage = (event) => {
+    try {
+      const payload = JSON.parse(event.data) as StudioBatchGenerateStreamEvent
+      onEvent(payload)
+      if (payload.type === 'done' || payload.type === 'error') {
+        close()
+      }
+    } catch (e) {
+      console.error('解析 Studio SSE 事件失败:', e)
+    }
+  }
+
+  eventSource.onerror = () => {
+    if (closed) return
+    close()
+    onError?.(new Error('生成进度连接中断'))
+  }
+
+  return close
+}
+
+export async function studioGetEpisodeHistory(
+  episodeId: string,
+  limit: number = 50,
+  includeSnapshot: boolean = false,
+): Promise<StudioEpisodeHistoryEntry[]> {
+  const response = await api.get(`/api/studio/episodes/${episodeId}/history`, {
+    params: { limit, include_snapshot: includeSnapshot },
+  })
+  return (response.data || []) as StudioEpisodeHistoryEntry[]
+}
+
+export async function studioRestoreEpisodeHistory(
+  episodeId: string,
+  historyId: string
+): Promise<{
+  ok: boolean
+  episode_id: string
+  history_id: string
+  episode: StudioEpisode
+  history: StudioEpisodeHistoryEntry[]
+}> {
+  const response = await api.post(`/api/studio/episodes/${episodeId}/restore/${historyId}`)
   return response.data
 }
 

@@ -1,17 +1,25 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Settings2, Plus, Film, Users, MapPin, Package,
   Loader2, Play, RefreshCw, Trash2, ChevronRight, ImageIcon,
-  Video, Mic, Layers, Sparkles, Clock, CheckCircle, AlertCircle, X, Save,
-  Star, Eye, Pencil, FileText,
+  Video, Mic, Layers, Sparkles, Clock, CheckCircle, AlertCircle, X, Save, ChevronLeft, Wand2,
+  Star, Eye, Pencil, FileText, History, RotateCcw,
 } from 'lucide-react'
 import { useStudioStore } from '../store/studioStore'
 import axios from 'axios'
 import { studioCheckConfig, studioExportEpisode, studioExportSeries, studioGetSeriesStats, studioGetSettings, studioSaveSettings } from '../services/api'
-import type { StudioSeriesStats } from '../services/api'
-import type { StudioSeries, StudioEpisode, StudioElement, StudioShot, StudioEpisodeElement } from '../store/studioStore'
+import type { StudioSeriesStats, StudioEpisodeHistoryEntry } from '../services/api'
+import type {
+  StudioSeries,
+  StudioEpisode,
+  StudioElement,
+  StudioShot,
+  StudioEpisodeElement,
+  StudioGenerationProgress,
+  StudioGenerationStage,
+} from '../store/studioStore'
 import Timeline from '../components/studio/Timeline'
 import PreviewPlayer from '../components/studio/PreviewPlayer'
 
@@ -35,6 +43,16 @@ interface StudioExportProgress {
   error?: string
 }
 
+type StudioActivityTone = 'idle' | 'info' | 'working' | 'success' | 'warning' | 'error'
+
+interface StudioActivityIndicator {
+  active: boolean
+  title: string
+  detail: string
+  progress: number | null
+  tone: StudioActivityTone
+}
+
 type PreviewPanelRect = {
   x: number
   y: number
@@ -51,6 +69,35 @@ type PreviewPanelResizeDirection =
   | 'top-right'
   | 'bottom-left'
   | 'bottom-right'
+
+const LAYOUT_SIDEBAR_WIDTH_KEY = 'studio.layout.sidebarWidth'
+const LAYOUT_SIDEBAR_COLLAPSED_KEY = 'studio.layout.sidebarCollapsed'
+const LAYOUT_DETAIL_PANEL_WIDTH_KEY = 'studio.layout.detailPanelWidth'
+const LAYOUT_DETAIL_PANEL_COLLAPSED_KEY = 'studio.layout.detailPanelCollapsed'
+
+function readStoredNumber(key: string, fallback: number, min: number, max: number): number {
+  if (typeof window === 'undefined') return fallback
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (!raw) return fallback
+    const parsed = Number(raw)
+    if (!Number.isFinite(parsed)) return fallback
+    return Math.min(max, Math.max(min, parsed))
+  } catch {
+    return fallback
+  }
+}
+
+function readStoredBoolean(key: string, fallback: boolean): boolean {
+  if (typeof window === 'undefined') return fallback
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (raw == null) return fallback
+    return raw === '1'
+  } catch {
+    return fallback
+  }
+}
 
 function formatStorage(bytes: number): string {
   if (!bytes) return '0 B'
@@ -111,6 +158,102 @@ function getEpisodeStatusBadgeClass(status: string): string {
   return 'bg-gray-800 text-gray-400'
 }
 
+function getGenerationStageText(stage: StudioGenerationStage): string {
+  if (stage === 'generating_elements') return '生成元素图中'
+  if (stage === 'generating_frames') return '生成起始帧中'
+  if (stage === 'generating_end_frames') return '生成尾帧中'
+  if (stage === 'generating_videos') return '生成视频中'
+  if (stage === 'generating_audio') return '生成音频中'
+  if (stage === 'complete') return '批量生成完成'
+  if (stage === 'error') return '批量生成失败'
+  return '批量生成进行中'
+}
+
+function getGenerationDetail(progress: StudioGenerationProgress): string {
+  const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0))
+  const counter = progress.totalItems > 0
+    ? `${Math.min(progress.currentIndex, progress.totalItems)}/${progress.totalItems}`
+    : ''
+  const item = progress.currentItem ? ` · ${progress.currentItem}` : ''
+  const errors = progress.errors.length > 0 ? ` · 异常 ${progress.errors.length}` : ''
+  if (!counter) return `${percent.toFixed(0)}%${item}${errors}`.trim()
+  return `${counter} (${percent.toFixed(0)}%)${item}${errors}`
+}
+
+function formatHistoryAction(action: string): string {
+  if (action === 'plan') return '分镜规划'
+  if (action === 'enhance_refine') return '镜头优化'
+  if (action === 'enhance_expand') return '镜头扩展'
+  if (action === 'batch_generate') return '批量生成'
+  if (action === 'edit_episode') return '编辑集信息'
+  if (action === 'edit_shot') return '编辑镜头'
+  if (action.startsWith('restore_')) return '版本回退'
+  return action
+}
+
+interface HistoryShotDiffItem {
+  index: number
+  type: 'added' | 'removed' | 'changed'
+  current?: StudioShot
+  previous?: StudioShot
+  changedFields?: string[]
+}
+
+interface HistoryShotDiffSummary {
+  added: number
+  removed: number
+  changed: number
+  unchanged: number
+  items: HistoryShotDiffItem[]
+}
+
+function summarizeShotDiff(currentShots: StudioShot[], previousShots: StudioShot[]): HistoryShotDiffSummary {
+  const current = [...currentShots].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+  const previous = [...previousShots].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+  const total = Math.max(current.length, previous.length)
+  const items: HistoryShotDiffItem[] = []
+  let added = 0
+  let removed = 0
+  let changed = 0
+  let unchanged = 0
+
+  for (let index = 0; index < total; index += 1) {
+    const cur = current[index]
+    const prev = previous[index]
+    if (cur && !prev) {
+      added += 1
+      items.push({ index, type: 'added', current: cur })
+      continue
+    }
+    if (!cur && prev) {
+      removed += 1
+      items.push({ index, type: 'removed', previous: prev })
+      continue
+    }
+    if (!cur || !prev) continue
+
+    const changedFields: string[] = []
+    if ((cur.name || '') !== (prev.name || '')) changedFields.push('名称')
+    if ((cur.type || '') !== (prev.type || '')) changedFields.push('类型')
+    if (Number(cur.duration || 0) !== Number(prev.duration || 0)) changedFields.push('时长')
+    if ((cur.description || '') !== (prev.description || '')) changedFields.push('描述')
+    if ((cur.prompt || '') !== (prev.prompt || '')) changedFields.push('首帧提示词')
+    if ((cur.end_prompt || '') !== (prev.end_prompt || '')) changedFields.push('尾帧提示词')
+    if ((cur.video_prompt || '') !== (prev.video_prompt || '')) changedFields.push('视频提示词')
+    if ((cur.narration || '') !== (prev.narration || '')) changedFields.push('旁白')
+    if ((cur.dialogue_script || '') !== (prev.dialogue_script || '')) changedFields.push('对白')
+
+    if (changedFields.length > 0) {
+      changed += 1
+      items.push({ index, type: 'changed', current: cur, previous: prev, changedFields })
+    } else {
+      unchanged += 1
+    }
+  }
+
+  return { added, removed, changed, unchanged, items }
+}
+
 function resizeCursorByDirection(direction: PreviewPanelResizeDirection): string {
   if (direction === 'left' || direction === 'right') return 'ew-resize'
   if (direction === 'top' || direction === 'bottom') return 'ns-resize'
@@ -134,6 +277,83 @@ function HoverOverviewPanel({
   )
 }
 
+function calcExportPercent(progress: StudioExportProgress): number | null {
+  if (typeof progress.percent === 'number' && Number.isFinite(progress.percent)) {
+    return Math.min(100, Math.max(0, progress.percent))
+  }
+  if (progress.total && progress.total > 0) {
+    return Math.min(100, Math.max(0, (progress.loaded / progress.total) * 100))
+  }
+  if (progress.phase === 'packing') return 8
+  if (progress.phase === 'saving') return 94
+  if (progress.phase === 'done') return 100
+  if (progress.phase === 'error') return 100
+  return null
+}
+
+function StudioLoadingSkeleton() {
+  return (
+    <div className="flex-1 p-4 overflow-hidden">
+      <div className="h-full rounded-xl border border-gray-800 bg-gray-900/40 p-4 animate-pulse flex flex-col gap-4">
+        <div className="h-8 w-1/3 rounded bg-gray-800" />
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 flex-1">
+          {Array.from({ length: 6 }).map((_, idx) => (
+            <div key={idx} className="rounded-lg border border-gray-800 bg-gray-900/50 p-3 space-y-2">
+              <div className="aspect-video rounded bg-gray-800" />
+              <div className="h-3 rounded bg-gray-800 w-2/3" />
+              <div className="h-3 rounded bg-gray-800 w-5/6" />
+              <div className="h-3 rounded bg-gray-800 w-1/2" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function StudioDynamicIsland({ indicator }: { indicator: StudioActivityIndicator }) {
+  const toneCls =
+    indicator.tone === 'error' ? 'border-red-700/70 from-red-900/50 to-gray-900 text-red-100' :
+    indicator.tone === 'warning' ? 'border-amber-700/70 from-amber-900/45 to-gray-900 text-amber-100' :
+    indicator.tone === 'success' ? 'border-emerald-700/70 from-emerald-900/40 to-gray-900 text-emerald-100' :
+    indicator.tone === 'working' ? 'border-purple-700/70 from-purple-900/45 to-gray-900 text-purple-100' :
+    indicator.tone === 'info' ? 'border-blue-700/70 from-blue-900/45 to-gray-900 text-blue-100' :
+    'border-gray-700 from-gray-900/95 to-gray-900 text-gray-200'
+
+  return (
+    <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-[72] pointer-events-none">
+      <div
+        className={`pointer-events-auto rounded-2xl border bg-gradient-to-b shadow-2xl backdrop-blur transition-all duration-250 ease-out overflow-hidden ${
+          indicator.active ? 'w-[min(520px,92vw)] px-4 py-2.5' : 'w-[min(340px,88vw)] px-4 py-1.5'
+        } ${toneCls}`}
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold truncate">{indicator.title}</p>
+            <p className="text-[11px] text-gray-300 truncate">{indicator.detail}</p>
+          </div>
+          {indicator.active ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0 opacity-80" />
+          ) : (
+            <Wand2 className="w-3.5 h-3.5 shrink-0 opacity-70" />
+          )}
+        </div>
+        <div className={`transition-all duration-250 ${indicator.active ? 'max-h-12 opacity-100 mt-2' : 'max-h-0 opacity-0 mt-0'}`}>
+          <div className="h-1.5 rounded-full bg-gray-900/70 overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-violet-400 via-fuchsia-400 to-indigo-300 transition-all duration-300"
+              style={{ width: `${Math.max(10, indicator.progress ?? 35)}%` }}
+            />
+          </div>
+          {typeof indicator.progress === 'number' && (
+            <div className="mt-1 text-[10px] text-gray-300 text-right">{indicator.progress.toFixed(0)}%</div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ============================================================
 // StudioPage - 长篇制作工作台
 // ============================================================
@@ -148,6 +368,116 @@ export default function StudioPage() {
   const [exportProgress, setExportProgress] = useState<StudioExportProgress | null>(null)
   const exportHideTimerRef = useRef<number | null>(null)
   const [toasts, setToasts] = useState<StudioToast[]>([])
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => readStoredNumber(LAYOUT_SIDEBAR_WIDTH_KEY, 256, 220, 420))
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => readStoredBoolean(LAYOUT_SIDEBAR_COLLAPSED_KEY, false))
+  const [compactLayout, setCompactLayout] = useState<boolean>(() => (typeof window !== 'undefined' ? window.innerWidth < 1100 : false))
+  const sidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
+  const actualSidebarCollapsed = compactLayout ? true : sidebarCollapsed
+  const actualSidebarWidth = actualSidebarCollapsed ? 56 : sidebarWidth
+  const activityIndicator = useMemo<StudioActivityIndicator>(() => {
+    const generationProgress = store.generationProgress
+
+    if (exportProgress) {
+      return {
+        active: exportProgress.phase !== 'done' && exportProgress.phase !== 'error',
+        title: exportProgress.title,
+        detail: exportProgress.error || (
+          exportProgress.phase === 'packing' ? '正在整理导出清单…' :
+          exportProgress.phase === 'downloading' ? `下载中 ${exportProgress.loaded}/${exportProgress.total || '?'}` :
+          exportProgress.phase === 'saving' ? '写入本地文件…' :
+          exportProgress.phase === 'done' ? '导出完成' :
+          '导出失败'
+        ),
+        progress: calcExportPercent(exportProgress),
+        tone: exportProgress.phase === 'done'
+          ? 'success'
+          : exportProgress.phase === 'error'
+            ? 'error'
+            : 'info',
+      }
+    }
+
+    const hasDetailedGeneration = store.generating
+      && generationProgress.stage !== 'idle'
+      && generationProgress.totalItems > 0
+    if (hasDetailedGeneration) {
+      return {
+        active: true,
+        title: getGenerationStageText(generationProgress.stage),
+        detail: getGenerationDetail(generationProgress),
+        progress: Math.max(0, Math.min(100, generationProgress.percent)),
+        tone: generationProgress.errors.length > 0 ? 'warning' : 'working',
+      }
+    }
+
+    if (!store.generating && generationProgress.stage === 'complete' && generationProgress.totalItems > 0) {
+      return {
+        active: false,
+        title: getGenerationStageText(generationProgress.stage),
+        detail: getGenerationDetail(generationProgress),
+        progress: 100,
+        tone: generationProgress.errors.length > 0 ? 'warning' : 'success',
+      }
+    }
+
+    if (!store.generating && generationProgress.stage === 'error') {
+      return {
+        active: false,
+        title: getGenerationStageText(generationProgress.stage),
+        detail: generationProgress.currentItem || generationProgress.errors[generationProgress.errors.length - 1] || '批量生成失败',
+        progress: Math.max(0, Math.min(100, generationProgress.percent)),
+        tone: 'error',
+      }
+    }
+
+    if (store.generating) {
+      return {
+        active: true,
+        title: '批量生成进行中',
+        detail: store.currentEpisode ? `第${store.currentEpisode.act_number}幕 · 正在处理镜头素材` : '正在处理当前任务',
+        progress: null,
+        tone: 'working',
+      }
+    }
+    if (store.planning) {
+      return {
+        active: true,
+        title: '分幕规划中',
+        detail: store.currentEpisode ? `第${store.currentEpisode.act_number}幕 · 正在拆分与构图` : '正在规划剧本',
+        progress: null,
+        tone: 'working',
+      }
+    }
+    if (store.creating) {
+      return {
+        active: true,
+        title: '创建系列中',
+        detail: '正在执行脚本拆分与共享元素提取',
+        progress: null,
+        tone: 'working',
+      }
+    }
+
+    return {
+      active: false,
+      title: 'Studio 就绪',
+      detail: store.currentSeries
+        ? `${store.currentSeries.name} · ${store.episodes.length} 集 · ${store.sharedElements.length} 元素`
+        : '选择系列或创建新项目开始制作',
+      progress: null,
+      tone: 'idle',
+    }
+  }, [
+    exportProgress,
+    store.creating,
+    store.currentEpisode,
+    store.currentSeries,
+    store.episodes.length,
+    store.generating,
+    store.generationProgress,
+    store.planning,
+    store.sharedElements.length,
+  ])
 
   const pushToast = useCallback((toast: Omit<StudioToast, 'id'>) => {
     const id = `toast_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
@@ -428,6 +758,67 @@ export default function StudioPage() {
     }
   }, [parseExportError, pushToast, saveBlob, scheduleHideExportProgress, store.currentSeriesId])
 
+  useEffect(() => {
+    const handleViewportResize = () => {
+      setCompactLayout(window.innerWidth < 1100)
+    }
+    window.addEventListener('resize', handleViewportResize)
+    return () => window.removeEventListener('resize', handleViewportResize)
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(LAYOUT_SIDEBAR_WIDTH_KEY, String(Math.round(sidebarWidth)))
+    } catch {
+      // ignore layout persistence errors
+    }
+  }, [sidebarWidth])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(LAYOUT_SIDEBAR_COLLAPSED_KEY, sidebarCollapsed ? '1' : '0')
+    } catch {
+      // ignore layout persistence errors
+    }
+  }, [sidebarCollapsed])
+
+  useEffect(() => {
+    const handlePointerMove = (event: MouseEvent) => {
+      const dragging = sidebarResizeRef.current
+      if (!dragging) return
+      const delta = event.clientX - dragging.startX
+      const next = Math.min(420, Math.max(220, dragging.startWidth + delta))
+      setSidebarWidth(next)
+    }
+
+    const handlePointerUp = () => {
+      sidebarResizeRef.current = null
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+    }
+
+    window.addEventListener('mousemove', handlePointerMove)
+    window.addEventListener('mouseup', handlePointerUp)
+    return () => {
+      window.removeEventListener('mousemove', handlePointerMove)
+      window.removeEventListener('mouseup', handlePointerUp)
+      handlePointerUp()
+    }
+  }, [])
+
+  const startSidebarResize = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (actualSidebarCollapsed) return
+    event.preventDefault()
+    sidebarResizeRef.current = {
+      startX: event.clientX,
+      startWidth: sidebarWidth,
+    }
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'col-resize'
+  }
+
   return (
     <div className="h-screen flex flex-col bg-gray-950 text-gray-100">
       {/* 顶部工具栏 */}
@@ -465,70 +856,129 @@ export default function StudioPage() {
 
       <div className="flex flex-1 overflow-hidden">
         {/* 左侧导航面板 */}
-        <aside className="w-64 bg-gray-900 border-r border-gray-800 flex flex-col shrink-0">
-          <div className="p-3 border-b border-gray-800">
-            <button
-              onClick={() => setShowCreateDialog(true)}
-              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium transition-colors"
-            >
-              <Plus className="w-4 h-4" />
-              新建系列
-            </button>
-          </div>
-
-          {/* 系列列表 */}
-          <div className="flex-1 overflow-y-auto p-2">
-            {store.seriesList.map((s) => (
-              <SeriesTreeItem
-                key={s.id}
-                series={s}
-                isSelected={s.id === store.currentSeriesId}
-                selectedEpisodeId={store.currentEpisodeId}
-                episodes={s.id === store.currentSeriesId ? store.episodes : []}
-                onSelectSeries={handleSelectSeries}
-                onSelectEpisode={handleSelectEpisode}
-              />
-            ))}
-            {store.seriesList.length === 0 && !store.loading && (
-              <p className="text-xs text-gray-500 text-center py-8">暂无系列，点击上方创建</p>
-            )}
-          </div>
-
-          {/* 共享元素库快捷入口 */}
-          {store.currentSeries && (
-            <div className="p-2 border-t border-gray-800">
-              <p className="text-xs text-gray-500 mb-1 px-2">共享元素</p>
-              <div className="space-y-0.5 max-h-32 overflow-y-auto">
-                {store.sharedElements.slice(0, 8).map((el) => (
-                  <div
-                    key={el.id}
-                    className="flex items-center gap-2 px-2 py-1 rounded text-xs text-gray-400 hover:bg-gray-800"
-                    title={el.description}
+        <aside
+          className="bg-gray-900 border-r border-gray-800 flex flex-col shrink-0 transition-[width] duration-200 ease-out"
+          style={{ width: actualSidebarWidth }}
+        >
+          {actualSidebarCollapsed ? (
+            <>
+              <div className="p-2 border-b border-gray-800 flex flex-col items-center gap-2">
+                <button
+                  onClick={() => setShowCreateDialog(true)}
+                  className="w-9 h-9 rounded-lg bg-purple-600 hover:bg-purple-500 text-white flex items-center justify-center transition-colors"
+                  title="新建系列"
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+                {!compactLayout && (
+                  <button
+                    onClick={() => setSidebarCollapsed(false)}
+                    className="w-8 h-8 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 flex items-center justify-center transition-colors"
+                    title="展开侧边栏"
                   >
-                    {el.type === 'character' ? (
-                      <Users className="w-3 h-3 text-blue-400 shrink-0" />
-                    ) : el.type === 'scene' ? (
-                      <MapPin className="w-3 h-3 text-green-400 shrink-0" />
-                    ) : (
-                      <Package className="w-3 h-3 text-yellow-400 shrink-0" />
-                    )}
-                    <span className="truncate">{el.name}</span>
-                  </div>
-                ))}
-                {store.sharedElements.length > 8 && (
-                  <p className="text-xs text-gray-600 text-center">+{store.sharedElements.length - 8} 更多</p>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
                 )}
               </div>
-            </div>
+              <div className="flex-1 overflow-y-auto p-1.5 space-y-1">
+                {store.seriesList.map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => handleSelectSeries(s.id)}
+                    title={s.name}
+                    className={`w-full h-9 rounded text-xs font-semibold flex items-center justify-center transition-colors ${
+                      s.id === store.currentSeriesId
+                        ? 'bg-purple-900/50 text-purple-100'
+                        : 'bg-gray-800/60 text-gray-400 hover:text-gray-200 hover:bg-gray-800'
+                    }`}
+                  >
+                    {(s.name || 'S').slice(0, 1)}
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="p-3 border-b border-gray-800 flex items-center gap-2">
+                <button
+                  onClick={() => setShowCreateDialog(true)}
+                  className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium transition-colors"
+                >
+                  <Plus className="w-4 h-4" />
+                  新建系列
+                </button>
+                {!compactLayout && (
+                  <button
+                    onClick={() => setSidebarCollapsed(true)}
+                    className="w-8 h-8 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 flex items-center justify-center transition-colors"
+                    title="折叠侧边栏"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+
+              {/* 系列列表 */}
+              <div className="flex-1 overflow-y-auto p-2">
+                {store.seriesList.map((s) => (
+                  <SeriesTreeItem
+                    key={s.id}
+                    series={s}
+                    isSelected={s.id === store.currentSeriesId}
+                    selectedEpisodeId={store.currentEpisodeId}
+                    episodes={s.id === store.currentSeriesId ? store.episodes : []}
+                    onSelectSeries={handleSelectSeries}
+                    onSelectEpisode={handleSelectEpisode}
+                  />
+                ))}
+                {store.seriesList.length === 0 && !store.loading && (
+                  <p className="text-xs text-gray-500 text-center py-8">暂无系列，点击上方创建</p>
+                )}
+              </div>
+
+              {/* 共享元素库快捷入口 */}
+              {store.currentSeries && (
+                <div className="p-2 border-t border-gray-800">
+                  <p className="text-xs text-gray-500 mb-1 px-2">共享元素</p>
+                  <div className="space-y-0.5 max-h-32 overflow-y-auto">
+                    {store.sharedElements.slice(0, 8).map((el) => (
+                      <div
+                        key={el.id}
+                        className="flex items-center gap-2 px-2 py-1 rounded text-xs text-gray-400 hover:bg-gray-800"
+                        title={el.description}
+                      >
+                        {el.type === 'character' ? (
+                          <Users className="w-3 h-3 text-blue-400 shrink-0" />
+                        ) : el.type === 'scene' ? (
+                          <MapPin className="w-3 h-3 text-green-400 shrink-0" />
+                        ) : (
+                          <Package className="w-3 h-3 text-yellow-400 shrink-0" />
+                        )}
+                        <span className="truncate">{el.name}</span>
+                      </div>
+                    ))}
+                    {store.sharedElements.length > 8 && (
+                      <p className="text-xs text-gray-600 text-center">+{store.sharedElements.length - 8} 更多</p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </aside>
 
+        {!actualSidebarCollapsed && (
+          <div
+            onMouseDown={startSidebarResize}
+            className="w-1 shrink-0 cursor-col-resize bg-gray-800/80 hover:bg-purple-600/70 transition-colors"
+            title="拖拽调整侧边栏宽度"
+          />
+        )}
+
         {/* 主工作区 */}
-        <main className="flex-1 overflow-hidden flex flex-col">
+        <main className="flex-1 min-w-0 overflow-hidden flex flex-col">
           {store.loading && (
-            <div className="flex-1 flex items-center justify-center">
-              <Loader2 className="w-8 h-8 animate-spin text-purple-400" />
-            </div>
+            <StudioLoadingSkeleton />
           )}
 
           {!store.loading && !store.currentSeries && (
@@ -601,6 +1051,17 @@ export default function StudioPage() {
                 if (!store.currentEpisodeId) return
                 await handleBatchGenerate(store.currentEpisodeId, stages)
               }}
+              historyEntries={store.episodeHistory}
+              historyLoading={store.historyLoading}
+              historyRestoring={store.historyRestoring}
+              onLoadHistory={async (limit, includeSnapshot) => {
+                if (!store.currentEpisodeId) return
+                await store.loadEpisodeHistory(store.currentEpisodeId, limit, includeSnapshot)
+              }}
+              onRestoreHistory={async (historyId) => {
+                if (!store.currentEpisodeId) return
+                await store.restoreEpisodeHistory(store.currentEpisodeId, historyId)
+              }}
               onExportAssets={() => handleExportEpisode('assets')}
               onExportVideo={() => handleExportEpisode('video')}
               exporting={exporting}
@@ -635,7 +1096,14 @@ export default function StudioPage() {
         <div>
           {store.creating && <span className="text-purple-400">创建中...</span>}
           {store.planning && <span className="text-purple-400">规划中...</span>}
-          {store.generating && <span className="text-purple-400">生成中...</span>}
+          {store.generating && store.generationProgress.totalItems > 0 && store.generationProgress.stage !== 'idle' && (
+            <span className="text-purple-400">
+              {getGenerationStageText(store.generationProgress.stage)} {Math.max(0, Math.min(100, store.generationProgress.percent)).toFixed(0)}% ({Math.min(store.generationProgress.currentIndex, store.generationProgress.totalItems)}/{store.generationProgress.totalItems})
+            </span>
+          )}
+          {store.generating && (store.generationProgress.totalItems <= 0 || store.generationProgress.stage === 'idle') && (
+            <span className="text-purple-400">生成中...</span>
+          )}
         </div>
       </footer>
 
@@ -646,12 +1114,7 @@ export default function StudioPage() {
         />
       )}
 
-      {exportProgress && (
-        <ExportProgressToast
-          progress={exportProgress}
-          onClose={() => setExportProgress(null)}
-        />
-      )}
+      <StudioDynamicIsland indicator={activityIndicator} />
 
       {/* 创建对话框 */}
       {showCreateDialog && (
@@ -1320,6 +1783,11 @@ function EpisodeWorkbench({
   onReorderShots,
   onUpdateEpisode,
   onBatchGenerate,
+  historyEntries,
+  historyLoading,
+  historyRestoring,
+  onLoadHistory,
+  onRestoreHistory,
   onExportAssets,
   onExportVideo,
   exporting,
@@ -1339,6 +1807,11 @@ function EpisodeWorkbench({
   onReorderShots: (shotIds: string[]) => void | Promise<void>
   onUpdateEpisode: (updates: Record<string, unknown>) => void | Promise<void>
   onBatchGenerate: (stages?: string[]) => void | Promise<void>
+  historyEntries: StudioEpisodeHistoryEntry[]
+  historyLoading: boolean
+  historyRestoring: boolean
+  onLoadHistory: (limit?: number, includeSnapshot?: boolean) => void | Promise<void>
+  onRestoreHistory: (historyId: string) => void | Promise<void>
   onExportAssets: () => void | Promise<void>
   onExportVideo: () => void | Promise<void>
   exporting: boolean
@@ -1351,9 +1824,16 @@ function EpisodeWorkbench({
   const [previewPanelRect, setPreviewPanelRect] = useState<PreviewPanelRect>(() => defaultPreviewPanelRect())
   const [showScriptEditor, setShowScriptEditor] = useState(false)
   const [showElementLibrary, setShowElementLibrary] = useState(false)
+  const [showHistoryPanel, setShowHistoryPanel] = useState(false)
+  const [historyLoadedOnce, setHistoryLoadedOnce] = useState(false)
+  const [restoringHistoryId, setRestoringHistoryId] = useState<string | null>(null)
+  const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null)
+  const [narrowWorkbench, setNarrowWorkbench] = useState<boolean>(() => (typeof window !== 'undefined' ? window.innerWidth < 1340 : false))
   const [titleDraft, setTitleDraft] = useState(episode.title || '')
   const [summaryDraft, setSummaryDraft] = useState(episode.summary || '')
   const [scriptDraft, setScriptDraft] = useState(episode.script_excerpt || '')
+  const [detailPanelWidth, setDetailPanelWidth] = useState<number>(() => readStoredNumber(LAYOUT_DETAIL_PANEL_WIDTH_KEY, 320, 280, 540))
+  const [detailPanelCollapsed, setDetailPanelCollapsed] = useState<boolean>(() => readStoredBoolean(LAYOUT_DETAIL_PANEL_COLLAPSED_KEY, false))
   const previewPanelDragRef = useRef<{
     startX: number
     startY: number
@@ -1362,6 +1842,7 @@ function EpisodeWorkbench({
     width: number
     height: number
   } | null>(null)
+  const detailPanelResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
   const previewPanelResizeRef = useRef<{
     direction: PreviewPanelResizeDirection
     startX: number
@@ -1369,7 +1850,13 @@ function EpisodeWorkbench({
     originRect: PreviewPanelRect
   } | null>(null)
   const selectedShot = shots.find((s) => s.id === selectedShotId)
+  const showDetailPanel = Boolean(selectedShot)
+  const detailPanelExpanded = showDetailPanel && !detailPanelCollapsed
   const previewPanelWide = previewPanelRect.width >= 980
+  const detailPanelFloating = narrowWorkbench && showDetailPanel && detailPanelExpanded
+  const shotGridClass = detailPanelExpanded && !detailPanelFloating
+    ? 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-3 gap-3'
+    : 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3'
   const previewPanelGridClass = previewPanelWide ? 'grid-cols-2' : 'grid-cols-1'
   const previewPanelGridStyle = previewPanelWide
     ? undefined
@@ -1377,11 +1864,20 @@ function EpisodeWorkbench({
   const previewPlayerPaneClass = previewPanelWide
     ? 'min-h-0 border-r border-gray-800'
     : 'min-h-0 border-b border-gray-800'
+  const selectedHistoryEntry = historyEntries.find((entry) => entry.id === selectedHistoryId) || historyEntries[0]
+  const selectedHistoryShots = Array.isArray(selectedHistoryEntry?.snapshot?.shots) ? selectedHistoryEntry?.snapshot?.shots || [] : []
+  const historyDiff = useMemo(
+    () => summarizeShotDiff(shots, selectedHistoryShots),
+    [selectedHistoryShots, shots],
+  )
 
   useEffect(() => {
     setTitleDraft(episode.title || '')
     setSummaryDraft(episode.summary || '')
     setScriptDraft(episode.script_excerpt || '')
+    setShowHistoryPanel(false)
+    setHistoryLoadedOnce(false)
+    setRestoringHistoryId(null)
   }, [episode.id, episode.title, episode.summary, episode.script_excerpt])
 
   useEffect(() => {
@@ -1402,10 +1898,28 @@ function EpisodeWorkbench({
   useEffect(() => {
     const handleViewportResize = () => {
       setPreviewPanelRect((prev) => clampPreviewPanelRect(prev))
+      setNarrowWorkbench(window.innerWidth < 1340)
     }
     window.addEventListener('resize', handleViewportResize)
     return () => window.removeEventListener('resize', handleViewportResize)
   }, [])
+
+  useEffect(() => {
+    if (narrowWorkbench && detailPanelExpanded) {
+      setDetailPanelWidth((prev) => Math.min(prev, 420))
+    }
+  }, [detailPanelExpanded, narrowWorkbench])
+
+  useEffect(() => {
+    if (!showHistoryPanel) return
+    if (!historyEntries.length) {
+      setSelectedHistoryId(null)
+      return
+    }
+    if (!selectedHistoryId || !historyEntries.some((entry) => entry.id === selectedHistoryId)) {
+      setSelectedHistoryId(historyEntries[0].id)
+    }
+  }, [historyEntries, selectedHistoryId, showHistoryPanel])
 
   useEffect(() => {
     const handlePointerMove = (event: MouseEvent) => {
@@ -1460,6 +1974,59 @@ function EpisodeWorkbench({
     }
   }, [])
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(LAYOUT_DETAIL_PANEL_WIDTH_KEY, String(Math.round(detailPanelWidth)))
+    } catch {
+      // ignore layout persistence errors
+    }
+  }, [detailPanelWidth])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(LAYOUT_DETAIL_PANEL_COLLAPSED_KEY, detailPanelCollapsed ? '1' : '0')
+    } catch {
+      // ignore layout persistence errors
+    }
+  }, [detailPanelCollapsed])
+
+  useEffect(() => {
+    const handlePointerMove = (event: MouseEvent) => {
+      const resizing = detailPanelResizeRef.current
+      if (!resizing) return
+      const delta = event.clientX - resizing.startX
+      const next = Math.min(540, Math.max(280, resizing.startWidth - delta))
+      setDetailPanelWidth(next)
+    }
+
+    const handlePointerUp = () => {
+      detailPanelResizeRef.current = null
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+    }
+
+    window.addEventListener('mousemove', handlePointerMove)
+    window.addEventListener('mouseup', handlePointerUp)
+    return () => {
+      window.removeEventListener('mousemove', handlePointerMove)
+      window.removeEventListener('mouseup', handlePointerUp)
+      handlePointerUp()
+    }
+  }, [])
+
+  const startDetailPanelResize = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!detailPanelExpanded) return
+    event.preventDefault()
+    detailPanelResizeRef.current = {
+      startX: event.clientX,
+      startWidth: detailPanelWidth,
+    }
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'col-resize'
+  }
+
   const startPreviewPanelDrag = (event: ReactMouseEvent<HTMLDivElement>) => {
     event.preventDefault()
     previewPanelResizeRef.current = null
@@ -1489,6 +2056,27 @@ function EpisodeWorkbench({
     }
     document.body.style.userSelect = 'none'
     document.body.style.cursor = resizeCursorByDirection(direction)
+  }
+
+  const toggleHistoryPanel = async () => {
+    const next = !showHistoryPanel
+    setShowHistoryPanel(next)
+    if (next && !historyLoadedOnce) {
+      setHistoryLoadedOnce(true)
+      await onLoadHistory(80, true)
+    }
+  }
+
+  const handleRestoreHistory = async (entry: StudioEpisodeHistoryEntry) => {
+    const action = formatHistoryAction(entry.action)
+    const confirmed = window.confirm(`确认回退到 ${action}（${new Date(entry.created_at).toLocaleString()}）？\n当前未保存的修改将被覆盖。`)
+    if (!confirmed) return
+    setRestoringHistoryId(entry.id)
+    try {
+      await onRestoreHistory(entry.id)
+    } finally {
+      setRestoringHistoryId(null)
+    }
   }
 
   return (
@@ -1533,6 +2121,26 @@ function EpisodeWorkbench({
             <FileText className="w-3 h-3" />
             {showScriptEditor ? '收起脚本' : '查看/编辑脚本'}
           </button>
+          <button
+            onClick={toggleHistoryPanel}
+            className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${
+              showHistoryPanel
+                ? 'bg-blue-700/60 text-blue-100'
+                : 'bg-gray-800 hover:bg-gray-700 text-gray-300'
+            }`}
+          >
+            <History className="w-3 h-3" />
+            {showHistoryPanel ? '关闭历史' : '历史记录'}
+          </button>
+          {showDetailPanel && (
+            <button
+              onClick={() => setDetailPanelCollapsed((v) => !v)}
+              className="flex items-center gap-1 px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-xs text-gray-300 transition-colors"
+            >
+              {detailPanelCollapsed ? <ChevronLeft className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+              {detailPanelCollapsed ? '展开详情' : '收起详情'}
+            </button>
+          )}
           <button
             onClick={() => setShowPreviewPanel((v) => !v)}
             disabled={shots.length === 0}
@@ -1639,7 +2247,7 @@ function EpisodeWorkbench({
               暂无镜头，点击"生成分镜规划"开始
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            <div className={shotGridClass}>
               {shots.map((shot, idx) => (
                 <ShotCard
                   key={shot.id}
@@ -1649,6 +2257,7 @@ function EpisodeWorkbench({
                   onClick={() => {
                     setSelectedShotId(shot.id === selectedShotId ? null : shot.id)
                     setPreviewShotId(shot.id)
+                    if (shot.id !== selectedShotId) setDetailPanelCollapsed(false)
                   }}
                   onGenerateFrame={() => onGenerateAsset(shot.id, 'frame')}
                   onGenerateEndFrame={() => onGenerateAsset(shot.id, 'end_frame')}
@@ -1662,19 +2271,205 @@ function EpisodeWorkbench({
         </div>
 
         {/* 右侧详情面板 */}
-        {selectedShot && (
-          <div className="w-80 border-l border-gray-800 overflow-y-auto p-4 bg-gray-900/50 shrink-0">
-            <ShotDetailPanel
-              shot={selectedShot}
-              elements={elements}
-              onGenerateAsset={(stage) => onGenerateAsset(selectedShot.id, stage)}
-              onInpaint={(payload) => onInpaintShot(selectedShot.id, payload)}
-              onUpdate={(updates) => onUpdateShot(selectedShot.id, updates)}
-              onClose={() => setSelectedShotId(null)}
-            />
-          </div>
+        {showDetailPanel && detailPanelExpanded && !detailPanelFloating && (
+          <div
+            onMouseDown={startDetailPanelResize}
+            className="w-1 shrink-0 cursor-col-resize bg-gray-800/80 hover:bg-purple-600/70 transition-colors"
+            title="拖拽调整详情面板宽度"
+          />
+        )}
+        {showDetailPanel && !detailPanelFloating && (
+          detailPanelExpanded ? (
+            <div
+              className="border-l border-gray-800 overflow-y-auto p-4 bg-gray-900/50 shrink-0 transition-[width] duration-200 ease-out"
+              style={{ width: detailPanelWidth }}
+            >
+              <ShotDetailPanel
+                shot={selectedShot!}
+                elements={elements}
+                onGenerateAsset={(stage) => onGenerateAsset(selectedShot!.id, stage)}
+                onInpaint={(payload) => onInpaintShot(selectedShot!.id, payload)}
+                onUpdate={(updates) => onUpdateShot(selectedShot!.id, updates)}
+                onCollapse={() => setDetailPanelCollapsed(true)}
+                onClose={() => setSelectedShotId(null)}
+              />
+            </div>
+          ) : (
+            <div className="w-10 border-l border-gray-800 bg-gray-900/50 shrink-0 flex items-center justify-center">
+              <button
+                onClick={() => setDetailPanelCollapsed(false)}
+                className="p-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"
+                title="展开详情面板"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )
         )}
       </div>
+
+      {showDetailPanel && detailPanelFloating && (
+        <div className="fixed z-[66] right-3 top-16 bottom-3 w-[min(440px,95vw)] rounded-xl border border-gray-700 bg-gray-950/95 backdrop-blur shadow-2xl overflow-y-auto p-4">
+          <ShotDetailPanel
+            shot={selectedShot!}
+            elements={elements}
+            onGenerateAsset={(stage) => onGenerateAsset(selectedShot!.id, stage)}
+            onInpaint={(payload) => onInpaintShot(selectedShot!.id, payload)}
+            onUpdate={(updates) => onUpdateShot(selectedShot!.id, updates)}
+            onCollapse={() => setDetailPanelCollapsed(true)}
+            onClose={() => setSelectedShotId(null)}
+          />
+        </div>
+      )}
+
+      {showHistoryPanel && (
+        <div className="fixed inset-0 z-[68] bg-black/45 flex justify-end">
+          <div className="h-full w-[min(980px,98vw)] border-l border-gray-800 bg-gray-950/98 backdrop-blur grid grid-cols-1 md:grid-cols-[340px_minmax(0,1fr)]">
+            <div className="min-h-0 border-r border-gray-800 flex flex-col">
+              <div className="h-12 px-4 border-b border-gray-800 flex items-center justify-between shrink-0">
+                <div>
+                  <p className="text-sm font-semibold text-gray-100">历史记录</p>
+                  <p className="text-[11px] text-gray-500">按时间倒序 · 点击可查看差异</p>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => onLoadHistory(80, true)}
+                    className="p-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"
+                    title="刷新历史"
+                  >
+                    {historyLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                  </button>
+                  <button
+                    onClick={() => setShowHistoryPanel(false)}
+                    className="p-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"
+                    title="关闭历史面板"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                {historyLoading && historyEntries.length === 0 && (
+                  <div className="h-full flex items-center justify-center text-xs text-gray-500 gap-2">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    正在加载历史记录...
+                  </div>
+                )}
+                {!historyLoading && historyEntries.length === 0 && (
+                  <div className="h-full flex items-center justify-center text-xs text-gray-500">
+                    暂无历史记录，执行规划/增强/编辑后会自动记录
+                  </div>
+                )}
+                {historyEntries.map((entry) => {
+                  const restoring = historyRestoring && restoringHistoryId === entry.id
+                  const selected = selectedHistoryEntry?.id === entry.id
+                  return (
+                    <button
+                      key={entry.id}
+                      onClick={() => setSelectedHistoryId(entry.id)}
+                      className={`w-full text-left rounded-lg border p-3 space-y-2 transition-colors ${
+                        selected ? 'border-blue-500/70 bg-blue-950/30' : 'border-gray-800 bg-gray-900/70 hover:border-gray-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-medium text-gray-200">{formatHistoryAction(entry.action)}</p>
+                        <span className="text-[10px] text-gray-500">{new Date(entry.created_at).toLocaleString()}</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-[11px] text-gray-400">
+                        <span>{entry.shot_count} 镜头</span>
+                        <span>·</span>
+                        <span>{entry.target_duration_seconds || 0}s</span>
+                      </div>
+                      {entry.summary && (
+                        <p className="text-[11px] text-gray-500 line-clamp-2 leading-relaxed">{entry.summary}</p>
+                      )}
+                      <div className="pt-1 flex justify-end">
+                        <button
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            handleRestoreHistory(entry)
+                          }}
+                          disabled={historyRestoring}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-xs disabled:opacity-50 transition-colors"
+                        >
+                          {restoring ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
+                          回退
+                        </button>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+            <div className="min-h-0 flex flex-col">
+              <div className="h-12 px-4 border-b border-gray-800 flex items-center justify-between shrink-0">
+                <div>
+                  <p className="text-sm font-semibold text-gray-100">版本差异</p>
+                  <p className="text-[11px] text-gray-500">
+                    {selectedHistoryEntry
+                      ? `${formatHistoryAction(selectedHistoryEntry.action)} · ${new Date(selectedHistoryEntry.created_at).toLocaleString()}`
+                      : '选择左侧历史记录查看差异'}
+                  </p>
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {!selectedHistoryEntry && (
+                  <div className="h-full flex items-center justify-center text-xs text-gray-500">
+                    请从左侧选择一个历史节点
+                  </div>
+                )}
+                {selectedHistoryEntry && (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
+                      <div className="rounded border border-green-800/50 bg-green-900/20 px-2 py-1.5 text-green-200">新增镜头: {historyDiff.added}</div>
+                      <div className="rounded border border-red-800/50 bg-red-900/20 px-2 py-1.5 text-red-200">移除镜头: {historyDiff.removed}</div>
+                      <div className="rounded border border-amber-800/50 bg-amber-900/20 px-2 py-1.5 text-amber-200">修改镜头: {historyDiff.changed}</div>
+                      <div className="rounded border border-gray-700 bg-gray-900/70 px-2 py-1.5 text-gray-300">未变镜头: {historyDiff.unchanged}</div>
+                    </div>
+                    {historyDiff.items.length === 0 && (
+                      <div className="rounded border border-gray-800 bg-gray-900/70 px-3 py-2 text-xs text-gray-400">
+                        与当前版本无可见差异
+                      </div>
+                    )}
+                    {historyDiff.items.map((item) => {
+                      const name = item.current?.name || item.previous?.name || `镜头${item.index + 1}`
+                      const badgeCls = item.type === 'added'
+                        ? 'bg-green-900/30 text-green-200 border-green-800/40'
+                        : item.type === 'removed'
+                          ? 'bg-red-900/30 text-red-200 border-red-800/40'
+                          : 'bg-amber-900/30 text-amber-200 border-amber-800/40'
+                      const badgeText = item.type === 'added' ? '新增' : item.type === 'removed' ? '移除' : '修改'
+                      return (
+                        <div key={`${item.type}_${item.index}_${name}`} className="rounded-lg border border-gray-800 bg-gray-900/70 p-3 space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-xs font-medium text-gray-200 truncate">#{item.index + 1} {name}</p>
+                            <span className={`text-[10px] px-2 py-0.5 rounded border ${badgeCls}`}>{badgeText}</span>
+                          </div>
+                          {item.changedFields && item.changedFields.length > 0 && (
+                            <p className="text-[11px] text-gray-400">变化字段: {item.changedFields.join('、')}</p>
+                          )}
+                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-2 text-[11px]">
+                            <div className="rounded border border-gray-800 bg-gray-950/70 p-2">
+                              <p className="text-gray-500 mb-1">历史版本</p>
+                              <p className="text-gray-300 truncate">{item.previous?.name || '—'}</p>
+                              <p className="text-gray-500">时长: {item.previous?.duration || 0}s</p>
+                            </div>
+                            <div className="rounded border border-gray-800 bg-gray-950/70 p-2">
+                              <p className="text-gray-500 mb-1">当前版本</p>
+                              <p className="text-gray-300 truncate">{item.current?.name || '—'}</p>
+                              <p className="text-gray-500">时长: {item.current?.duration || 0}s</p>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showPreviewPanel && (
         <div
@@ -1720,6 +2515,7 @@ function EpisodeWorkbench({
                 onSelectShot={(shotId) => {
                   setPreviewShotId(shotId)
                   setSelectedShotId(shotId)
+                  setDetailPanelCollapsed(false)
                 }}
                 onReorder={onReorderShots}
               />
@@ -1994,6 +2790,7 @@ function ShotDetailPanel({
   onGenerateAsset,
   onInpaint,
   onUpdate,
+  onCollapse,
   onClose,
 }: {
   shot: StudioShot
@@ -2001,6 +2798,7 @@ function ShotDetailPanel({
   onGenerateAsset: (stage: 'frame' | 'end_frame' | 'video' | 'audio') => void | Promise<void>
   onInpaint: (payload: { editPrompt: string; maskData?: string }) => void | Promise<void>
   onUpdate: (updates: Record<string, unknown>) => void
+  onCollapse: () => void
   onClose: () => void
 }) {
   const [editing, setEditing] = useState<Record<string, string>>({})
@@ -2046,9 +2844,14 @@ function ShotDetailPanel({
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h4 className="text-sm font-semibold text-gray-200">{shot.name || '镜头详情'}</h4>
-        <button onClick={onClose} className="text-gray-500 hover:text-white">
-          <ChevronRight className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button onClick={onCollapse} className="text-gray-500 hover:text-white" title="收起详情面板">
+            <ChevronRight className="w-4 h-4" />
+          </button>
+          <button onClick={onClose} className="text-gray-500 hover:text-white" title="关闭详情">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-2">
@@ -2753,56 +3556,6 @@ function SimpleTextDialog({
         <div className="p-4 max-h-[70vh] overflow-y-auto">
           <pre className="text-xs text-gray-300 whitespace-pre-wrap">{text}</pre>
         </div>
-      </div>
-    </div>
-  )
-}
-
-function ExportProgressToast({
-  progress,
-  onClose,
-}: {
-  progress: StudioExportProgress
-  onClose: () => void
-}) {
-  const phaseText =
-    progress.phase === 'packing' ? '正在打包...' :
-    progress.phase === 'downloading' ? '正在下载...' :
-    progress.phase === 'saving' ? '准备保存...' :
-    progress.phase === 'done' ? '导出完成' :
-    '导出失败'
-  const percent = progress.percent ?? (progress.total ? Math.round((progress.loaded / progress.total) * 100) : undefined)
-  const detailText = progress.total
-    ? `${formatStorage(progress.loaded)} / ${formatStorage(progress.total)}`
-    : (progress.loaded > 0 ? formatStorage(progress.loaded) : '')
-  const barColor = progress.phase === 'error'
-    ? 'bg-red-500'
-    : progress.phase === 'done'
-      ? 'bg-emerald-500'
-      : 'bg-gradient-to-r from-purple-500 to-indigo-400'
-
-  return (
-    <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[75] w-[30rem] max-w-[calc(100vw-1.5rem)] rounded-xl border border-gray-700 bg-gray-900/95 shadow-2xl p-3">
-      <div className="flex items-start justify-between gap-3 mb-2">
-        <div className="min-w-0">
-          <p className="text-sm text-gray-100 truncate">{progress.title}</p>
-          <p className={`text-xs ${progress.phase === 'error' ? 'text-red-300' : 'text-gray-400'}`}>
-            {phaseText}{progress.error ? `：${progress.error}` : ''}
-          </p>
-        </div>
-        <button onClick={onClose} className="text-gray-500 hover:text-white">
-          <X className="w-3.5 h-3.5" />
-        </button>
-      </div>
-      <div className="h-2 rounded bg-gray-800 overflow-hidden">
-        <div
-          className={`h-full ${barColor} transition-all`}
-          style={{ width: `${percent !== undefined ? Math.max(2, Math.min(100, percent)) : 45}%` }}
-        />
-      </div>
-      <div className="mt-1 text-[11px] text-gray-500 flex items-center justify-between">
-        <span>{detailText}</span>
-        <span>{percent !== undefined ? `${percent}%` : ''}</span>
       </div>
     </div>
   )

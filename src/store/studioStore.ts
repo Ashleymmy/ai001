@@ -7,9 +7,57 @@ import type {
   StudioElement,
   StudioShot,
   StudioEpisodeElement,
+  StudioBatchGenerateStreamEvent,
+  StudioEpisodeHistoryEntry,
 } from '../services/api'
 
 export type { StudioSeries, StudioEpisode, StudioElement, StudioShot, StudioEpisodeElement }
+
+export type StudioGenerationStage =
+  | 'idle'
+  | 'generating_elements'
+  | 'generating_frames'
+  | 'generating_end_frames'
+  | 'generating_videos'
+  | 'generating_audio'
+  | 'complete'
+  | 'error'
+
+export interface StudioGenerationProgress {
+  stage: StudioGenerationStage
+  currentItem: string
+  currentIndex: number
+  totalItems: number
+  percent: number
+  errors: string[]
+}
+
+function createInitialGenerationProgress(): StudioGenerationProgress {
+  return {
+    stage: 'idle',
+    currentItem: '',
+    currentIndex: 0,
+    totalItems: 0,
+    percent: 0,
+    errors: [],
+  }
+}
+
+function mapBatchStage(stage: StudioBatchGenerateStreamEvent['stage']): StudioGenerationStage {
+  if (stage === 'elements') return 'generating_elements'
+  if (stage === 'frames') return 'generating_frames'
+  if (stage === 'end_frames') return 'generating_end_frames'
+  if (stage === 'videos') return 'generating_videos'
+  if (stage === 'audio') return 'generating_audio'
+  return 'idle'
+}
+
+function normalizeProgressNumber(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || Number.isNaN(value)) return fallback
+  return Math.max(0, value)
+}
+
+let generationProgressResetTimer: ReturnType<typeof setTimeout> | null = null
 
 type StudioErrorParsed = {
   message: string
@@ -70,11 +118,15 @@ interface StudioState {
   // 当前集详情
   currentEpisode: StudioEpisode | null
   shots: StudioShot[]
+  episodeHistory: StudioEpisodeHistoryEntry[]
+  historyLoading: boolean
+  historyRestoring: boolean
 
   // 操作状态
   creating: boolean
   planning: boolean
   generating: boolean
+  generationProgress: StudioGenerationProgress
 
   // Actions
   loadSeriesList: () => Promise<void>
@@ -108,6 +160,8 @@ interface StudioState {
   generateShotAsset: (shotId: string, stage: 'frame' | 'end_frame' | 'video' | 'audio') => Promise<void>
   inpaintShotFrame: (shotId: string, params: { edit_prompt: string; mask_data?: string; width?: number; height?: number }) => Promise<void>
   reorderShots: (episodeId: string, shotIds: string[]) => Promise<void>
+  loadEpisodeHistory: (episodeId: string, limit?: number, includeSnapshot?: boolean) => Promise<void>
+  restoreEpisodeHistory: (episodeId: string, historyId: string) => Promise<void>
 
   batchGenerate: (episodeId: string, stages?: string[]) => Promise<void>
 
@@ -127,9 +181,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   sharedElements: [],
   currentEpisode: null,
   shots: [],
+  episodeHistory: [],
+  historyLoading: false,
+  historyRestoring: false,
   creating: false,
   planning: false,
   generating: false,
+  generationProgress: createInitialGenerationProgress(),
 
   clearError: () => set({ error: null, errorCode: null, errorContext: null }),
 
@@ -154,6 +212,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         currentEpisodeId: null,
         currentEpisode: null,
         shots: [],
+        episodeHistory: [],
+        historyLoading: false,
+        historyRestoring: false,
       })
       return
     }
@@ -166,6 +227,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       currentEpisodeId: null,
       currentEpisode: null,
       shots: [],
+      episodeHistory: [],
+      historyLoading: false,
+      historyRestoring: false,
     })
     try {
       const detail = await api.studioGetSeries(seriesId)
@@ -183,7 +247,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
   selectEpisode: async (episodeId) => {
     if (!episodeId) {
-      set({ currentEpisodeId: null, currentEpisode: null, shots: [] })
+      set({ currentEpisodeId: null, currentEpisode: null, shots: [], episodeHistory: [], historyLoading: false, historyRestoring: false })
       return
     }
     set({ loading: true, error: null, errorCode: null, errorContext: null, currentEpisodeId: episodeId })
@@ -192,6 +256,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       set({
         currentEpisode: detail,
         shots: detail.shots || [],
+        episodeHistory: [],
+        historyLoading: false,
+        historyRestoring: false,
         loading: false,
       })
     } catch (e: unknown) {
@@ -239,7 +306,18 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     try {
       await api.studioDeleteSeries(seriesId)
       if (get().currentSeriesId === seriesId) {
-        set({ currentSeriesId: null, currentSeries: null, episodes: [], sharedElements: [], currentEpisodeId: null, currentEpisode: null, shots: [] })
+        set({
+          currentSeriesId: null,
+          currentSeries: null,
+          episodes: [],
+          sharedElements: [],
+          currentEpisodeId: null,
+          currentEpisode: null,
+          shots: [],
+          episodeHistory: [],
+          historyLoading: false,
+          historyRestoring: false,
+        })
       }
       await get().loadSeriesList()
     } catch (e: unknown) {
@@ -331,7 +409,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   },
 
   generateElementImage: async (elementId) => {
-    set({ generating: true, error: null, errorCode: null, errorContext: null })
+    set({ generating: true, error: null, errorCode: null, errorContext: null, generationProgress: createInitialGenerationProgress() })
     try {
       await api.studioGenerateElementImage(elementId)
       const seriesId = get().currentSeriesId
@@ -375,7 +453,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   },
 
   generateShotAsset: async (shotId, stage) => {
-    set({ generating: true, error: null, errorCode: null, errorContext: null })
+    set({ generating: true, error: null, errorCode: null, errorContext: null, generationProgress: createInitialGenerationProgress() })
     try {
       await api.studioGenerateShotAsset(shotId, { stage })
       const epId = get().currentEpisodeId
@@ -391,7 +469,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   },
 
   inpaintShotFrame: async (shotId, params) => {
-    set({ generating: true, error: null, errorCode: null, errorContext: null })
+    set({ generating: true, error: null, errorCode: null, errorContext: null, generationProgress: createInitialGenerationProgress() })
     try {
       await api.studioInpaintShotFrame(shotId, params)
       const epId = get().currentEpisodeId
@@ -418,15 +496,262 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }
   },
 
-  batchGenerate: async (episodeId, stages) => {
-    set({ generating: true, error: null, errorCode: null, errorContext: null })
+  loadEpisodeHistory: async (episodeId, limit = 50, includeSnapshot = false) => {
+    set({ historyLoading: true })
     try {
-      await api.studioBatchGenerate(episodeId, stages)
-      await get().selectEpisode(episodeId)
-      set({ generating: false })
+      const history = await api.studioGetEpisodeHistory(episodeId, limit, includeSnapshot)
+      if (get().currentEpisodeId === episodeId) {
+        set({ episodeHistory: history, historyLoading: false })
+      } else {
+        set({ historyLoading: false })
+      }
     } catch (e: unknown) {
       const parsed = parseStudioError(e)
-      set({ generating: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
+      set({ historyLoading: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
+    }
+  },
+
+  restoreEpisodeHistory: async (episodeId, historyId) => {
+    set({ historyRestoring: true, error: null, errorCode: null, errorContext: null })
+    try {
+      const result = await api.studioRestoreEpisodeHistory(episodeId, historyId)
+      const restoredEpisode = result.episode
+      if (get().currentEpisodeId === episodeId) {
+        set({
+          currentEpisode: restoredEpisode,
+          shots: restoredEpisode.shots || [],
+          episodeHistory: result.history || [],
+          historyRestoring: false,
+        })
+      } else {
+        set({ historyRestoring: false })
+      }
+      const seriesId = get().currentSeriesId
+      if (seriesId) {
+        const eps = await api.studioListEpisodes(seriesId)
+        set({ episodes: eps })
+      }
+    } catch (e: unknown) {
+      const parsed = parseStudioError(e)
+      set({ historyRestoring: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
+    }
+  },
+
+  batchGenerate: async (episodeId, stages) => {
+    if (generationProgressResetTimer) {
+      clearTimeout(generationProgressResetTimer)
+      generationProgressResetTimer = null
+    }
+    set({
+      generating: true,
+      error: null,
+      errorCode: null,
+      errorContext: null,
+      generationProgress: createInitialGenerationProgress(),
+    })
+
+    const runFallbackBatch = async () => {
+      await api.studioBatchGenerate(episodeId, stages)
+      set((state) => ({
+        generationProgress: {
+          ...state.generationProgress,
+          stage: 'complete',
+          currentItem: '批量生成完成（兼容模式）',
+          currentIndex: state.generationProgress.totalItems,
+          percent: 100,
+        },
+      }))
+    }
+
+    try {
+      const runStreamBatch = async () => {
+        await new Promise<void>((resolve, reject) => {
+          let finished = false
+          let hasProgressEvent = false
+          let closeStream: (() => void) | null = null
+
+          const safeClose = () => {
+            if (!closeStream) return
+            closeStream()
+            closeStream = null
+          }
+
+          const resolveOnce = () => {
+            if (finished) return
+            finished = true
+            safeClose()
+            resolve()
+          }
+
+          const rejectOnce = (err: Error, isTransport: boolean = false) => {
+            if (finished) return
+            finished = true
+            safeClose()
+            const tagged = err as Error & { isStreamTransportError?: boolean; hasProgressEvent?: boolean }
+            tagged.isStreamTransportError = isTransport
+            tagged.hasProgressEvent = hasProgressEvent
+            reject(tagged)
+          }
+
+          closeStream = api.studioBatchGenerateStream(
+            episodeId,
+            stages,
+            (event) => {
+              hasProgressEvent = true
+
+              if (event.type === 'start') {
+                set((state) => {
+                  const total = normalizeProgressNumber(event.total, state.generationProgress.totalItems)
+                  return {
+                    generationProgress: {
+                      ...state.generationProgress,
+                      currentIndex: 0,
+                      totalItems: total,
+                      percent: 0,
+                    },
+                  }
+                })
+                return
+              }
+
+              if (event.type === 'stage_start') {
+                set((state) => ({
+                  generationProgress: {
+                    ...state.generationProgress,
+                    stage: mapBatchStage(event.stage),
+                    currentItem: '',
+                    totalItems: normalizeProgressNumber(event.total, state.generationProgress.totalItems),
+                  },
+                }))
+                return
+              }
+
+              if (event.type === 'item_start') {
+                set((state) => ({
+                  generationProgress: {
+                    ...state.generationProgress,
+                    stage: mapBatchStage(event.stage),
+                    currentItem: event.item_name || state.generationProgress.currentItem,
+                    currentIndex: Math.min(
+                      normalizeProgressNumber(event.total, state.generationProgress.totalItems) || Number.MAX_SAFE_INTEGER,
+                      Math.max(
+                        state.generationProgress.currentIndex,
+                        normalizeProgressNumber(event.processed, state.generationProgress.currentIndex) + 1
+                      )
+                    ),
+                    totalItems: normalizeProgressNumber(event.total, state.generationProgress.totalItems),
+                    percent: Math.min(100, normalizeProgressNumber(event.percent, state.generationProgress.percent)),
+                  },
+                }))
+                return
+              }
+
+              if (event.type === 'item_complete') {
+                set((state) => {
+                  const errorList = [...state.generationProgress.errors]
+                  if (event.ok === false && event.error) {
+                    errorList.push(`${event.item_name || '未命名项'}: ${event.error}`)
+                  }
+                  return {
+                    generationProgress: {
+                      ...state.generationProgress,
+                      stage: mapBatchStage(event.stage),
+                      currentItem: event.item_name || state.generationProgress.currentItem,
+                      currentIndex: normalizeProgressNumber(event.processed, state.generationProgress.currentIndex),
+                      totalItems: normalizeProgressNumber(event.total, state.generationProgress.totalItems),
+                      percent: Math.min(100, normalizeProgressNumber(event.percent, state.generationProgress.percent)),
+                      errors: errorList,
+                    },
+                  }
+                })
+                return
+              }
+
+              if (event.type === 'done') {
+                set((state) => {
+                  const total = normalizeProgressNumber(event.total, state.generationProgress.totalItems)
+                  const current = normalizeProgressNumber(event.processed, total || state.generationProgress.currentIndex)
+                  const failed = normalizeProgressNumber(event.failed, state.generationProgress.errors.length)
+                  return {
+                    generationProgress: {
+                      ...state.generationProgress,
+                      stage: 'complete',
+                      currentItem: failed > 0 ? `已完成，失败 ${failed} 项` : '全部资产生成完成',
+                      currentIndex: total > 0 ? total : current,
+                      totalItems: total,
+                      percent: 100,
+                    },
+                  }
+                })
+                resolveOnce()
+                return
+              }
+
+              if (event.type === 'error') {
+                const message = event.detail || event.error || '批量生成失败'
+                set((state) => ({
+                  generationProgress: {
+                    ...state.generationProgress,
+                    stage: 'error',
+                    currentItem: message,
+                    errors: [...state.generationProgress.errors, message],
+                  },
+                }))
+                rejectOnce(new Error(message))
+              }
+            },
+            (streamError) => {
+              rejectOnce(streamError, true)
+            },
+          )
+        })
+      }
+
+      if (typeof EventSource === 'undefined') {
+        await runFallbackBatch()
+      } else {
+        try {
+          await runStreamBatch()
+        } catch (e: unknown) {
+          const streamError = e as Error & { isStreamTransportError?: boolean; hasProgressEvent?: boolean }
+          if (streamError.isStreamTransportError && !streamError.hasProgressEvent) {
+            await runFallbackBatch()
+          } else {
+            throw e
+          }
+        }
+      }
+
+      await get().selectEpisode(episodeId)
+      const seriesId = get().currentSeriesId
+      if (seriesId) {
+        const eps = await api.studioListEpisodes(seriesId)
+        set({ episodes: eps })
+      }
+      set({ generating: false })
+
+      generationProgressResetTimer = setTimeout(() => {
+        if (!get().generating) {
+          set({ generationProgress: createInitialGenerationProgress() })
+        }
+        generationProgressResetTimer = null
+      }, 2600)
+    } catch (e: unknown) {
+      const parsed = parseStudioError(e)
+      set((state) => ({
+        generating: false,
+        error: parsed.message,
+        errorCode: parsed.code,
+        errorContext: parsed.context,
+        generationProgress: state.generationProgress.stage === 'error'
+          ? state.generationProgress
+          : {
+              ...state.generationProgress,
+              stage: 'error',
+              currentItem: parsed.message,
+              errors: [...state.generationProgress.errors, parsed.message],
+            },
+      }))
     }
   },
 }))

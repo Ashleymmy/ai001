@@ -5902,6 +5902,7 @@ def _studio_raise_from_exception(e: Exception) -> None:
             "series_not_found",
             "shot_not_found",
             "element_not_found",
+            "history_not_found",
             "shot_missing_start_frame",
             "config_missing_llm",
             "config_missing_image",
@@ -5996,6 +5997,10 @@ async def studio_update_episode(episode_id: str, req: StudioEpisodeUpdateRequest
     result = service.storage.update_episode(episode_id, updates)
     if not result:
         _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+    try:
+        service.storage.record_episode_history(episode_id, "edit_episode")
+    except Exception as e:
+        print(f"[Studio] 记录 edit_episode 历史失败: {e}")
     return result
 
 
@@ -6121,6 +6126,11 @@ async def studio_update_shot(shot_id: str, req: StudioShotUpdateRequest):
     result = service.storage.update_shot(shot_id, updates)
     if not result:
         _studio_raise(404, "镜头不存在", "shot_not_found", {"shot_id": shot_id})
+    if result.get("episode_id"):
+        try:
+            service.storage.record_episode_history(result["episode_id"], "edit_shot")
+        except Exception as e:
+            print(f"[Studio] 记录 edit_shot 历史失败: {e}")
     return result
 
 
@@ -6185,6 +6195,77 @@ async def studio_generate_element_image(element_id: str):
 
 # --- 批量生成 ---
 
+@app.get("/api/studio/episodes/{episode_id}/batch-generate-stream")
+async def studio_batch_generate_stream(
+    episode_id: str,
+    stages: Optional[str] = Query(None),
+):
+    service = _studio_ensure_service_ready()
+
+    if not service.storage.get_episode(episode_id):
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+
+    default_stages = ["elements", "frames", "end_frames", "videos", "audio"]
+    stage_list = [s.strip() for s in (stages or "").split(",") if s.strip()] or default_stages
+    allowed_stages = set(default_stages)
+    invalid_stages = [s for s in stage_list if s not in allowed_stages]
+    if invalid_stages:
+        _studio_raise(
+            400,
+            f"无效的生成阶段: {', '.join(invalid_stages)}",
+            "invalid_generation_stage",
+            {"invalid_stages": invalid_stages, "allowed_stages": default_stages},
+        )
+
+    async def event_generator():
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def on_progress(event: Dict[str, Any]) -> None:
+            await queue.put(event)
+
+        worker = asyncio.create_task(
+            service.batch_generate_episode(
+                episode_id=episode_id,
+                stages=stage_list,
+                progress_callback=on_progress,
+            )
+        )
+
+        try:
+            while True:
+                if worker.done() and queue.empty():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=0.5)
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+
+            try:
+                await worker
+            except Exception as e:
+                payload = e.to_payload() if isinstance(e, StudioServiceError) else _studio_error_payload(str(e), "studio_internal_error")
+                payload["type"] = "error"
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        finally:
+            if not worker.done():
+                worker.cancel()
+                try:
+                    await worker
+                except Exception:
+                    pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.post("/api/studio/episodes/{episode_id}/batch-generate")
 async def studio_batch_generate(episode_id: str, req: StudioBatchGenerateRequest):
     service = _studio_ensure_service_ready()
@@ -6192,6 +6273,40 @@ async def studio_batch_generate(episode_id: str, req: StudioBatchGenerateRequest
         return await service.batch_generate_episode(
             episode_id, stages=req.stages
         )
+    except Exception as e:
+        _studio_raise_from_exception(e)
+
+
+@app.get("/api/studio/episodes/{episode_id}/history")
+async def studio_get_episode_history(
+    episode_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    include_snapshot: bool = Query(False),
+):
+    service = _studio_ensure_service_ready()
+    try:
+        return service.get_episode_history(
+            episode_id,
+            limit=limit,
+            include_snapshot=include_snapshot,
+        )
+    except Exception as e:
+        _studio_raise_from_exception(e)
+
+
+@app.post("/api/studio/episodes/{episode_id}/restore/{history_id}")
+async def studio_restore_episode_history(episode_id: str, history_id: str):
+    service = _studio_ensure_service_ready()
+    try:
+        service.restore_episode_history(episode_id, history_id)
+        detail = service.get_episode_detail(episode_id)
+        return {
+            "ok": True,
+            "episode_id": episode_id,
+            "history_id": history_id,
+            "episode": detail,
+            "history": service.get_episode_history(episode_id, limit=50, include_snapshot=True),
+        }
     except Exception as e:
         _studio_raise_from_exception(e)
 

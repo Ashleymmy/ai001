@@ -6,7 +6,8 @@
 import json
 import math
 import re
-from typing import Any, Dict, List, Optional
+import inspect
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from .studio_storage import StudioStorage
 from .studio.prompts import (
@@ -243,6 +244,12 @@ class StudioService:
             return max(1.0, float(raw))
         except Exception:
             return 6.0
+
+    def _record_episode_history_safe(self, episode_id: str, action: str) -> None:
+        try:
+            self.storage.record_episode_history(episode_id, action)
+        except Exception as e:
+            print(f"[Studio] 记录历史失败（{action} / {episode_id}）: {e}")
 
     # ------------------------------------------------------------------
     # A. 大脚本分幕拆解
@@ -541,6 +548,7 @@ class StudioService:
 
         created_shots = self.storage.bulk_add_shots(episode_id, shots_data)
         print(f"[Studio] 第 {act_num} 集规划完成，共 {len(created_shots)} 个镜头")
+        self._record_episode_history_safe(episode_id, "plan")
 
         return {
             "episode_id": episode_id,
@@ -658,6 +666,7 @@ class StudioService:
                 self.storage.reorder_shots(episode_id, ordered_ids)
 
         print(f"[Studio] 增强完成: 修改 {patched_count} 个镜头, 新增 {added_count} 个镜头")
+        self._record_episode_history_safe(episode_id, f"enhance_{mode}")
         return {
             "episode_id": episode_id,
             "mode": mode,
@@ -1056,6 +1065,7 @@ class StudioService:
         self,
         episode_id: str,
         stages: Optional[List[str]] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None] | None]] = None,
     ) -> Dict[str, Any]:
         """批量生成单集资产
 
@@ -1075,77 +1085,319 @@ class StudioService:
 
         result: Dict[str, Any] = {"episode_id": episode_id, "stages": {}}
 
+        async def emit(event: Dict[str, Any]) -> None:
+            if not progress_callback:
+                return
+            maybe = progress_callback(event)
+            if inspect.isawaitable(maybe):
+                await maybe
+
+        # 预估总任务数（用于前端进度显示）
+        initial_shots = self.storage.get_shots(episode_id)
+        precomputed_totals: Dict[str, int] = {}
+        if "elements" in stages:
+            series_id = episode["series_id"]
+            precomputed_totals["elements"] = len([el for el in self.storage.get_shared_elements(series_id) if not el.get("image_url")])
+        if "frames" in stages:
+            precomputed_totals["frames"] = len([shot for shot in initial_shots if not shot.get("start_image_url")])
+        if "end_frames" in stages:
+            precomputed_totals["end_frames"] = len([shot for shot in initial_shots if shot.get("end_prompt") and not shot.get("end_image_url")])
+        if "videos" in stages:
+            precomputed_totals["videos"] = len([
+                shot for shot in initial_shots
+                if (shot.get("start_image_url") or ("frames" in stages and not shot.get("start_image_url")))
+                and not shot.get("video_url")
+            ])
+        if "audio" in stages:
+            precomputed_totals["audio"] = len([
+                shot for shot in initial_shots
+                if ((shot.get("narration") or "").strip() or (shot.get("dialogue_script") or "").strip())
+                and not shot.get("audio_url")
+            ])
+        total_assets = sum(precomputed_totals.values())
+        processed_assets = 0
+        failed_assets = 0
+
+        await emit({
+            "type": "start",
+            "episode_id": episode_id,
+            "stages": stages,
+            "total": total_assets,
+        })
+
+        def item_percent() -> int:
+            if total_assets <= 0:
+                return 100
+            return int(round((processed_assets / total_assets) * 100))
+
         # 1) 生成共享元素参考图
         if "elements" in stages:
             series_id = episode["series_id"]
             elements = self.storage.get_shared_elements(series_id)
+            element_targets = [el for el in elements if not el.get("image_url")]
             elem_results = []
-            for el in elements:
-                if not el.get("image_url"):
-                    try:
-                        r = await self.generate_element_image(el["id"])
-                        elem_results.append(r)
-                    except Exception as e:
-                        elem_results.append({"element_id": el["id"], "error": str(e)})
+            stage_total = len(element_targets)
+            await emit({"type": "stage_start", "stage": "elements", "stage_total": stage_total, "total": total_assets})
+            for index, el in enumerate(element_targets, start=1):
+                await emit({
+                    "type": "item_start",
+                    "stage": "elements",
+                    "item_id": el["id"],
+                    "item_name": el.get("name") or el["id"],
+                    "stage_index": index,
+                    "stage_total": stage_total,
+                    "processed": processed_assets,
+                    "total": total_assets,
+                    "percent": item_percent(),
+                })
+                ok = True
+                error_message: Optional[str] = None
+                try:
+                    r = await self.generate_element_image(el["id"])
+                    elem_results.append(r)
+                except Exception as e:
+                    ok = False
+                    error_message = str(e)
+                    failed_assets += 1
+                    elem_results.append({"element_id": el["id"], "error": error_message})
+                processed_assets += 1
+                await emit({
+                    "type": "item_complete",
+                    "stage": "elements",
+                    "item_id": el["id"],
+                    "item_name": el.get("name") or el["id"],
+                    "stage_index": index,
+                    "stage_total": stage_total,
+                    "ok": ok,
+                    "error": error_message,
+                    "processed": processed_assets,
+                    "total": total_assets,
+                    "percent": item_percent(),
+                })
             result["stages"]["elements"] = elem_results
 
         shots = self.storage.get_shots(episode_id)
 
         # 2) 生成起始帧
         if "frames" in stages:
+            frame_targets = [shot for shot in shots if not shot.get("start_image_url")]
             frame_results = []
-            for shot in shots:
-                if not shot.get("start_image_url"):
-                    try:
-                        r = await self.generate_shot_frame(shot["id"])
-                        frame_results.append(r)
-                    except Exception as e:
-                        frame_results.append({"shot_id": shot["id"], "error": str(e)})
+            stage_total = len(frame_targets)
+            await emit({"type": "stage_start", "stage": "frames", "stage_total": stage_total, "total": total_assets})
+            for index, shot in enumerate(frame_targets, start=1):
+                await emit({
+                    "type": "item_start",
+                    "stage": "frames",
+                    "item_id": shot["id"],
+                    "item_name": shot.get("name") or shot["id"],
+                    "stage_index": index,
+                    "stage_total": stage_total,
+                    "processed": processed_assets,
+                    "total": total_assets,
+                    "percent": item_percent(),
+                })
+                ok = True
+                error_message: Optional[str] = None
+                try:
+                    r = await self.generate_shot_frame(shot["id"])
+                    frame_results.append(r)
+                except Exception as e:
+                    ok = False
+                    error_message = str(e)
+                    failed_assets += 1
+                    frame_results.append({"shot_id": shot["id"], "error": error_message})
+                processed_assets += 1
+                await emit({
+                    "type": "item_complete",
+                    "stage": "frames",
+                    "item_id": shot["id"],
+                    "item_name": shot.get("name") or shot["id"],
+                    "stage_index": index,
+                    "stage_total": stage_total,
+                    "ok": ok,
+                    "error": error_message,
+                    "processed": processed_assets,
+                    "total": total_assets,
+                    "percent": item_percent(),
+                })
             result["stages"]["frames"] = frame_results
 
         # 2.5) 生成尾帧
         if "end_frames" in stages:
             end_frame_results = []
             shots = self.storage.get_shots(episode_id)
-            for shot in shots:
-                if shot.get("end_prompt") and not shot.get("end_image_url"):
-                    try:
-                        r = await self.generate_shot_end_frame(shot["id"])
-                        end_frame_results.append(r)
-                    except Exception as e:
-                        end_frame_results.append({"shot_id": shot["id"], "error": str(e)})
+            end_frame_targets = [shot for shot in shots if shot.get("end_prompt") and not shot.get("end_image_url")]
+            stage_total = len(end_frame_targets)
+            await emit({"type": "stage_start", "stage": "end_frames", "stage_total": stage_total, "total": total_assets})
+            for index, shot in enumerate(end_frame_targets, start=1):
+                await emit({
+                    "type": "item_start",
+                    "stage": "end_frames",
+                    "item_id": shot["id"],
+                    "item_name": shot.get("name") or shot["id"],
+                    "stage_index": index,
+                    "stage_total": stage_total,
+                    "processed": processed_assets,
+                    "total": total_assets,
+                    "percent": item_percent(),
+                })
+                ok = True
+                error_message: Optional[str] = None
+                try:
+                    r = await self.generate_shot_end_frame(shot["id"])
+                    end_frame_results.append(r)
+                except Exception as e:
+                    ok = False
+                    error_message = str(e)
+                    failed_assets += 1
+                    end_frame_results.append({"shot_id": shot["id"], "error": error_message})
+                processed_assets += 1
+                await emit({
+                    "type": "item_complete",
+                    "stage": "end_frames",
+                    "item_id": shot["id"],
+                    "item_name": shot.get("name") or shot["id"],
+                    "stage_index": index,
+                    "stage_total": stage_total,
+                    "ok": ok,
+                    "error": error_message,
+                    "processed": processed_assets,
+                    "total": total_assets,
+                    "percent": item_percent(),
+                })
             result["stages"]["end_frames"] = end_frame_results
 
         # 3) 生成视频
         if "videos" in stages:
             # 刷新 shots（起始帧 URL 可能已更新）
             shots = self.storage.get_shots(episode_id)
+            video_targets = [shot for shot in shots if not shot.get("video_url")]
+            stage_total = len([shot for shot in video_targets if shot.get("start_image_url")]) + max(0, precomputed_totals.get("videos", 0) - len([shot for shot in video_targets if shot.get("start_image_url")]))
             video_results = []
-            for shot in shots:
-                if shot.get("start_image_url") and not shot.get("video_url"):
-                    try:
-                        r = await self.generate_shot_video(shot["id"])
-                        video_results.append(r)
-                    except Exception as e:
-                        video_results.append({"shot_id": shot["id"], "error": str(e)})
+            await emit({"type": "stage_start", "stage": "videos", "stage_total": stage_total, "total": total_assets})
+            stage_index = 0
+            for shot in video_targets:
+                # 只有有首帧才能生成视频；无首帧按跳过处理，保证总进度单调
+                if not shot.get("start_image_url"):
+                    if "videos" in precomputed_totals and precomputed_totals["videos"] > 0:
+                        stage_index += 1
+                        processed_assets += 1
+                        failed_assets += 1
+                        reason = "缺少首帧，跳过视频生成"
+                        video_results.append({"shot_id": shot["id"], "error": reason})
+                        await emit({
+                            "type": "item_complete",
+                            "stage": "videos",
+                            "item_id": shot["id"],
+                            "item_name": shot.get("name") or shot["id"],
+                            "stage_index": stage_index,
+                            "stage_total": stage_total,
+                            "ok": False,
+                            "error": reason,
+                            "processed": processed_assets,
+                            "total": total_assets,
+                            "percent": item_percent(),
+                        })
+                    continue
+                stage_index += 1
+                await emit({
+                    "type": "item_start",
+                    "stage": "videos",
+                    "item_id": shot["id"],
+                    "item_name": shot.get("name") or shot["id"],
+                    "stage_index": stage_index,
+                    "stage_total": stage_total,
+                    "processed": processed_assets,
+                    "total": total_assets,
+                    "percent": item_percent(),
+                })
+                ok = True
+                error_message: Optional[str] = None
+                try:
+                    r = await self.generate_shot_video(shot["id"])
+                    video_results.append(r)
+                except Exception as e:
+                    ok = False
+                    error_message = str(e)
+                    failed_assets += 1
+                    video_results.append({"shot_id": shot["id"], "error": error_message})
+                processed_assets += 1
+                await emit({
+                    "type": "item_complete",
+                    "stage": "videos",
+                    "item_id": shot["id"],
+                    "item_name": shot.get("name") or shot["id"],
+                    "stage_index": stage_index,
+                    "stage_total": stage_total,
+                    "ok": ok,
+                    "error": error_message,
+                    "processed": processed_assets,
+                    "total": total_assets,
+                    "percent": item_percent(),
+                })
             result["stages"]["videos"] = video_results
 
         # 4) 生成音频
         if "audio" in stages:
             shots = self.storage.get_shots(episode_id)
+            audio_targets = [
+                shot for shot in shots
+                if ((shot.get("narration") or "").strip() or (shot.get("dialogue_script") or "").strip())
+                and not shot.get("audio_url")
+            ]
+            stage_total = len(audio_targets)
             audio_results = []
-            for shot in shots:
-                text = (shot.get("narration") or "").strip() or (shot.get("dialogue_script") or "").strip()
-                if text and not shot.get("audio_url"):
-                    try:
-                        r = await self.generate_shot_audio(shot["id"])
-                        audio_results.append(r)
-                    except Exception as e:
-                        audio_results.append({"shot_id": shot["id"], "error": str(e)})
+            await emit({"type": "stage_start", "stage": "audio", "stage_total": stage_total, "total": total_assets})
+            for index, shot in enumerate(audio_targets, start=1):
+                await emit({
+                    "type": "item_start",
+                    "stage": "audio",
+                    "item_id": shot["id"],
+                    "item_name": shot.get("name") or shot["id"],
+                    "stage_index": index,
+                    "stage_total": stage_total,
+                    "processed": processed_assets,
+                    "total": total_assets,
+                    "percent": item_percent(),
+                })
+                ok = True
+                error_message: Optional[str] = None
+                try:
+                    r = await self.generate_shot_audio(shot["id"])
+                    audio_results.append(r)
+                except Exception as e:
+                    ok = False
+                    error_message = str(e)
+                    failed_assets += 1
+                    audio_results.append({"shot_id": shot["id"], "error": error_message})
+                processed_assets += 1
+                await emit({
+                    "type": "item_complete",
+                    "stage": "audio",
+                    "item_id": shot["id"],
+                    "item_name": shot.get("name") or shot["id"],
+                    "stage_index": index,
+                    "stage_total": stage_total,
+                    "ok": ok,
+                    "error": error_message,
+                    "processed": processed_assets,
+                    "total": total_assets,
+                    "percent": item_percent(),
+                })
             result["stages"]["audio"] = audio_results
 
         # 更新集状态
         self.storage.update_episode(episode_id, {"status": "in_progress"})
+        self._record_episode_history_safe(episode_id, "batch_generate")
+
+        await emit({
+            "type": "done",
+            "episode_id": episode_id,
+            "processed": processed_assets,
+            "failed": failed_assets,
+            "total": total_assets,
+            "percent": 100 if total_assets > 0 else 100,
+        })
 
         return result
 
@@ -1220,3 +1472,40 @@ class StudioService:
             "shots": shots,
             "episode_elements": ep_elements,
         }
+
+    def get_episode_history(
+        self,
+        episode_id: str,
+        limit: int = 50,
+        include_snapshot: bool = False,
+    ) -> List[Dict[str, Any]]:
+        episode = self.storage.get_episode(episode_id)
+        if not episode:
+            raise StudioServiceError(
+                f"集 {episode_id} 不存在",
+                error_code="episode_not_found",
+                context={"episode_id": episode_id},
+            )
+        return self.storage.list_episode_history(
+            episode_id,
+            limit=limit,
+            include_snapshot=include_snapshot,
+        )
+
+    def restore_episode_history(self, episode_id: str, history_id: str) -> Dict[str, Any]:
+        episode = self.storage.get_episode(episode_id)
+        if not episode:
+            raise StudioServiceError(
+                f"集 {episode_id} 不存在",
+                error_code="episode_not_found",
+                context={"episode_id": episode_id},
+            )
+        restored = self.storage.restore_episode_from_history(episode_id, history_id)
+        if not restored:
+            raise StudioServiceError(
+                "历史记录不存在或无法恢复",
+                error_code="history_not_found",
+                context={"episode_id": episode_id, "history_id": history_id},
+            )
+        self._record_episode_history_safe(episode_id, f"restore_{history_id}")
+        return restored
