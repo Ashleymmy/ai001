@@ -84,7 +84,7 @@ class StudioService:
         img_cfg = settings.get("image") or {}
         img_provider = str(img_cfg.get("provider") or "").strip()
         img_api_key = str(img_cfg.get("apiKey") or "").strip()
-        if img_provider and img_provider != "placeholder":
+        if img_provider and img_provider not in {"placeholder", "none"}:
             if img_provider in {"comfyui", "sd-webui"} or img_api_key:
                 self.image = ImageService(
                     provider=img_provider,
@@ -225,7 +225,7 @@ class StudioService:
                 context=payload_context,
             )
 
-        if provider and provider != "placeholder" and self._is_placeholder_image_url(normalized):
+        if provider and provider not in {"placeholder", "none"} and self._is_placeholder_image_url(normalized):
             raise StudioServiceError(
                 "图像服务返回占位图，通常表示接口调用失败或配置无效",
                 error_code="image_placeholder_result",
@@ -236,6 +236,29 @@ class StudioService:
             )
 
         return normalized
+
+    def _build_element_image_prompt(
+        self,
+        element: Dict[str, Any],
+        series: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        description = str(element.get("description") or "").strip()
+        name = str(element.get("name") or "").strip()
+        base_prompt = description or name or "角色概念设定图"
+
+        visual_style = ""
+        if isinstance(series, dict):
+            visual_style = str(series.get("visual_style") or "").strip()
+
+        style_anchor = visual_style or "国风叙事动画插画风格"
+        style_clause = f"整体视觉风格：{style_anchor}。"
+        return (
+            f"{base_prompt}\n"
+            f"{style_clause}"
+            "保持与同系列素材一致的线条、色彩、材质语言；"
+            "画面必须为统一的二维影视概念插画；"
+            "禁止切换为写实照片风、3D渲染、Q版卡通。"
+        ).strip()
 
     @staticmethod
     def _normalize_video_status(value: Any) -> str:
@@ -648,6 +671,7 @@ class StudioService:
         self,
         full_script: str,
         acts: List[Dict[str, Any]],
+        visual_style: str = "",
     ) -> List[Dict[str, Any]]:
         """从完整脚本提取贯穿全剧的角色/场景/道具。
 
@@ -665,6 +689,7 @@ class StudioService:
             {
                 "full_script": full_script,
                 "acts_summary": acts_summary,
+                "visual_style": visual_style or "未指定",
             },
         )
 
@@ -710,10 +735,10 @@ class StudioService:
         acts = await self.split_script_to_acts(full_script, preferences)
 
         # 2) 提取共享元素
-        elements = await self.extract_shared_elements(full_script, acts)
+        visual_style = preferences.get("visual_style", "")
+        elements = await self.extract_shared_elements(full_script, acts, visual_style=visual_style)
 
         # 3) 写入数据库 —— 系列
-        visual_style = preferences.get("visual_style", "")
         series = self.storage.create_series(
             name=name,
             description=preferences.get("description", ""),
@@ -1050,8 +1075,14 @@ class StudioService:
         width = int(width or default_w)
         height = int(height or default_h)
 
-        prompt = el["description"]
+        series = self.storage.get_series(el.get("series_id")) if el.get("series_id") else None
+        prompt = self._build_element_image_prompt(el, series)
         ref_images = el.get("reference_images") or []
+        if not isinstance(ref_images, list):
+            ref_images = []
+        current_image = str(el.get("image_url") or "").strip()
+        if current_image and current_image not in ref_images:
+            ref_images.insert(0, current_image)
 
         result = await self.image.generate(
             prompt=prompt,

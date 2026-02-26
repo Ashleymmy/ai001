@@ -7,7 +7,7 @@ generation_defaults:
   split_max_tokens: 8000
   video_duration_seconds: 8
 image:
-  apiKey: 67577c84-5f7a-467f-aa59-909b8ede888a
+  apiKey: c6a44de7-7a1f-4e4b-ac14-50dbff6b11b6
   baseUrl: https://ark.cn-beijing.volces.com/api/v3
   model: doubao-seedream-4-5-251128
   provider: doubao

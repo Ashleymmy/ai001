@@ -139,7 +139,7 @@ def load_saved_settings():
                 comfyui_url=local_config.get("comfyuiUrl", "http://127.0.0.1:8188"),
                 sd_webui_url=local_config.get("sdWebuiUrl", "http://127.0.0.1:7860"),
             )
-        elif img_config.get("provider") and img_config.get("provider") != "placeholder":
+        elif img_config.get("provider") and img_config.get("provider") not in {"placeholder", "none"}:
             image_service = ImageService(
                 provider=img_config.get("provider"),
                 api_key=img_config.get("apiKey") or os.getenv("IMAGE_API_KEY", ""),
@@ -148,7 +148,7 @@ def load_saved_settings():
             )
 
         sb_config = agent_saved.get("storyboard", {})
-        if sb_config.get("provider") and sb_config.get("provider") != "placeholder":
+        if sb_config.get("provider") and sb_config.get("provider") not in {"placeholder", "none"}:
             if local_config.get("enabled") and sb_config.get("provider") in ["comfyui", "sd-webui"]:
                 storyboard_service = ImageService(
                     provider=sb_config.get("provider"),
@@ -199,7 +199,7 @@ def load_saved_settings():
                 comfyui_url=module_local_cfg.get("comfyuiUrl", "http://127.0.0.1:8188"),
                 sd_webui_url=module_local_cfg.get("sdWebuiUrl", "http://127.0.0.1:7860"),
             )
-        elif module_img_cfg.get("provider") and module_img_cfg.get("provider") != "placeholder":
+        elif module_img_cfg.get("provider") and module_img_cfg.get("provider") not in {"placeholder", "none"}:
             module_image_service = ImageService(
                 provider=module_img_cfg.get("provider"),
                 api_key=module_img_cfg.get("apiKey") or os.getenv("IMAGE_API_KEY", ""),
@@ -208,7 +208,7 @@ def load_saved_settings():
             )
 
         module_sb_cfg = module_saved.get("storyboard", {})
-        if module_sb_cfg.get("provider") and module_sb_cfg.get("provider") != "placeholder":
+        if module_sb_cfg.get("provider") and module_sb_cfg.get("provider") not in {"placeholder", "none"}:
             if module_local_cfg.get("enabled") and module_sb_cfg.get("provider") in ["comfyui", "sd-webui"]:
                 module_storyboard_service = ImageService(
                     provider=module_sb_cfg.get("provider"),
@@ -673,7 +673,7 @@ def get_image_service() -> ImageService:
     global image_service
     if image_service is None:
         image_service = ImageService(
-            provider=os.getenv("IMAGE_PROVIDER", "placeholder"),
+            provider=os.getenv("IMAGE_PROVIDER", "none"),
             api_key=os.getenv("IMAGE_API_KEY", "")
         )
     return image_service
@@ -692,7 +692,7 @@ def get_module_image_service() -> ImageService:
     global module_image_service
     if module_image_service is None:
         module_image_service = ImageService(
-            provider=os.getenv("IMAGE_PROVIDER", "placeholder"),
+            provider=os.getenv("IMAGE_PROVIDER", "none"),
             api_key=os.getenv("IMAGE_API_KEY", "")
         )
     return module_image_service
@@ -750,8 +750,8 @@ def get_request_image_service(
     )
     if not provider:
         return fallback
-    if provider == "placeholder":
-        return ImageService(provider="placeholder", model=model)
+    if provider in {"placeholder", "none"}:
+        return ImageService(provider="none", model=model)
 
     local_cfg = local_override or LocalConfig()
     if provider in {"comfyui", "sd-webui"}:
@@ -788,7 +788,7 @@ async def health_check():
         "status": "ok",
         "version": "1.0.0",
         "llm_configured": bool(module_llm.api_key),
-        "image_configured": bool(module_image.provider and module_image.provider != "placeholder")
+        "image_configured": bool(module_image.provider and module_image.provider not in {"placeholder", "none"})
     }
 
 
@@ -1055,8 +1055,8 @@ async def test_connection(request: TestConnectionRequest):
     if category in {"image", "storyboard"}:
         provider = cfg.provider
 
-        if provider == "placeholder":
-            return {"success": True, "level": "none", "message": "占位图无需测试"}
+        if provider in {"placeholder", "none", ""}:
+            return {"success": False, "level": "none", "message": "未配置图像服务，请先选择 provider 并配置密钥"}
 
         # 本地服务探测（优先使用 local.enabled 的地址）
         local = request.local
@@ -6459,6 +6459,7 @@ async def studio_get_prompt_templates_defaults():
             "element_extraction": [
                 "full_script",
                 "acts_summary",
+                "visual_style",
             ],
             "episode_planning": [
                 "series_name",

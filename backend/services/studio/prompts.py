@@ -51,6 +51,9 @@ ELEMENT_EXTRACTION_PROMPT = """请从以下脚本中提取**贯穿全剧**的关
 == 已拆分的幕列表（仅供参考角色出现位置） ==
 {acts_summary}
 
+== 系列视觉风格 ==
+{visual_style}
+
 == 提取要求 ==
 1. **角色（character）**：
    - description：详细的视觉描述——外貌、年龄、体型、发型发色、瞳色、标志性服装/配饰、气质，至少 50 字。描述必须可直接用于 AI 出图。
@@ -66,6 +69,7 @@ ELEMENT_EXTRACTION_PROMPT = """请从以下脚本中提取**贯穿全剧**的关
    - 只提取对剧情有推动作用的关键物品。
 
 4. appears_in_acts：列出该元素出现在哪些幕（act_number 列表）。
+5. description 要聚焦“客观视觉特征”，不要混入水彩/油画/赛博/写实照片等画风词，统一风格由 {visual_style} 控制。
 
 请只输出一个 JSON 代码块：
 ```json

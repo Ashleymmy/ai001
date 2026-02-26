@@ -14,7 +14,7 @@ import httpx
 class ImageService:
     def __init__(
         self,
-        provider: str = "placeholder",
+        provider: str = "none",
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
@@ -29,6 +29,18 @@ class ImageService:
         self.sd_webui_url = sd_webui_url
         
         print(f"[Image] 初始化: provider={provider}, model={model}, base_url={base_url}")
+
+    @staticmethod
+    def _is_placeholder_url(url: str) -> bool:
+        return "picsum.photos/" in (url or "").strip().lower()
+
+    def _ensure_valid_image_url(self, url: Any, provider: str) -> str:
+        normalized = str(url or "").strip()
+        if not normalized:
+            raise Exception(f"{provider} 图像服务未返回有效图片")
+        if self._is_placeholder_url(normalized):
+            raise Exception(f"{provider} 图像服务返回了占位图，已禁止占位图回退")
+        return normalized
     
     async def generate(
         self,
@@ -56,6 +68,9 @@ class ImageService:
             seed: 随机种子
         """
         actual_seed = seed if seed is not None else random.randint(0, 2147483647)
+        provider = str(self.provider or "").strip().lower()
+        if provider in {"", "none", "placeholder"}:
+            raise Exception("图像服务未配置，请先在设置中选择有效 provider 并填写 API Key")
         
         # 合并参考图
         all_ref_images = []
@@ -76,25 +91,23 @@ class ImageService:
         }
         
         try:
-            if self.provider == "placeholder":
-                result["url"] = self._placeholder(prompt, actual_seed)
-            elif self.provider == "comfyui":
+            if provider == "comfyui":
                 result["url"] = await self._call_comfyui(prompt, reference_image, negative_prompt, width, height, steps, actual_seed)
-            elif self.provider == "sd-webui":
+            elif provider == "sd-webui":
                 result["url"] = await self._call_sd_webui(prompt, reference_image, negative_prompt, width, height, steps, actual_seed)
-            elif self.provider in {"doubao", "volcengine", "ark"}:
+            elif provider in {"doubao", "volcengine", "ark"}:
                 result["url"] = await self._call_volcengine_custom(prompt, width, height, all_ref_images)
-            elif self.provider in {"dashscope", "wanxiang"}:
+            elif provider in {"dashscope", "wanxiang"}:
                 result["url"] = await self._call_dashscope_custom(prompt, width, height)
-            elif self.provider == "qwen-image":
+            elif provider == "qwen-image":
                 result["url"] = await self._call_qwen_image(prompt, reference_image, width, height)
-            elif self.provider == "dalle":
+            elif provider == "dalle":
                 result["url"] = await self._call_dalle(prompt, width, height)
-            elif self.provider == "stability":
+            elif provider == "stability":
                 result["url"] = await self._call_stability(prompt, negative_prompt, width, height, steps, actual_seed)
-            elif self.provider == "flux":
+            elif provider == "flux":
                 result["url"] = await self._call_flux(prompt, width, height)
-            elif self.provider == "custom" or self.provider.startswith("custom_"):
+            elif provider == "custom" or provider.startswith("custom_"):
                 # 自定义配置，使用通用的 OpenAI 兼容调用
                 result["url"] = await self._call_custom(prompt, negative_prompt, width, height, all_ref_images)
             else:
@@ -102,7 +115,8 @@ class ImageService:
         except Exception as e:
             print(f"[Image] 生成失败: {e}")
             raise  # 直接抛出异常，不返回占位图
-        
+
+        result["url"] = self._ensure_valid_image_url(result.get("url"), provider)
         return result
     
     def _placeholder(self, prompt: str, seed: int = None) -> str:

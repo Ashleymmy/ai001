@@ -21,7 +21,7 @@ export const LLM_PROVIDERS = [
 ]
 
 export const IMAGE_PROVIDERS = [
-  { id: 'placeholder', name: '占位图(测试)', baseUrl: '', models: [] },
+  { id: 'none', name: '未配置', baseUrl: '', models: [] },
   { id: 'comfyui', name: 'ComfyUI (本地)', baseUrl: 'http://127.0.0.1:8188', models: ['SDXL', 'SD1.5', 'Flux'] },
   { id: 'sd-webui', name: 'SD WebUI (本地)', baseUrl: 'http://127.0.0.1:7860', models: ['SDXL', 'SD1.5'] },
   { id: 'qwen-image', name: '通义万相', baseUrl: 'https://dashscope.aliyuncs.com/api/v1', models: ['wanx-v1', 'wanx2.1-t2i-turbo'] },
@@ -157,13 +157,13 @@ const defaultSettings: Settings = {
     model: 'qwen-plus'
   },
   image: {
-    provider: 'placeholder',
+    provider: 'none',
     apiKey: '',
     baseUrl: '',
     model: ''
   },
   storyboard: {
-    provider: 'placeholder',
+    provider: 'none',
     apiKey: '',
     baseUrl: '',
     model: ''
@@ -233,6 +233,18 @@ const defaultSettings: Settings = {
   }
 }
 
+function normalizeImageModelConfig(raw: ModelConfig | undefined, fallback: ModelConfig): ModelConfig {
+  const merged = { ...fallback, ...(raw || {}) }
+  const provider = (merged.provider || '').trim()
+  if (provider === 'placeholder') {
+    return {
+      ...merged,
+      provider: 'none',
+    }
+  }
+  return merged
+}
+
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
@@ -246,8 +258,8 @@ export const useSettingsStore = create<SettingsState>()(
             // 强制使用后端数据，覆盖 localStorage
             const newSettings = {
               llm: saved.llm,
-              image: saved.image,
-              storyboard: saved.storyboard || defaultSettings.storyboard,
+              image: normalizeImageModelConfig(saved.image as ModelConfig | undefined, defaultSettings.image),
+              storyboard: normalizeImageModelConfig((saved.storyboard || defaultSettings.storyboard) as ModelConfig, defaultSettings.storyboard),
               video: saved.video,
               tts: {
                 ...defaultSettings.tts,
@@ -448,6 +460,8 @@ export const useSettingsStore = create<SettingsState>()(
           settings: {
             ...defaultSettings,
             ...state.settings,
+            image: normalizeImageModelConfig((state.settings as Settings).image, defaultSettings.image),
+            storyboard: normalizeImageModelConfig((state.settings as Settings).storyboard, defaultSettings.storyboard),
             tts: {
               ...migratedTts,
               bailian: { ...migratedTts.bailian, baseUrl: normalizedBailianBaseUrl }

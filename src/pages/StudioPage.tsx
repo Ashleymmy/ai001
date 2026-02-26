@@ -27,6 +27,7 @@ import type {
   StudioElement,
   StudioShot,
   StudioEpisodeElement,
+  StudioGenerationScope,
   StudioGenerationProgress,
   StudioGenerationStage,
   StudioFailedOperation,
@@ -597,6 +598,8 @@ export default function StudioPage() {
   )
   const activityIndicator = useMemo<StudioActivityIndicator>(() => {
     const generationProgress = store.generationProgress
+    const isBatchGenerating = store.generating && store.generationScope === 'batch'
+    const isSingleGenerating = store.generating && store.generationScope === 'single'
 
     if (exportProgress) {
       return {
@@ -618,7 +621,7 @@ export default function StudioPage() {
       }
     }
 
-    const hasDetailedGeneration = store.generating
+    const hasDetailedGeneration = isBatchGenerating
       && generationProgress.stage !== 'idle'
       && generationProgress.totalItems > 0
     if (hasDetailedGeneration) {
@@ -651,7 +654,17 @@ export default function StudioPage() {
       }
     }
 
-    if (store.generating) {
+    if (isSingleGenerating) {
+      return {
+        active: true,
+        title: '单项生成进行中',
+        detail: store.generationMessage || '正在处理当前素材',
+        progress: null,
+        tone: 'working',
+      }
+    }
+
+    if (isBatchGenerating) {
       return {
         active: true,
         title: '批量生成进行中',
@@ -695,6 +708,8 @@ export default function StudioPage() {
     store.currentSeries,
     store.episodes.length,
     store.generating,
+    store.generationMessage,
+    store.generationScope,
     store.generationProgress,
     store.planning,
     store.sharedElements.length,
@@ -853,6 +868,15 @@ export default function StudioPage() {
     if (!ok) return
     await store.batchGenerate(episodeId, stages)
   }, [ensureConfigReady, store])
+
+  const handleBatchGenerateElementsForSeries = useCallback(async () => {
+    const targetEpisodeId = store.episodes[0]?.id
+    if (!targetEpisodeId) {
+      pushToast({ message: '当前系列尚未生成分幕，无法批量生成素材', code: 'series_has_no_episode' })
+      return
+    }
+    await handleBatchGenerate(targetEpisodeId, ['elements'])
+  }, [handleBatchGenerate, pushToast, store.episodes])
 
   const handleRetryNetworkIssue = useCallback(async () => {
     setRetryingNetwork(true)
@@ -1457,11 +1481,13 @@ export default function StudioPage() {
                 if (!ok) return
                 await store.generateElementImage(elementId)
               }}
+              onBatchGenerateElementImages={handleBatchGenerateElementsForSeries}
               onExportAssets={() => handleExportSeries('assets')}
               onExportVideo={() => handleExportSeries('video')}
               exporting={exporting}
               planning={store.planning}
               generating={store.generating}
+              generationScope={store.generationScope}
             />
           )}
 
@@ -1517,10 +1543,15 @@ export default function StudioPage() {
                 if (!ok) return
                 await store.generateElementImage(elementId)
               }}
+              onBatchGenerateElementImages={async () => {
+                if (!store.currentEpisodeId) return
+                await handleBatchGenerate(store.currentEpisodeId, ['elements'])
+              }}
               exporting={exporting}
               bridgingAgent={bridgingAgent}
               planning={store.planning}
               generating={store.generating}
+              generationScope={store.generationScope}
             />
           )}
         </main>
@@ -1550,13 +1581,16 @@ export default function StudioPage() {
         <div>
           {store.creating && <span className="text-purple-400">创建中...</span>}
           {store.planning && <span className="text-purple-400">规划中...</span>}
-          {store.generating && store.generationProgress.totalItems > 0 && store.generationProgress.stage !== 'idle' && (
+          {store.generating && store.generationScope === 'batch' && store.generationProgress.totalItems > 0 && store.generationProgress.stage !== 'idle' && (
             <span className="text-purple-400">
               {getGenerationStageText(store.generationProgress.stage)} {Math.max(0, Math.min(100, store.generationProgress.percent)).toFixed(0)}% ({Math.min(store.generationProgress.currentIndex, store.generationProgress.totalItems)}/{store.generationProgress.totalItems})
             </span>
           )}
-          {store.generating && (store.generationProgress.totalItems <= 0 || store.generationProgress.stage === 'idle') && (
-            <span className="text-purple-400">生成中...</span>
+          {store.generating && store.generationScope === 'batch' && (store.generationProgress.totalItems <= 0 || store.generationProgress.stage === 'idle') && (
+            <span className="text-purple-400">批量生成中...</span>
+          )}
+          {store.generating && store.generationScope === 'single' && (
+            <span className="text-purple-400">{store.generationMessage || '处理中...'}</span>
           )}
         </div>
       </footer>
@@ -1770,11 +1804,13 @@ function SeriesOverview({
   onUpdateElement,
   onDeleteElement,
   onGenerateElementImage,
+  onBatchGenerateElementImages,
   onExportAssets,
   onExportVideo,
   exporting,
   planning,
   generating,
+  generationScope,
 }: {
   series: StudioSeries
   episodes: StudioEpisode[]
@@ -1787,11 +1823,13 @@ function SeriesOverview({
   onUpdateElement: (elementId: string, updates: Record<string, unknown>) => void | Promise<void>
   onDeleteElement: (elementId: string) => void | Promise<void>
   onGenerateElementImage: (elementId: string) => void | Promise<void>
+  onBatchGenerateElementImages?: () => void | Promise<void>
   onExportAssets: () => void | Promise<void>
   onExportVideo: () => void | Promise<void>
   exporting: boolean
   planning: boolean
   generating: boolean
+  generationScope: StudioGenerationScope
 }) {
   const [stats, setStats] = useState<StudioSeriesStats | null>(null)
   const [statsLoading, setStatsLoading] = useState(false)
@@ -2243,7 +2281,9 @@ function SeriesOverview({
           onUpdateSharedElement={onUpdateElement}
           onDeleteSharedElement={onDeleteElement}
           onGenerateSharedElementImage={onGenerateElementImage}
+          onBatchGenerateMissingSharedElements={onBatchGenerateElementImages}
           generating={generating}
+          generationScope={generationScope}
           onClose={() => setShowElementLibrary(false)}
         />
       )}
@@ -2281,10 +2321,12 @@ function EpisodeWorkbench({
   onUpdateElement,
   onDeleteElement,
   onGenerateElementImage,
+  onBatchGenerateElementImages,
   exporting,
   bridgingAgent,
   planning,
   generating,
+  generationScope,
 }: {
   episode: StudioEpisode
   shots: StudioShot[]
@@ -2311,10 +2353,12 @@ function EpisodeWorkbench({
   onUpdateElement: (elementId: string, updates: Record<string, unknown>) => void | Promise<void>
   onDeleteElement: (elementId: string) => void | Promise<void>
   onGenerateElementImage: (elementId: string) => void | Promise<void>
+  onBatchGenerateElementImages: () => void | Promise<void>
   exporting: boolean
   bridgingAgent: boolean
   planning: boolean
   generating: boolean
+  generationScope: StudioGenerationScope
 }) {
   const [selectedShotId, setSelectedShotId] = useState<string | null>(null)
   const [previewShotId, setPreviewShotId] = useState<string | null>(null)
@@ -3283,7 +3327,9 @@ function EpisodeWorkbench({
           onUpdateSharedElement={onUpdateElement}
           onDeleteSharedElement={onDeleteElement}
           onGenerateSharedElementImage={onGenerateElementImage}
+          onBatchGenerateMissingSharedElements={onBatchGenerateElementImages}
           generating={generating}
+          generationScope={generationScope}
           onClose={() => setShowElementLibrary(false)}
         />
       )}
@@ -3928,7 +3974,9 @@ function ElementLibraryPanel({
   onUpdateSharedElement,
   onDeleteSharedElement,
   onGenerateSharedElementImage,
+  onBatchGenerateMissingSharedElements,
   generating = false,
+  generationScope = 'none',
   onClose,
 }: {
   sharedElements: StudioElement[]
@@ -3936,7 +3984,9 @@ function ElementLibraryPanel({
   onUpdateSharedElement?: (elementId: string, updates: Record<string, unknown>) => void | Promise<void>
   onDeleteSharedElement?: (elementId: string) => void | Promise<void>
   onGenerateSharedElementImage?: (elementId: string) => void | Promise<void>
+  onBatchGenerateMissingSharedElements?: () => void | Promise<void>
   generating?: boolean
+  generationScope?: StudioGenerationScope
   onClose: () => void
 }) {
   const [keyword, setKeyword] = useState('')
@@ -3954,6 +4004,8 @@ function ElementLibraryPanel({
     if (favoriteOnly && el.is_favorite !== 1) return false
     return filterByKeyword(el.name, el.description)
   })
+  const sharedMissingCount = sharedFiltered.filter((el) => !el.image_url).length
+  const isBatchGenerating = generating && generationScope === 'batch'
 
   const episodeOnly = episodeElements.filter((el) => !el.shared_element_id).filter((el) => {
     if (typeFilter !== 'all' && el.type !== typeFilter) return false
@@ -3997,6 +4049,17 @@ function ElementLibraryPanel({
               <Star className="w-3 h-3" />
               仅收藏
             </button>
+            {onBatchGenerateMissingSharedElements && (
+              <button
+                onClick={() => onBatchGenerateMissingSharedElements()}
+                disabled={generating || sharedMissingCount <= 0}
+                className="px-2 py-1 rounded text-xs bg-purple-700/70 hover:bg-purple-600/70 text-white disabled:opacity-40 inline-flex items-center gap-1 transition-colors"
+                title="批量生成当前筛选中缺少参考图的共享素材"
+              >
+                {isBatchGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                批量生成缺图({sharedMissingCount})
+              </button>
+            )}
           </div>
         </div>
         <div className="p-4 overflow-y-auto max-h-[calc(90vh-130px)] space-y-5">
@@ -5145,7 +5208,7 @@ const PROMPT_MODULE_META: Array<{ key: PromptModuleKey; label: string; descripti
 
 const DEFAULT_PROMPT_VARIABLE_HINTS: Record<PromptModuleKey, string[]> = {
   script_split: ['full_script', 'target_episode_count', 'episode_duration_seconds', 'visual_style'],
-  element_extraction: ['full_script', 'acts_summary'],
+  element_extraction: ['full_script', 'acts_summary', 'visual_style'],
   episode_planning: [
     'series_name',
     'act_number',

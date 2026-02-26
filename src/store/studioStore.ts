@@ -32,6 +32,8 @@ export interface StudioGenerationProgress {
   errors: string[]
 }
 
+export type StudioGenerationScope = 'none' | 'single' | 'batch'
+
 export type StudioFailedOperationStatus = 'failed' | 'retrying' | 'resolved'
 
 export interface StudioFailedOperation {
@@ -190,6 +192,8 @@ interface StudioState {
   creating: boolean
   planning: boolean
   generating: boolean
+  generationScope: StudioGenerationScope
+  generationMessage: string
   generationProgress: StudioGenerationProgress
   failedOperations: StudioFailedOperation[]
   retryHistory: StudioRetryRecord[]
@@ -361,6 +365,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   creating: false,
   planning: false,
   generating: false,
+  generationScope: 'none',
+  generationMessage: '',
   generationProgress: createInitialGenerationProgress(),
   failedOperations: [],
   retryHistory: [],
@@ -775,7 +781,15 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   },
 
   generateElementImage: async (elementId) => {
-    set({ generating: true, error: null, errorCode: null, errorContext: null, generationProgress: createInitialGenerationProgress() })
+    set({
+      generating: true,
+      generationScope: 'single',
+      generationMessage: '正在生成素材参考图',
+      error: null,
+      errorCode: null,
+      errorContext: null,
+      generationProgress: createInitialGenerationProgress(),
+    })
     try {
       await api.studioGenerateElementImage(elementId)
       const seriesId = get().currentSeriesId
@@ -783,14 +797,21 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         const els = await api.studioGetElements(seriesId)
         set({ sharedElements: els })
       }
-      set({ generating: false })
+      set({ generating: false, generationScope: 'none', generationMessage: '' })
     } catch (e: unknown) {
       const parsed = queueOperationFailure(set, e, {
         key: `generate_element_image:${elementId}`,
         title: '生成元素图',
         retryTask: () => get().generateElementImage(elementId),
       })
-      set({ generating: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
+      set({
+        generating: false,
+        generationScope: 'none',
+        generationMessage: '',
+        error: parsed.message,
+        errorCode: parsed.code,
+        errorContext: parsed.context,
+      })
     }
   },
 
@@ -831,7 +852,22 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   },
 
   generateShotAsset: async (shotId, stage) => {
-    set({ generating: true, error: null, errorCode: null, errorContext: null, generationProgress: createInitialGenerationProgress() })
+    const stageMessage = stage === 'video'
+      ? '正在生成镜头视频'
+      : stage === 'audio'
+        ? '正在生成镜头音频'
+        : stage === 'end_frame'
+          ? '正在生成镜头尾帧'
+          : '正在生成镜头起始帧'
+    set({
+      generating: true,
+      generationScope: 'single',
+      generationMessage: stageMessage,
+      error: null,
+      errorCode: null,
+      errorContext: null,
+      generationProgress: createInitialGenerationProgress(),
+    })
     try {
       await api.studioGenerateShotAsset(shotId, { stage })
       const epId = get().currentEpisodeId
@@ -839,19 +875,34 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         const shots = await api.studioGetShots(epId)
         set({ shots })
       }
-      set({ generating: false })
+      set({ generating: false, generationScope: 'none', generationMessage: '' })
     } catch (e: unknown) {
       const parsed = queueOperationFailure(set, e, {
         key: `generate_shot_asset:${shotId}:${stage}`,
         title: stage === 'audio' ? '生成镜头音频' : stage === 'video' ? '生成镜头视频' : '生成镜头画面',
         retryTask: () => get().generateShotAsset(shotId, stage),
       })
-      set({ generating: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
+      set({
+        generating: false,
+        generationScope: 'none',
+        generationMessage: '',
+        error: parsed.message,
+        errorCode: parsed.code,
+        errorContext: parsed.context,
+      })
     }
   },
 
   inpaintShotFrame: async (shotId, params) => {
-    set({ generating: true, error: null, errorCode: null, errorContext: null, generationProgress: createInitialGenerationProgress() })
+    set({
+      generating: true,
+      generationScope: 'single',
+      generationMessage: '正在局部重绘镜头',
+      error: null,
+      errorCode: null,
+      errorContext: null,
+      generationProgress: createInitialGenerationProgress(),
+    })
     try {
       await api.studioInpaintShotFrame(shotId, params)
       const epId = get().currentEpisodeId
@@ -859,14 +910,21 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         const shots = await api.studioGetShots(epId)
         set({ shots })
       }
-      set({ generating: false })
+      set({ generating: false, generationScope: 'none', generationMessage: '' })
     } catch (e: unknown) {
       const parsed = queueOperationFailure(set, e, {
         key: `inpaint_shot_frame:${shotId}`,
         title: '局部重绘镜头',
         retryTask: () => get().inpaintShotFrame(shotId, params),
       })
-      set({ generating: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
+      set({
+        generating: false,
+        generationScope: 'none',
+        generationMessage: '',
+        error: parsed.message,
+        errorCode: parsed.code,
+        errorContext: parsed.context,
+      })
     }
   },
 
@@ -948,6 +1006,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }
     set({
       generating: true,
+      generationScope: 'batch',
+      generationMessage: '正在批量生成',
       error: null,
       errorCode: null,
       errorContext: null,
@@ -1132,7 +1192,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         const eps = await api.studioListEpisodes(seriesId)
         set({ episodes: eps })
       }
-      set({ generating: false })
+      set({ generating: false, generationScope: 'none', generationMessage: '' })
 
       generationProgressResetTimer = setTimeout(() => {
         if (!get().generating) {
@@ -1148,6 +1208,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       })
       set((state) => ({
         generating: false,
+        generationScope: 'none',
+        generationMessage: '',
         error: parsed.message,
         errorCode: parsed.code,
         errorContext: parsed.context,

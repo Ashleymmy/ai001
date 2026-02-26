@@ -41,7 +41,7 @@ export function ModelConfigCard({
   const selectedProvider = providers.find((p) => p.id === config.provider)
   const selectedCustom = customProviders.find((p) => p.id === config.provider)
   const isCustom = config.provider === 'custom' || config.provider?.startsWith('custom_')
-  const isPlaceholder = config.provider === 'placeholder' || config.provider === 'none'
+  const isUnconfigured = config.provider === 'placeholder' || config.provider === 'none'
   const isDoubao = config.provider === 'doubao'
   const isLLM = category === 'llm'
 
@@ -75,7 +75,7 @@ export function ModelConfigCard({
           />
         </div>
 
-        {!isPlaceholder && (
+        {!isUnconfigured && (
           <div className="animate-fadeIn">
             <label className="block text-sm text-gray-400 mb-2">API Key</label>
             <input
@@ -168,7 +168,7 @@ export function ModelConfigCard({
           </div>
         )}
 
-        {!isPlaceholder && !hasPresetModels && !hasCustomModels && !isDoubao && (
+        {!isUnconfigured && !hasPresetModels && !hasCustomModels && !isDoubao && (
           <div className="animate-fadeIn">
             <label className="block text-sm text-gray-400 mb-2">模型名称</label>
             <input
@@ -181,7 +181,7 @@ export function ModelConfigCard({
           </div>
         )}
 
-        {!isPlaceholder && onTestConnection && (
+        {!isUnconfigured && onTestConnection && (
           <div className="flex items-center gap-3 pt-1">
             <button
               onClick={onTestConnection}
@@ -221,8 +221,8 @@ export function ModelConfigCard({
               <CheckCircle size={12} />
               已配置
             </span>
-          ) : isPlaceholder ? (
-            <span className="text-gray-500 glass-button px-3 py-1.5 rounded-full">无需配置</span>
+          ) : isUnconfigured ? (
+            <span className="text-gray-500 glass-button px-3 py-1.5 rounded-full">未配置</span>
           ) : (
             <span className="flex items-center gap-1.5 text-yellow-400 glass-button px-3 py-1.5 rounded-full">
               <AlertCircle size={12} />

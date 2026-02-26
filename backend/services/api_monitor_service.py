@@ -1026,7 +1026,21 @@ class APIMonitorService:
             else:
                 volc_quota_note = str(shared_volc_quota.get("message") or "").strip()
 
-        if category in {"image", "storyboard"} and provider in {"placeholder", "comfyui", "sd-webui"}:
+        if category in {"image", "storyboard"} and provider in {"none", "placeholder", ""}:
+            return {
+                "category": category,
+                "provider": provider or "none",
+                "model": model,
+                "base_url": base_url,
+                "configured": False,
+                "status": "not_configured",
+                "message": "未配置图像服务",
+                "rate_limit": None,
+                "token_quota": None,
+                "checked_at": _now_iso(),
+            }
+
+        if category in {"image", "storyboard"} and provider in {"comfyui", "sd-webui"}:
             return {
                 "category": category,
                 "provider": provider,
@@ -1034,7 +1048,7 @@ class APIMonitorService:
                 "base_url": base_url,
                 "configured": True,
                 "status": "local",
-                "message": "本地/占位服务，无远程配额概念",
+                "message": "本地服务，无远程配额概念",
                 "rate_limit": None,
                 "token_quota": None,
                 "checked_at": _now_iso(),
