@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Settings2, Plus, Film, Users, MapPin, Package,
@@ -7,9 +8,12 @@ import {
   Star, Eye, Pencil, FileText,
 } from 'lucide-react'
 import { useStudioStore } from '../store/studioStore'
-import { studioCheckConfig, studioGetSeriesStats, studioGetSettings, studioSaveSettings } from '../services/api'
+import axios from 'axios'
+import { studioCheckConfig, studioExportEpisode, studioExportSeries, studioGetSeriesStats, studioGetSettings, studioSaveSettings } from '../services/api'
 import type { StudioSeriesStats } from '../services/api'
 import type { StudioSeries, StudioEpisode, StudioElement, StudioShot, StudioEpisodeElement } from '../store/studioStore'
+import Timeline from '../components/studio/Timeline'
+import PreviewPlayer from '../components/studio/PreviewPlayer'
 
 type ServiceKey = 'llm' | 'image' | 'video' | 'tts'
 
@@ -20,12 +24,114 @@ interface StudioToast {
   context?: Record<string, unknown> | null
 }
 
+type ExportPhase = 'packing' | 'downloading' | 'saving' | 'done' | 'error'
+
+interface StudioExportProgress {
+  title: string
+  phase: ExportPhase
+  loaded: number
+  total?: number
+  percent?: number
+  error?: string
+}
+
+type PreviewPanelRect = {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+type PreviewPanelResizeDirection =
+  | 'top'
+  | 'right'
+  | 'bottom'
+  | 'left'
+  | 'top-left'
+  | 'top-right'
+  | 'bottom-left'
+  | 'bottom-right'
+
 function formatStorage(bytes: number): string {
   if (!bytes) return '0 B'
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
+function defaultPreviewPanelRect(): PreviewPanelRect {
+  if (typeof window === 'undefined') {
+    return { x: 220, y: 120, width: 1020, height: 420 }
+  }
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const minW = Math.min(420, Math.max(320, vw - 16))
+  const minH = Math.min(260, Math.max(200, vh - 56))
+  const width = Math.max(minW, Math.min(1200, Math.round(vw * 0.72)))
+  const height = Math.max(minH, Math.min(620, Math.round(vh * 0.58)))
+  const x = Math.max(8, Math.round((vw - width) / 2))
+  const y = Math.max(44, Math.round((vh - height) / 2))
+  return { x, y, width, height }
+}
+
+function clampPreviewPanelRect(next: PreviewPanelRect): PreviewPanelRect {
+  if (typeof window === 'undefined') return next
+
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const maxW = Math.max(320, vw - 16)
+  const maxH = Math.max(200, vh - 56)
+  const minW = Math.min(420, maxW)
+  const minH = Math.min(260, maxH)
+
+  const width = Math.min(maxW, Math.max(minW, next.width))
+  const height = Math.min(maxH, Math.max(minH, next.height))
+  const maxX = Math.max(8, vw - width - 8)
+  const maxY = Math.max(40, vh - height - 8)
+  const x = Math.min(maxX, Math.max(8, next.x))
+  const y = Math.min(maxY, Math.max(40, next.y))
+
+  return { x, y, width, height }
+}
+
+function getEpisodeStatusText(status: string): string {
+  if (status === 'draft') return '草稿'
+  if (status === 'planned') return '已规划'
+  if (status === 'in_progress') return '制作中'
+  if (status === 'completed') return '已完成'
+  return status
+}
+
+function getEpisodeStatusBadgeClass(status: string): string {
+  if (status === 'planned') return 'bg-blue-900/30 text-blue-300'
+  if (status === 'completed') return 'bg-green-900/30 text-green-300'
+  if (status === 'in_progress') return 'bg-yellow-900/30 text-yellow-300'
+  if (status === 'draft') return 'bg-gray-800 text-gray-300'
+  return 'bg-gray-800 text-gray-400'
+}
+
+function resizeCursorByDirection(direction: PreviewPanelResizeDirection): string {
+  if (direction === 'left' || direction === 'right') return 'ew-resize'
+  if (direction === 'top' || direction === 'bottom') return 'ns-resize'
+  if (direction === 'top-left' || direction === 'bottom-right') return 'nwse-resize'
+  return 'nesw-resize'
+}
+
+function HoverOverviewPanel({
+  children,
+  maxWidthClass = 'max-w-3xl',
+}: {
+  children: ReactNode
+  maxWidthClass?: string
+}) {
+  return (
+    <div className="pointer-events-none fixed inset-0 z-[120] flex items-center justify-center px-4 py-8 opacity-0 scale-[0.97] transition-all duration-150 delay-0 group-hover:delay-700 group-focus-within:delay-300 group-hover:opacity-100 group-hover:scale-100 group-focus-within:opacity-100 group-focus-within:scale-100">
+      <div className={`w-full ${maxWidthClass} rounded-xl border border-gray-600 bg-gray-950/95 p-4 shadow-2xl backdrop-blur-sm`}>
+        {children}
+      </div>
+    </div>
+  )
 }
 
 // ============================================================
@@ -38,6 +144,9 @@ export default function StudioPage() {
   const store = useStudioStore()
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [exportProgress, setExportProgress] = useState<StudioExportProgress | null>(null)
+  const exportHideTimerRef = useRef<number | null>(null)
   const [toasts, setToasts] = useState<StudioToast[]>([])
 
   const pushToast = useCallback((toast: Omit<StudioToast, 'id'>) => {
@@ -50,6 +159,22 @@ export default function StudioPage() {
 
   const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((item) => item.id !== id))
+  }, [])
+
+  const scheduleHideExportProgress = useCallback((delayMs: number) => {
+    if (exportHideTimerRef.current) window.clearTimeout(exportHideTimerRef.current)
+    exportHideTimerRef.current = window.setTimeout(() => {
+      setExportProgress(null)
+      exportHideTimerRef.current = null
+    }, delayMs)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (exportHideTimerRef.current) {
+        window.clearTimeout(exportHideTimerRef.current)
+      }
+    }
   }, [])
 
   const ensureConfigReady = useCallback(async (required: ServiceKey[]) => {
@@ -174,6 +299,134 @@ export default function StudioPage() {
     if (!ok) return
     await store.batchGenerate(episodeId, stages)
   }, [ensureConfigReady, store])
+
+  const saveBlob = useCallback((blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }, [])
+
+  const parseExportError = useCallback(async (e: unknown): Promise<string> => {
+    if (axios.isAxiosError(e)) {
+      const payload = e.response?.data
+      if (payload instanceof Blob) {
+        try {
+          const text = await payload.text()
+          const parsed = JSON.parse(text) as { detail?: string | { detail?: string } }
+          if (typeof parsed.detail === 'string') return parsed.detail
+          if (parsed.detail && typeof parsed.detail === 'object' && typeof parsed.detail.detail === 'string') {
+            return parsed.detail.detail
+          }
+          if (text) return text.slice(0, 160)
+        } catch {
+          return e.message || '导出失败'
+        }
+      }
+      if (typeof payload?.detail === 'string') return payload.detail
+      return e.message || '导出失败'
+    }
+    if (e instanceof Error) return e.message
+    return '导出失败'
+  }, [])
+
+  const handleExportEpisode = useCallback(async (mode: 'assets' | 'video') => {
+    if (!store.currentEpisodeId) return
+    if (exportHideTimerRef.current) {
+      window.clearTimeout(exportHideTimerRef.current)
+      exportHideTimerRef.current = null
+    }
+    setExporting(true)
+    setExportProgress({
+      title: mode === 'video' ? '导出本集合并视频' : '导出本集素材',
+      phase: 'packing',
+      loaded: 0,
+    })
+    try {
+      const { blob, filename } = await studioExportEpisode(store.currentEpisodeId, {
+        mode,
+        onProgress: (progress) => {
+          setExportProgress((prev) => prev ? {
+            ...prev,
+            phase: 'downloading',
+            loaded: progress.loaded,
+            total: progress.total,
+            percent: progress.percent,
+          } : prev)
+        },
+      })
+      setExportProgress((prev) => prev ? { ...prev, phase: 'saving', percent: 100 } : prev)
+      saveBlob(blob, filename)
+      setExportProgress((prev) => prev ? { ...prev, phase: 'done', percent: 100 } : prev)
+      scheduleHideExportProgress(2200)
+      pushToast({ message: mode === 'video' ? '本集视频导出已开始下载' : '本集素材导出已开始下载' })
+    } catch (e) {
+      const message = await parseExportError(e)
+      setExportProgress((prev) => ({
+        title: prev?.title || (mode === 'video' ? '导出本集合并视频' : '导出本集素材'),
+        phase: 'error',
+        loaded: prev?.loaded || 0,
+        total: prev?.total,
+        percent: prev?.percent,
+        error: message,
+      }))
+      scheduleHideExportProgress(5200)
+      pushToast({ message: `导出失败：${message}`, code: 'studio_export_error' })
+    } finally {
+      setExporting(false)
+    }
+  }, [parseExportError, pushToast, saveBlob, scheduleHideExportProgress, store.currentEpisodeId])
+
+  const handleExportSeries = useCallback(async (mode: 'assets' | 'video') => {
+    if (!store.currentSeriesId) return
+    if (exportHideTimerRef.current) {
+      window.clearTimeout(exportHideTimerRef.current)
+      exportHideTimerRef.current = null
+    }
+    setExporting(true)
+    setExportProgress({
+      title: mode === 'video' ? '导出全系列合并视频' : '导出全系列素材',
+      phase: 'packing',
+      loaded: 0,
+    })
+    try {
+      const { blob, filename } = await studioExportSeries(store.currentSeriesId, {
+        mode,
+        onProgress: (progress) => {
+          setExportProgress((prev) => prev ? {
+            ...prev,
+            phase: 'downloading',
+            loaded: progress.loaded,
+            total: progress.total,
+            percent: progress.percent,
+          } : prev)
+        },
+      })
+      setExportProgress((prev) => prev ? { ...prev, phase: 'saving', percent: 100 } : prev)
+      saveBlob(blob, filename)
+      setExportProgress((prev) => prev ? { ...prev, phase: 'done', percent: 100 } : prev)
+      scheduleHideExportProgress(2200)
+      pushToast({ message: mode === 'video' ? '全系列视频导出已开始下载' : '全系列素材导出已开始下载' })
+    } catch (e) {
+      const message = await parseExportError(e)
+      setExportProgress((prev) => ({
+        title: prev?.title || (mode === 'video' ? '导出全系列合并视频' : '导出全系列素材'),
+        phase: 'error',
+        loaded: prev?.loaded || 0,
+        total: prev?.total,
+        percent: prev?.percent,
+        error: message,
+      }))
+      scheduleHideExportProgress(5200)
+      pushToast({ message: `导出失败：${message}`, code: 'studio_export_error' })
+    } finally {
+      setExporting(false)
+    }
+  }, [parseExportError, pushToast, saveBlob, scheduleHideExportProgress, store.currentSeriesId])
 
   return (
     <div className="h-screen flex flex-col bg-gray-950 text-gray-100">
@@ -310,6 +563,9 @@ export default function StudioPage() {
                 if (!ok) return
                 await store.generateElementImage(elementId)
               }}
+              onExportAssets={() => handleExportSeries('assets')}
+              onExportVideo={() => handleExportSeries('video')}
+              exporting={exporting}
               planning={store.planning}
               generating={store.generating}
             />
@@ -333,6 +589,10 @@ export default function StudioPage() {
               onGenerateAsset={handleGenerateShotAsset}
               onInpaintShot={handleInpaintShot}
               onUpdateShot={(shotId, updates) => store.updateShot(shotId, updates)}
+              onReorderShots={(shotIds) => {
+                if (!store.currentEpisodeId) return Promise.resolve()
+                return store.reorderShots(store.currentEpisodeId, shotIds)
+              }}
               onUpdateEpisode={async (updates) => {
                 if (!store.currentEpisodeId) return
                 await store.updateEpisode(store.currentEpisodeId, updates)
@@ -341,6 +601,9 @@ export default function StudioPage() {
                 if (!store.currentEpisodeId) return
                 await handleBatchGenerate(store.currentEpisodeId, stages)
               }}
+              onExportAssets={() => handleExportEpisode('assets')}
+              onExportVideo={() => handleExportEpisode('video')}
+              exporting={exporting}
               planning={store.planning}
               generating={store.generating}
             />
@@ -380,6 +643,13 @@ export default function StudioPage() {
         <ToastStack
           toasts={toasts}
           onClose={removeToast}
+        />
+      )}
+
+      {exportProgress && (
+        <ExportProgressToast
+          progress={exportProgress}
+          onClose={() => setExportProgress(null)}
         />
       )}
 
@@ -427,34 +697,77 @@ function SeriesTreeItem({
 }) {
   return (
     <div className="mb-1">
-      <button
-        onClick={() => onSelectSeries(series.id)}
-        className={`w-full text-left px-3 py-1.5 rounded text-sm flex items-center gap-2 transition-colors ${
-          isSelected ? 'bg-purple-900/40 text-purple-200' : 'hover:bg-gray-800 text-gray-300'
-        }`}
-      >
-        <Film className="w-3.5 h-3.5 shrink-0" />
-        <span className="truncate">{series.name}</span>
-        {series.episode_count !== undefined && (
-          <span className="ml-auto text-xs text-gray-500">{series.episode_count}集</span>
-        )}
-      </button>
+      <div className="group relative">
+        <button
+          onClick={() => onSelectSeries(series.id)}
+          className={`w-full text-left px-3 py-1.5 rounded text-sm flex items-center gap-2 transition-colors ${
+            isSelected ? 'bg-purple-900/40 text-purple-200' : 'hover:bg-gray-800 text-gray-300'
+          }`}
+        >
+          <Film className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate">{series.name}</span>
+          {series.episode_count !== undefined && (
+            <span className="ml-auto text-xs text-gray-500">{series.episode_count}集</span>
+          )}
+        </button>
+        <HoverOverviewPanel maxWidthClass="max-w-xl">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm text-gray-100 font-semibold line-clamp-1">{series.name}</p>
+                <p className="text-xs text-gray-500">系列概览</p>
+              </div>
+              <div className="text-xs text-gray-400">{series.episode_count || episodes.length} 集</div>
+            </div>
+            <p className="text-sm text-gray-200 leading-relaxed line-clamp-5">
+              {series.description || '暂无系列描述'}
+            </p>
+            <div className="text-xs text-gray-500 flex items-center justify-between">
+              <span>视觉风格: {series.visual_style || '未设置'}</span>
+              <span>{series.element_count || 0} 个共享元素</span>
+            </div>
+          </div>
+        </HoverOverviewPanel>
+      </div>
 
       {isSelected && episodes.length > 0 && (
         <div className="ml-4 mt-0.5 space-y-0.5">
           {episodes.map((ep) => (
-            <button
-              key={ep.id}
-              onClick={() => onSelectEpisode(ep.id)}
-              className={`w-full text-left px-3 py-1 rounded text-xs flex items-center gap-2 transition-colors ${
-                ep.id === selectedEpisodeId
-                  ? 'bg-purple-900/30 text-purple-200'
-                  : 'hover:bg-gray-800 text-gray-400'
-              }`}
-            >
-              <StatusDot status={ep.status} />
-              <span className="truncate">第{ep.act_number}幕 {ep.title}</span>
-            </button>
+            <div key={ep.id} className="group relative">
+              <button
+                onClick={() => onSelectEpisode(ep.id)}
+                className={`w-full text-left px-3 py-1 rounded text-xs flex items-center gap-2 transition-colors ${
+                  ep.id === selectedEpisodeId
+                    ? 'bg-purple-900/30 text-purple-200'
+                    : 'hover:bg-gray-800 text-gray-400'
+                }`}
+              >
+                <StatusDot status={ep.status} />
+                <span className="truncate">第{ep.act_number}幕 {ep.title}</span>
+              </button>
+              <HoverOverviewPanel maxWidthClass="max-w-xl">
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm text-gray-100 font-semibold line-clamp-2">
+                        第{ep.act_number}幕 {ep.title || '未命名分幕'}
+                      </p>
+                      <p className="text-xs text-gray-500">{series.name}</p>
+                    </div>
+                    <span className={`text-xs px-2 py-0.5 rounded ${getEpisodeStatusBadgeClass(ep.status)}`}>
+                      {getEpisodeStatusText(ep.status)}
+                    </span>
+                  </div>
+                  <p className="text-sm text-gray-200 leading-relaxed line-clamp-5">
+                    {ep.summary || '暂无摘要'}
+                  </p>
+                  <div className="text-xs text-gray-500 flex items-center justify-between">
+                    <span>目标时长 {ep.target_duration_seconds || 0}s</span>
+                    <span className="line-clamp-1 max-w-[60%]">{ep.script_excerpt || '无脚本片段'}</span>
+                  </div>
+                </div>
+              </HoverOverviewPanel>
+            </div>
           ))}
         </div>
       )}
@@ -512,6 +825,9 @@ function SeriesOverview({
   onUpdateElement,
   onDeleteElement,
   onGenerateElementImage,
+  onExportAssets,
+  onExportVideo,
+  exporting,
   planning,
   generating,
 }: {
@@ -526,6 +842,9 @@ function SeriesOverview({
   onUpdateElement: (elementId: string, updates: Record<string, unknown>) => void | Promise<void>
   onDeleteElement: (elementId: string) => void | Promise<void>
   onGenerateElementImage: (elementId: string) => void | Promise<void>
+  onExportAssets: () => void | Promise<void>
+  onExportVideo: () => void | Promise<void>
+  exporting: boolean
   planning: boolean
   generating: boolean
 }) {
@@ -576,13 +895,29 @@ function SeriesOverview({
               <p className="text-xs text-gray-500 mt-1">视觉风格: {series.visual_style}</p>
             )}
           </div>
-          <button
-            onClick={onDeleteSeries}
-            className="p-2 rounded hover:bg-red-900/30 text-gray-500 hover:text-red-400 transition-colors"
-            title="删除系列"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => onExportAssets()}
+              disabled={exporting}
+              className="px-2.5 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-xs text-gray-200 disabled:opacity-50"
+            >
+              {exporting ? '导出中...' : '导出素材'}
+            </button>
+            <button
+              onClick={() => onExportVideo()}
+              disabled={exporting}
+              className="px-2.5 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-xs text-gray-200 disabled:opacity-50"
+            >
+              导出合并视频
+            </button>
+            <button
+              onClick={onDeleteSeries}
+              className="p-2 rounded hover:bg-red-900/30 text-gray-500 hover:text-red-400 transition-colors"
+              title="删除系列"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* 项目统计 */}
@@ -633,7 +968,7 @@ function SeriesOverview({
             {episodes.map((ep) => (
               <div
                 key={ep.id}
-                className="p-4 rounded-lg bg-gray-900 border border-gray-800 hover:border-purple-700 cursor-pointer transition-colors"
+                className="group relative p-4 rounded-lg bg-gray-900 border border-gray-800 hover:border-purple-700 cursor-pointer transition-colors"
                 onClick={() => onSelectEpisode(ep.id)}
               >
                 <div className="flex items-center justify-between mb-2">
@@ -650,15 +985,8 @@ function SeriesOverview({
                 </div>
                 <p className="text-xs text-gray-400 line-clamp-2 mb-3">{ep.summary || '暂无摘要'}</p>
                 <div className="flex items-center gap-2">
-                  <span className={`text-xs px-2 py-0.5 rounded ${
-                    ep.status === 'planned' ? 'bg-blue-900/30 text-blue-300' :
-                    ep.status === 'completed' ? 'bg-green-900/30 text-green-300' :
-                    'bg-gray-800 text-gray-400'
-                  }`}>
-                    {ep.status === 'draft' ? '草稿' :
-                     ep.status === 'planned' ? '已规划' :
-                     ep.status === 'in_progress' ? '制作中' :
-                     ep.status === 'completed' ? '已完成' : ep.status}
+                  <span className={`text-xs px-2 py-0.5 rounded ${getEpisodeStatusBadgeClass(ep.status)}`}>
+                    {getEpisodeStatusText(ep.status)}
                   </span>
                   {ep.status === 'draft' && (
                     <button
@@ -673,6 +1001,35 @@ function SeriesOverview({
                     </button>
                   )}
                 </div>
+
+                <HoverOverviewPanel maxWidthClass="max-w-2xl">
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-base text-gray-100 font-semibold line-clamp-2">
+                          第{ep.act_number}幕 {ep.title || '未命名分幕'}
+                        </p>
+                        <p className="text-xs text-gray-500">{series.name}</p>
+                      </div>
+                      <span className={`text-xs px-2 py-0.5 rounded ${getEpisodeStatusBadgeClass(ep.status)}`}>
+                        {getEpisodeStatusText(ep.status)}
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-200 leading-relaxed line-clamp-6">
+                      {ep.summary || '暂无摘要'}
+                    </p>
+                    <div className="rounded-lg border border-gray-800 bg-gray-900/70 p-2.5">
+                      <p className="text-xs text-gray-500 mb-1">脚本片段</p>
+                      <p className="text-xs text-gray-300 leading-relaxed line-clamp-4">
+                        {ep.script_excerpt || '暂无脚本片段'}
+                      </p>
+                    </div>
+                    <div className="text-xs text-gray-500 flex items-center justify-between">
+                      <span>目标时长 {ep.target_duration_seconds || 0}s</span>
+                      <span>状态: {ep.status}</span>
+                    </div>
+                  </div>
+                </HoverOverviewPanel>
               </div>
             ))}
           </div>
@@ -728,7 +1085,7 @@ function SeriesOverview({
             {filteredElements.map((el) => (
               <div
                 key={el.id}
-                className="p-3 rounded-lg bg-gray-900 border border-gray-800"
+                className="group relative p-3 rounded-lg bg-gray-900 border border-gray-800"
               >
                 <div className="flex items-center gap-2 mb-2">
                   {el.type === 'character' ? (
@@ -797,6 +1154,42 @@ function SeriesOverview({
                     历史({el.image_history.length})
                   </button>
                 )}
+
+                <HoverOverviewPanel maxWidthClass="max-w-4xl">
+                  <div className="grid gap-4 md:grid-cols-[1.3fr_1fr]">
+                    <div className="rounded-lg overflow-hidden border border-gray-800 bg-gray-900/70">
+                      <div className="aspect-video w-full bg-gray-900/80">
+                        {el.image_url ? (
+                          <img src={el.image_url} alt={el.name} className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-gray-600">
+                            <ImageIcon className="w-10 h-10" />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-base text-gray-100 font-semibold line-clamp-1">{el.name}</p>
+                        <span className="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-300">{el.type}</span>
+                      </div>
+                      <p className="text-sm text-gray-200 leading-relaxed line-clamp-8">
+                        {el.description || '暂无描述'}
+                      </p>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="rounded border border-gray-800 bg-gray-900/70 px-2 py-1.5 text-gray-400">
+                          出现集数: {el.appears_in_episodes?.length || 0}
+                        </div>
+                        <div className="rounded border border-gray-800 bg-gray-900/70 px-2 py-1.5 text-gray-400">
+                          图像版本: {el.image_history?.length || 0}
+                        </div>
+                      </div>
+                      <div className="text-xs text-gray-500 line-clamp-1">
+                        语音配置: {el.voice_profile || '未配置'}
+                      </div>
+                    </div>
+                  </div>
+                </HoverOverviewPanel>
               </div>
             ))}
           </div>
@@ -924,8 +1317,12 @@ function EpisodeWorkbench({
   onGenerateAsset,
   onInpaintShot,
   onUpdateShot,
+  onReorderShots,
   onUpdateEpisode,
   onBatchGenerate,
+  onExportAssets,
+  onExportVideo,
+  exporting,
   planning,
   generating,
 }: {
@@ -939,24 +1336,160 @@ function EpisodeWorkbench({
   onGenerateAsset: (shotId: string, stage: 'frame' | 'end_frame' | 'video' | 'audio') => void | Promise<void>
   onInpaintShot: (shotId: string, payload: { editPrompt: string; maskData?: string }) => void | Promise<void>
   onUpdateShot: (shotId: string, updates: Record<string, unknown>) => void | Promise<void>
+  onReorderShots: (shotIds: string[]) => void | Promise<void>
   onUpdateEpisode: (updates: Record<string, unknown>) => void | Promise<void>
   onBatchGenerate: (stages?: string[]) => void | Promise<void>
+  onExportAssets: () => void | Promise<void>
+  onExportVideo: () => void | Promise<void>
+  exporting: boolean
   planning: boolean
   generating: boolean
 }) {
   const [selectedShotId, setSelectedShotId] = useState<string | null>(null)
+  const [previewShotId, setPreviewShotId] = useState<string | null>(null)
+  const [showPreviewPanel, setShowPreviewPanel] = useState(false)
+  const [previewPanelRect, setPreviewPanelRect] = useState<PreviewPanelRect>(() => defaultPreviewPanelRect())
   const [showScriptEditor, setShowScriptEditor] = useState(false)
   const [showElementLibrary, setShowElementLibrary] = useState(false)
   const [titleDraft, setTitleDraft] = useState(episode.title || '')
   const [summaryDraft, setSummaryDraft] = useState(episode.summary || '')
   const [scriptDraft, setScriptDraft] = useState(episode.script_excerpt || '')
+  const previewPanelDragRef = useRef<{
+    startX: number
+    startY: number
+    originX: number
+    originY: number
+    width: number
+    height: number
+  } | null>(null)
+  const previewPanelResizeRef = useRef<{
+    direction: PreviewPanelResizeDirection
+    startX: number
+    startY: number
+    originRect: PreviewPanelRect
+  } | null>(null)
   const selectedShot = shots.find((s) => s.id === selectedShotId)
+  const previewPanelWide = previewPanelRect.width >= 980
+  const previewPanelGridClass = previewPanelWide ? 'grid-cols-2' : 'grid-cols-1'
+  const previewPanelGridStyle = previewPanelWide
+    ? undefined
+    : { gridTemplateRows: 'minmax(0, 1.2fr) minmax(0, 1fr)' }
+  const previewPlayerPaneClass = previewPanelWide
+    ? 'min-h-0 border-r border-gray-800'
+    : 'min-h-0 border-b border-gray-800'
 
   useEffect(() => {
     setTitleDraft(episode.title || '')
     setSummaryDraft(episode.summary || '')
     setScriptDraft(episode.script_excerpt || '')
   }, [episode.id, episode.title, episode.summary, episode.script_excerpt])
+
+  useEffect(() => {
+    if (!shots.length) {
+      setSelectedShotId(null)
+      setPreviewShotId(null)
+      setShowPreviewPanel(false)
+      return
+    }
+    if (!previewShotId || !shots.some((s) => s.id === previewShotId)) {
+      setPreviewShotId(shots[0].id)
+    }
+    if (selectedShotId && !shots.some((s) => s.id === selectedShotId)) {
+      setSelectedShotId(null)
+    }
+  }, [shots, previewShotId, selectedShotId])
+
+  useEffect(() => {
+    const handleViewportResize = () => {
+      setPreviewPanelRect((prev) => clampPreviewPanelRect(prev))
+    }
+    window.addEventListener('resize', handleViewportResize)
+    return () => window.removeEventListener('resize', handleViewportResize)
+  }, [])
+
+  useEffect(() => {
+    const handlePointerMove = (event: MouseEvent) => {
+      const dragging = previewPanelDragRef.current
+      if (dragging) {
+        const dx = event.clientX - dragging.startX
+        const dy = event.clientY - dragging.startY
+        setPreviewPanelRect(clampPreviewPanelRect({
+          x: dragging.originX + dx,
+          y: dragging.originY + dy,
+          width: dragging.width,
+          height: dragging.height,
+        }))
+        return
+      }
+
+      const resizing = previewPanelResizeRef.current
+      if (!resizing) return
+      const dx = event.clientX - resizing.startX
+      const dy = event.clientY - resizing.startY
+      const base = resizing.originRect
+      const direction = resizing.direction
+      const next: PreviewPanelRect = { ...base }
+
+      if (direction.includes('right')) next.width = base.width + dx
+      if (direction.includes('left')) {
+        next.width = base.width - dx
+        next.x = base.x + dx
+      }
+      if (direction.includes('bottom')) next.height = base.height + dy
+      if (direction.includes('top')) {
+        next.height = base.height - dy
+        next.y = base.y + dy
+      }
+
+      setPreviewPanelRect(clampPreviewPanelRect(next))
+    }
+
+    const handlePointerUp = () => {
+      previewPanelDragRef.current = null
+      previewPanelResizeRef.current = null
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+    }
+
+    window.addEventListener('mousemove', handlePointerMove)
+    window.addEventListener('mouseup', handlePointerUp)
+    return () => {
+      window.removeEventListener('mousemove', handlePointerMove)
+      window.removeEventListener('mouseup', handlePointerUp)
+      handlePointerUp()
+    }
+  }, [])
+
+  const startPreviewPanelDrag = (event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    previewPanelResizeRef.current = null
+    previewPanelDragRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: previewPanelRect.x,
+      originY: previewPanelRect.y,
+      width: previewPanelRect.width,
+      height: previewPanelRect.height,
+    }
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'move'
+  }
+
+  const startPreviewPanelResize = (direction: PreviewPanelResizeDirection) => (
+    event: ReactMouseEvent<HTMLButtonElement>
+  ) => {
+    event.preventDefault()
+    event.stopPropagation()
+    previewPanelDragRef.current = null
+    previewPanelResizeRef.current = {
+      direction,
+      startX: event.clientX,
+      startY: event.clientY,
+      originRect: previewPanelRect,
+    }
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = resizeCursorByDirection(direction)
+  }
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -999,6 +1532,34 @@ function EpisodeWorkbench({
           >
             <FileText className="w-3 h-3" />
             {showScriptEditor ? '收起脚本' : '查看/编辑脚本'}
+          </button>
+          <button
+            onClick={() => setShowPreviewPanel((v) => !v)}
+            disabled={shots.length === 0}
+            className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors disabled:opacity-50 ${
+              showPreviewPanel
+                ? 'bg-purple-700/60 text-purple-100'
+                : 'bg-gray-800 hover:bg-gray-700 text-gray-300'
+            }`}
+          >
+            <Play className="w-3 h-3" />
+            {showPreviewPanel ? '关闭预览面板' : '预览/时间线'}
+          </button>
+          <button
+            onClick={() => onExportAssets()}
+            disabled={exporting}
+            className="flex items-center gap-1 px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-xs text-gray-300 disabled:opacity-50 transition-colors"
+          >
+            {exporting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+            导出素材
+          </button>
+          <button
+            onClick={() => onExportVideo()}
+            disabled={exporting}
+            className="flex items-center gap-1 px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-xs text-gray-300 disabled:opacity-50 transition-colors"
+          >
+            <Video className="w-3 h-3" />
+            导出视频
           </button>
           {shots.length === 0 ? (
             <button
@@ -1085,7 +1646,10 @@ function EpisodeWorkbench({
                   shot={shot}
                   index={idx}
                   isSelected={shot.id === selectedShotId}
-                  onClick={() => setSelectedShotId(shot.id === selectedShotId ? null : shot.id)}
+                  onClick={() => {
+                    setSelectedShotId(shot.id === selectedShotId ? null : shot.id)
+                    setPreviewShotId(shot.id)
+                  }}
                   onGenerateFrame={() => onGenerateAsset(shot.id, 'frame')}
                   onGenerateEndFrame={() => onGenerateAsset(shot.id, 'end_frame')}
                   onGenerateVideo={() => onGenerateAsset(shot.id, 'video')}
@@ -1111,6 +1675,106 @@ function EpisodeWorkbench({
           </div>
         )}
       </div>
+
+      {showPreviewPanel && (
+        <div
+          className="fixed z-[65] rounded-xl border border-gray-700 bg-gray-950/95 backdrop-blur shadow-2xl overflow-hidden"
+          style={{
+            left: previewPanelRect.x,
+            top: previewPanelRect.y,
+            width: previewPanelRect.width,
+            height: previewPanelRect.height,
+          }}
+        >
+          <div className="h-10 px-3 border-b border-gray-800 flex items-center justify-between gap-2">
+            <div
+              onMouseDown={startPreviewPanelDrag}
+              className="min-w-0 flex-1 h-full flex items-center gap-2 cursor-move select-none"
+            >
+              <div className="text-xs text-gray-300">预览与时间线</div>
+              <div className="text-[10px] text-gray-500 truncate">拖动移动 · 拖边缩放</div>
+            </div>
+            <button
+              onClick={() => setShowPreviewPanel(false)}
+              className="text-gray-500 hover:text-white"
+              data-preview-panel-action="true"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div
+            className={`h-[calc(100%-40px)] min-h-0 grid ${previewPanelGridClass}`}
+            style={previewPanelGridStyle}
+          >
+            <div className={previewPlayerPaneClass}>
+              <PreviewPlayer
+                shots={shots}
+                currentShotId={previewShotId}
+                onCurrentShotChange={(shotId) => setPreviewShotId(shotId)}
+              />
+            </div>
+            <div className="min-h-0">
+              <Timeline
+                shots={shots}
+                currentShotId={previewShotId}
+                onSelectShot={(shotId) => {
+                  setPreviewShotId(shotId)
+                  setSelectedShotId(shotId)
+                }}
+                onReorder={onReorderShots}
+              />
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="向上调整预览面板高度"
+            onMouseDown={startPreviewPanelResize('top')}
+            className="absolute -top-1 left-3 right-3 h-2 cursor-ns-resize bg-transparent"
+          />
+          <button
+            type="button"
+            aria-label="向右调整预览面板宽度"
+            onMouseDown={startPreviewPanelResize('right')}
+            className="absolute -right-1 top-3 bottom-3 w-2 cursor-ew-resize bg-transparent"
+          />
+          <button
+            type="button"
+            aria-label="向下调整预览面板高度"
+            onMouseDown={startPreviewPanelResize('bottom')}
+            className="absolute -bottom-1 left-3 right-3 h-2 cursor-ns-resize bg-transparent"
+          />
+          <button
+            type="button"
+            aria-label="向左调整预览面板宽度"
+            onMouseDown={startPreviewPanelResize('left')}
+            className="absolute -left-1 top-3 bottom-3 w-2 cursor-ew-resize bg-transparent"
+          />
+          <button
+            type="button"
+            aria-label="从右下角缩放预览面板"
+            onMouseDown={startPreviewPanelResize('bottom-right')}
+            className="absolute -right-1.5 -bottom-1.5 h-4 w-4 cursor-nwse-resize rounded-full border border-gray-600 bg-gray-900/80"
+          />
+          <button
+            type="button"
+            aria-label="从左下角缩放预览面板"
+            onMouseDown={startPreviewPanelResize('bottom-left')}
+            className="absolute -left-1.5 -bottom-1.5 h-4 w-4 cursor-nesw-resize rounded-full border border-gray-600 bg-gray-900/80"
+          />
+          <button
+            type="button"
+            aria-label="从右上角缩放预览面板"
+            onMouseDown={startPreviewPanelResize('top-right')}
+            className="absolute -right-1.5 -top-1.5 h-4 w-4 cursor-nesw-resize rounded-full border border-gray-600 bg-gray-900/80"
+          />
+          <button
+            type="button"
+            aria-label="从左上角缩放预览面板"
+            onMouseDown={startPreviewPanelResize('top-left')}
+            className="absolute -left-1.5 -top-1.5 h-4 w-4 cursor-nwse-resize rounded-full border border-gray-600 bg-gray-900/80"
+          />
+        </div>
+      )}
 
       {showElementLibrary && (
         <ElementLibraryPanel
@@ -1151,7 +1815,7 @@ function ShotCard({
   return (
     <div
       onClick={onClick}
-      className={`rounded-lg border cursor-pointer transition-all ${
+      className={`group relative rounded-lg border cursor-pointer transition-all ${
         isSelected
           ? 'border-purple-500 bg-gray-900/80'
           : 'border-gray-800 bg-gray-900 hover:border-gray-700'
@@ -1254,6 +1918,68 @@ function ShotCard({
           )}
         </div>
       </div>
+
+      <HoverOverviewPanel maxWidthClass="max-w-5xl">
+        <div className="grid gap-4 lg:grid-cols-[1.45fr_1fr]">
+          <div className="space-y-2">
+            <div className="rounded-lg overflow-hidden border border-gray-800 bg-gray-900/70">
+              <div className="aspect-video w-full bg-gray-900/80">
+                {shot.start_image_url ? (
+                  <img src={shot.start_image_url} alt={shot.name} className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-gray-600">
+                    <ImageIcon className="w-10 h-10" />
+                  </div>
+                )}
+              </div>
+            </div>
+            {shot.end_image_url && (
+              <div className="rounded-lg overflow-hidden border border-gray-800 bg-gray-900/70">
+                <div className="aspect-video w-full bg-gray-900/80">
+                  <img src={shot.end_image_url} alt={`${shot.name || '镜头'}-end`} className="w-full h-full object-cover" />
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-base text-gray-100 font-semibold line-clamp-2">
+                {shot.name || `镜头${index + 1}`}
+              </p>
+              <span className="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-300">{shot.type || 'standard'}</span>
+            </div>
+            <p className="text-sm text-gray-200 leading-relaxed line-clamp-6">
+              {shot.narration || shot.description || '暂无描述'}
+            </p>
+            <div className="rounded-lg border border-gray-800 bg-gray-900/70 p-2.5 space-y-1.5 text-xs">
+              <div className="flex items-center justify-between text-gray-400">
+                <span>状态</span>
+                <span>{shot.status || 'pending'}</span>
+              </div>
+              <div className="flex items-center justify-between text-gray-400">
+                <span>时长</span>
+                <span>{shot.duration || 0}s</span>
+              </div>
+              <div className="flex items-center justify-between text-gray-400">
+                <span>首帧</span>
+                <span>{shot.start_image_url ? '已生成' : '未生成'}</span>
+              </div>
+              <div className="flex items-center justify-between text-gray-400">
+                <span>视频/音频</span>
+                <span>{shot.video_url ? '视频就绪' : '视频未生成'} · {shot.audio_url ? '音频就绪' : '音频未生成'}</span>
+              </div>
+            </div>
+            {(shot.dialogue_script || shot.prompt || shot.video_prompt) && (
+              <div className="rounded-lg border border-gray-800 bg-gray-900/70 p-2.5">
+                <p className="text-xs text-gray-500 mb-1">补充信息</p>
+                <p className="text-xs text-gray-300 leading-relaxed line-clamp-4">
+                  {shot.dialogue_script || shot.video_prompt || shot.prompt}
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      </HoverOverviewPanel>
     </div>
   )
 }
@@ -1622,7 +2348,7 @@ function ElementLibraryPanel({
             <h4 className="text-sm font-medium text-gray-300 mb-2">系列共享素材（{sharedFiltered.length}）</h4>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {sharedFiltered.map((el) => (
-                <div key={el.id} className="p-3 rounded-lg border border-gray-800 bg-gray-950/60">
+                <div key={el.id} className="group relative p-3 rounded-lg border border-gray-800 bg-gray-950/60">
                   <div className="flex items-center gap-2 mb-2">
                     <span className="text-xs px-1.5 py-0.5 rounded bg-gray-800 text-gray-400">{el.type}</span>
                     <span className="text-sm text-gray-200 truncate">{el.name}</span>
@@ -1636,6 +2362,39 @@ function ElementLibraryPanel({
                     </div>
                   )}
                   <p className="text-xs text-gray-400 line-clamp-3">{el.description}</p>
+
+                  <HoverOverviewPanel maxWidthClass="max-w-4xl">
+                    <div className="grid gap-4 md:grid-cols-[1.3fr_1fr]">
+                      <div className="rounded-lg overflow-hidden border border-gray-800 bg-gray-900/70">
+                        <div className="aspect-video w-full bg-gray-900/80">
+                          {el.image_url ? (
+                            <img src={el.image_url} alt={el.name} className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-gray-600">
+                              <ImageIcon className="w-10 h-10" />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-base text-gray-100 font-semibold line-clamp-1">{el.name}</p>
+                          <span className="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-300">{el.type}</span>
+                        </div>
+                        <p className="text-sm text-gray-200 leading-relaxed line-clamp-8">
+                          {el.description || '暂无描述'}
+                        </p>
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <div className="rounded border border-gray-800 bg-gray-900/70 px-2 py-1.5 text-gray-400">
+                            出现集数: {el.appears_in_episodes?.length || 0}
+                          </div>
+                          <div className="rounded border border-gray-800 bg-gray-900/70 px-2 py-1.5 text-gray-400">
+                            图像版本: {el.image_history?.length || 0}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </HoverOverviewPanel>
                 </div>
               ))}
             </div>
@@ -1648,12 +2407,28 @@ function ElementLibraryPanel({
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                 {episodeOnly.map((el) => (
-                  <div key={el.id} className="p-3 rounded-lg border border-gray-800 bg-gray-950/60">
+                  <div key={el.id} className="group relative p-3 rounded-lg border border-gray-800 bg-gray-950/60">
                     <div className="flex items-center gap-2 mb-2">
                       <span className="text-xs px-1.5 py-0.5 rounded bg-blue-900/30 text-blue-300">{el.type}</span>
                       <span className="text-sm text-gray-200 truncate">{el.name}</span>
                     </div>
                     <p className="text-xs text-gray-400 line-clamp-3">{el.description}</p>
+
+                    <HoverOverviewPanel maxWidthClass="max-w-2xl">
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-base text-gray-100 font-semibold line-clamp-1">{el.name}</p>
+                          <span className="text-xs px-2 py-0.5 rounded bg-blue-900/30 text-blue-300">{el.type}</span>
+                        </div>
+                        <p className="text-sm text-gray-200 leading-relaxed line-clamp-8">
+                          {el.description || '暂无描述'}
+                        </p>
+                        <div className="text-xs text-gray-500 flex items-center justify-between">
+                          <span>本集特有素材</span>
+                          <span>{el.image_url ? '含参考图' : '无参考图'}</span>
+                        </div>
+                      </div>
+                    </HoverOverviewPanel>
                   </div>
                 ))}
               </div>
@@ -1661,6 +2436,7 @@ function ElementLibraryPanel({
           </section>
         </div>
       </div>
+
     </div>
   )
 }
@@ -1977,6 +2753,56 @@ function SimpleTextDialog({
         <div className="p-4 max-h-[70vh] overflow-y-auto">
           <pre className="text-xs text-gray-300 whitespace-pre-wrap">{text}</pre>
         </div>
+      </div>
+    </div>
+  )
+}
+
+function ExportProgressToast({
+  progress,
+  onClose,
+}: {
+  progress: StudioExportProgress
+  onClose: () => void
+}) {
+  const phaseText =
+    progress.phase === 'packing' ? '正在打包...' :
+    progress.phase === 'downloading' ? '正在下载...' :
+    progress.phase === 'saving' ? '准备保存...' :
+    progress.phase === 'done' ? '导出完成' :
+    '导出失败'
+  const percent = progress.percent ?? (progress.total ? Math.round((progress.loaded / progress.total) * 100) : undefined)
+  const detailText = progress.total
+    ? `${formatStorage(progress.loaded)} / ${formatStorage(progress.total)}`
+    : (progress.loaded > 0 ? formatStorage(progress.loaded) : '')
+  const barColor = progress.phase === 'error'
+    ? 'bg-red-500'
+    : progress.phase === 'done'
+      ? 'bg-emerald-500'
+      : 'bg-gradient-to-r from-purple-500 to-indigo-400'
+
+  return (
+    <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[75] w-[30rem] max-w-[calc(100vw-1.5rem)] rounded-xl border border-gray-700 bg-gray-900/95 shadow-2xl p-3">
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <div className="min-w-0">
+          <p className="text-sm text-gray-100 truncate">{progress.title}</p>
+          <p className={`text-xs ${progress.phase === 'error' ? 'text-red-300' : 'text-gray-400'}`}>
+            {phaseText}{progress.error ? `：${progress.error}` : ''}
+          </p>
+        </div>
+        <button onClick={onClose} className="text-gray-500 hover:text-white">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      <div className="h-2 rounded bg-gray-800 overflow-hidden">
+        <div
+          className={`h-full ${barColor} transition-all`}
+          style={{ width: `${percent !== undefined ? Math.max(2, Math.min(100, percent)) : 45}%` }}
+        />
+      </div>
+      <div className="mt-1 text-[11px] text-gray-500 flex items-center justify-between">
+        <span>{detailText}</span>
+        <span>{percent !== undefined ? `${percent}%` : ''}</span>
       </div>
     </div>
   )

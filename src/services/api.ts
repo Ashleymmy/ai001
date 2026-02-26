@@ -17,6 +17,23 @@ const studioApi = axios.create({
   timeout: 600000
 })
 
+function parseContentDispositionFilename(contentDisposition: string | undefined, fallback: string): string {
+  if (!contentDisposition) return fallback
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1].trim().replace(/["']/g, '')) || fallback
+    } catch {
+      return utf8Match[1].trim().replace(/["']/g, '') || fallback
+    }
+  }
+  const plainMatch = contentDisposition.match(/filename=([^;]+)/i)
+  if (plainMatch?.[1]) {
+    return plainMatch[1].trim().replace(/["']/g, '') || fallback
+  }
+  return fallback
+}
+
 function inferRuntimeScope(): 'module' | 'agent' {
   if (typeof window === 'undefined') return 'module'
   const hash = (window.location.hash || '').toLowerCase()
@@ -2162,6 +2179,16 @@ export async function studioGetShots(episodeId: string): Promise<StudioShot[]> {
   return response.data
 }
 
+export async function studioReorderShots(
+  episodeId: string,
+  shotIds: string[]
+): Promise<StudioShot[]> {
+  const response = await api.post(`/api/studio/episodes/${episodeId}/shots/reorder`, {
+    shot_ids: shotIds,
+  })
+  return (response.data?.shots || []) as StudioShot[]
+}
+
 export async function studioUpdateShot(
   shotId: string,
   updates: Partial<Pick<StudioShot, 'name' | 'type' | 'duration' | 'description' | 'prompt' | 'end_prompt' | 'video_prompt' | 'narration' | 'dialogue_script' | 'segment_name' | 'start_image_url' | 'end_image_url' | 'frame_history' | 'video_history' | 'visual_action'>>
@@ -2221,12 +2248,64 @@ export async function studioCheckConfig(): Promise<StudioConfigCheckResult> {
 
 // --- 导出 ---
 
-export async function studioExportEpisode(episodeId: string): Promise<Record<string, unknown>> {
-  const response = await api.post(`/api/studio/episodes/${episodeId}/export`)
-  return response.data
+export interface StudioDownloadResult {
+  blob: Blob
+  filename: string
 }
 
-export async function studioExportSeries(seriesId: string): Promise<Record<string, unknown>> {
-  const response = await api.post(`/api/studio/series/${seriesId}/export`)
-  return response.data
+export interface StudioExportOptions {
+  mode?: 'assets' | 'video'
+  resolution?: '720p' | '1080p'
+  signal?: AbortSignal
+  onProgress?: (progress: { loaded: number; total?: number; percent?: number }) => void
+}
+
+export async function studioExportEpisode(
+  episodeId: string,
+  options?: StudioExportOptions
+): Promise<StudioDownloadResult> {
+  const mode = options?.mode || 'assets'
+  const response = await api.post(`/api/studio/episodes/${episodeId}/export`, {}, {
+    params: {
+      mode,
+      resolution: options?.resolution || '720p',
+    },
+    responseType: 'blob',
+    signal: options?.signal,
+    onDownloadProgress: (event) => {
+      const loaded = event.loaded
+      const total = typeof event.total === 'number' ? event.total : undefined
+      const percent = total ? Math.round((loaded / total) * 100) : undefined
+      options?.onProgress?.({ loaded, total, percent })
+    },
+  })
+
+  const fallback = mode === 'video' ? `${episodeId}_merged.mp4` : `${episodeId}_assets.zip`
+  const filename = parseContentDispositionFilename(response.headers?.['content-disposition'], fallback)
+  return { blob: response.data as Blob, filename }
+}
+
+export async function studioExportSeries(
+  seriesId: string,
+  options?: StudioExportOptions
+): Promise<StudioDownloadResult> {
+  const mode = options?.mode || 'assets'
+  const response = await api.post(`/api/studio/series/${seriesId}/export`, {}, {
+    params: {
+      mode,
+      resolution: options?.resolution || '720p',
+    },
+    responseType: 'blob',
+    signal: options?.signal,
+    onDownloadProgress: (event) => {
+      const loaded = event.loaded
+      const total = typeof event.total === 'number' ? event.total : undefined
+      const percent = total ? Math.round((loaded / total) * 100) : undefined
+      options?.onProgress?.({ loaded, total, percent })
+    },
+  })
+
+  const fallback = mode === 'video' ? `${seriesId}_merged.mp4` : `${seriesId}_assets.zip`
+  const filename = parseContentDispositionFilename(response.headers?.['content-disposition'], fallback)
+  return { blob: response.data as Blob, filename }
 }

@@ -107,6 +107,7 @@ interface StudioState {
   deleteShot: (shotId: string) => Promise<void>
   generateShotAsset: (shotId: string, stage: 'frame' | 'end_frame' | 'video' | 'audio') => Promise<void>
   inpaintShotFrame: (shotId: string, params: { edit_prompt: string; mask_data?: string; width?: number; height?: number }) => Promise<void>
+  reorderShots: (episodeId: string, shotIds: string[]) => Promise<void>
 
   batchGenerate: (episodeId: string, stages?: string[]) => Promise<void>
 
@@ -402,6 +403,18 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     } catch (e: unknown) {
       const parsed = parseStudioError(e)
       set({ generating: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
+    }
+  },
+
+  reorderShots: async (episodeId, shotIds) => {
+    try {
+      const shots = await api.studioReorderShots(episodeId, shotIds)
+      if (get().currentEpisodeId === episodeId) {
+        set({ shots })
+      }
+    } catch (e: unknown) {
+      const parsed = parseStudioError(e)
+      set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
 

@@ -20,6 +20,7 @@ from services.agent_service import AgentService, AgentProject, AgentExecutor
 from services.api_monitor_service import api_monitor
 from services.studio_storage import StudioStorage
 from services.studio_service import StudioService, StudioServiceError
+from services.studio_export_service import StudioExportService
 from services.fish_audio_service import FishAudioConfig, FishAudioService
 from services.tts_service import (
     DashScopeTTSConfig,
@@ -5858,6 +5859,10 @@ class StudioBatchGenerateRequest(BaseModel):
     stages: List[str] = ["elements", "frames", "end_frames", "videos", "audio"]
 
 
+class StudioReorderShotsRequest(BaseModel):
+    shot_ids: List[str]
+
+
 class StudioSettingsRequest(BaseModel):
     llm: Optional[Dict[str, Any]] = None
     image: Optional[Dict[str, Any]] = None
@@ -6088,6 +6093,27 @@ async def studio_get_shots(episode_id: str):
     return service.storage.get_shots(episode_id)
 
 
+@app.post("/api/studio/episodes/{episode_id}/shots/reorder")
+async def studio_reorder_shots(episode_id: str, req: StudioReorderShotsRequest):
+    service = _studio_ensure_service_ready()
+    ids = [sid for sid in req.shot_ids if isinstance(sid, str) and sid.strip()]
+    if not ids:
+        _studio_raise(400, "镜头排序列表不能为空", "invalid_shot_order_payload", {"episode_id": episode_id})
+
+    existing = service.storage.get_shots(episode_id)
+    existing_ids = [shot["id"] for shot in existing]
+    if sorted(existing_ids) != sorted(ids):
+        _studio_raise(
+            400,
+            "镜头排序列表与当前集镜头不一致",
+            "invalid_shot_order_payload",
+            {"episode_id": episode_id, "expected_count": len(existing_ids), "actual_count": len(ids)},
+        )
+
+    service.storage.reorder_shots(episode_id, ids)
+    return {"ok": True, "shots": service.storage.get_shots(episode_id)}
+
+
 @app.put("/api/studio/shots/{shot_id}")
 async def studio_update_shot(shot_id: str, req: StudioShotUpdateRequest):
     service = _studio_ensure_service_ready()
@@ -6208,21 +6234,73 @@ async def studio_config_check():
 # --- 导出 ---
 
 @app.post("/api/studio/episodes/{episode_id}/export")
-async def studio_export_episode(episode_id: str):
+async def studio_export_episode(
+    episode_id: str,
+    mode: str = Query("assets"),
+    resolution: str = Query("720p"),
+):
     service = _studio_ensure_service_ready()
-    snapshot = service.storage.get_episode_snapshot(episode_id)
-    if not snapshot:
-        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
-    return snapshot
+    if mode not in {"assets", "video"}:
+        _studio_raise(400, "导出模式无效", "invalid_export_mode", {"mode": mode})
+    if resolution not in {"720p", "1080p"}:
+        _studio_raise(400, "分辨率参数无效", "invalid_export_resolution", {"resolution": resolution})
+
+    exporter = StudioExportService(service.storage)
+    try:
+        if mode == "video":
+            file_path = await exporter.export_episode_merged_video(episode_id, resolution=resolution)
+            media_type = "video/mp4"
+        else:
+            file_path = await exporter.export_episode_assets_zip(episode_id)
+            media_type = "application/zip"
+    except ValueError as e:
+        if str(e) == "episode_not_found":
+            _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+        if str(e) == "series_not_found":
+            _studio_raise(404, "系列不存在", "series_not_found", {"episode_id": episode_id})
+        _studio_raise(400, f"导出失败: {str(e)}", "studio_export_error")
+    except Exception as e:
+        _studio_raise(500, f"导出失败: {str(e)}", "studio_export_error")
+
+    return FileResponse(
+        file_path,
+        media_type=media_type,
+        filename=os.path.basename(file_path),
+    )
 
 
 @app.post("/api/studio/series/{series_id}/export")
-async def studio_export_series(series_id: str):
+async def studio_export_series(
+    series_id: str,
+    mode: str = Query("assets"),
+    resolution: str = Query("720p"),
+):
     service = _studio_ensure_service_ready()
-    snapshot = service.storage.get_series_snapshot(series_id)
-    if not snapshot:
-        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
-    return snapshot
+    if mode not in {"assets", "video"}:
+        _studio_raise(400, "导出模式无效", "invalid_export_mode", {"mode": mode})
+    if resolution not in {"720p", "1080p"}:
+        _studio_raise(400, "分辨率参数无效", "invalid_export_resolution", {"resolution": resolution})
+
+    exporter = StudioExportService(service.storage)
+    try:
+        if mode == "video":
+            file_path = await exporter.export_series_merged_video(series_id, resolution=resolution)
+            media_type = "video/mp4"
+        else:
+            file_path = await exporter.export_series_assets_zip(series_id)
+            media_type = "application/zip"
+    except ValueError as e:
+        if str(e) == "series_not_found":
+            _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+        _studio_raise(400, f"导出失败: {str(e)}", "studio_export_error")
+    except Exception as e:
+        _studio_raise(500, f"导出失败: {str(e)}", "studio_export_error")
+
+    return FileResponse(
+        file_path,
+        media_type=media_type,
+        filename=os.path.basename(file_path),
+    )
 
 
 if __name__ == "__main__":
