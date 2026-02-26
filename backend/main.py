@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
@@ -19,7 +19,7 @@ from services.storage_service import storage
 from services.agent_service import AgentService, AgentProject, AgentExecutor
 from services.api_monitor_service import api_monitor
 from services.studio_storage import StudioStorage
-from services.studio_service import StudioService
+from services.studio_service import StudioService, StudioServiceError
 from services.fish_audio_service import FishAudioConfig, FishAudioService
 from services.tts_service import (
     DashScopeTTSConfig,
@@ -5809,6 +5809,7 @@ class StudioElementCreateRequest(BaseModel):
     type: str = "character"
     description: str = ""
     voice_profile: str = ""
+    is_favorite: int = 0
 
 
 class StudioElementUpdateRequest(BaseModel):
@@ -5816,6 +5817,7 @@ class StudioElementUpdateRequest(BaseModel):
     type: Optional[str] = None
     description: Optional[str] = None
     voice_profile: Optional[str] = None
+    is_favorite: Optional[int] = None
     image_url: Optional[str] = None
     reference_images: Optional[List[str]] = None
 
@@ -5848,16 +5850,57 @@ class StudioSettingsRequest(BaseModel):
     image: Optional[Dict[str, Any]] = None
     video: Optional[Dict[str, Any]] = None
     tts: Optional[Dict[str, Any]] = None
+    generation_defaults: Optional[Dict[str, Any]] = None
+
+
+def _studio_error_payload(
+    detail: str,
+    error_code: str,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"detail": detail, "error_code": error_code}
+    if context:
+        payload["context"] = context
+    return payload
+
+
+def _studio_raise(status_code: int, detail: str, error_code: str, context: Optional[Dict[str, Any]] = None):
+    raise HTTPException(status_code, _studio_error_payload(detail, error_code, context))
+
+
+def _studio_ensure_service_ready() -> StudioService:
+    if not studio_service:
+        _studio_raise(500, "Studio 服务未初始化", "studio_not_initialized")
+    return studio_service
+
+
+def _studio_raise_from_exception(e: Exception) -> None:
+    if isinstance(e, HTTPException):
+        raise e
+    if isinstance(e, StudioServiceError):
+        code = e.error_code or "studio_error"
+        status = 400 if code in {
+            "episode_not_found",
+            "series_not_found",
+            "shot_not_found",
+            "element_not_found",
+            "shot_missing_start_frame",
+            "config_missing_llm",
+            "config_missing_image",
+            "config_missing_video",
+            "config_missing_tts",
+        } else 500
+        raise HTTPException(status, e.to_payload())
+    _studio_raise(500, str(e), "studio_internal_error")
 
 
 # --- 系列 CRUD ---
 
 @app.post("/api/studio/series")
 async def studio_create_series(req: StudioSeriesCreateRequest):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
+    service = _studio_ensure_service_ready()
     try:
-        result = await studio_service.create_series(
+        result = await service.create_series(
             name=req.name,
             full_script=req.script,
             preferences={
@@ -5870,44 +5913,43 @@ async def studio_create_series(req: StudioSeriesCreateRequest):
         )
         return result
     except Exception as e:
-        raise HTTPException(500, str(e))
+        _studio_raise_from_exception(e)
 
 
 @app.get("/api/studio/series")
 async def studio_list_series():
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
-    return studio_service.storage.list_series()
+    service = _studio_ensure_service_ready()
+    try:
+        return service.storage.list_series()
+    except Exception as e:
+        _studio_raise_from_exception(e)
 
 
 @app.get("/api/studio/series/{series_id}")
 async def studio_get_series(series_id: str):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
-    detail = studio_service.get_series_detail(series_id)
+    service = _studio_ensure_service_ready()
+    detail = service.get_series_detail(series_id)
     if not detail:
-        raise HTTPException(404, "系列不存在")
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
     return detail
 
 
 @app.put("/api/studio/series/{series_id}")
 async def studio_update_series(series_id: str, req: StudioSeriesUpdateRequest):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
+    service = _studio_ensure_service_ready()
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
-    result = studio_service.storage.update_series(series_id, updates)
+    result = service.storage.update_series(series_id, updates)
     if not result:
-        raise HTTPException(404, "系列不存在")
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
     return result
 
 
 @app.delete("/api/studio/series/{series_id}")
 async def studio_delete_series(series_id: str):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
-    ok = studio_service.storage.delete_series(series_id)
+    service = _studio_ensure_service_ready()
+    ok = service.storage.delete_series(series_id)
     if not ok:
-        raise HTTPException(404, "系列不存在")
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
     return {"ok": True}
 
 
@@ -5915,196 +5957,197 @@ async def studio_delete_series(series_id: str):
 
 @app.get("/api/studio/series/{series_id}/episodes")
 async def studio_list_episodes(series_id: str):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
-    return studio_service.storage.list_episodes(series_id)
+    service = _studio_ensure_service_ready()
+    return service.storage.list_episodes(series_id)
 
 
 @app.get("/api/studio/episodes/{episode_id}")
 async def studio_get_episode(episode_id: str):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
-    detail = studio_service.get_episode_detail(episode_id)
+    service = _studio_ensure_service_ready()
+    detail = service.get_episode_detail(episode_id)
     if not detail:
-        raise HTTPException(404, "集不存在")
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
     return detail
 
 
 @app.put("/api/studio/episodes/{episode_id}")
 async def studio_update_episode(episode_id: str, req: StudioEpisodeUpdateRequest):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
+    service = _studio_ensure_service_ready()
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
-    result = studio_service.storage.update_episode(episode_id, updates)
+    result = service.storage.update_episode(episode_id, updates)
     if not result:
-        raise HTTPException(404, "集不存在")
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
     return result
 
 
 @app.delete("/api/studio/episodes/{episode_id}")
 async def studio_delete_episode(episode_id: str):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
-    ok = studio_service.storage.delete_episode(episode_id)
+    service = _studio_ensure_service_ready()
+    ok = service.storage.delete_episode(episode_id)
     if not ok:
-        raise HTTPException(404, "集不存在")
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
     return {"ok": True}
 
 
 @app.post("/api/studio/episodes/{episode_id}/plan")
 async def studio_plan_episode(episode_id: str):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
+    service = _studio_ensure_service_ready()
     try:
-        result = await studio_service.plan_episode(episode_id)
+        result = await service.plan_episode(episode_id)
         return result
     except Exception as e:
-        raise HTTPException(500, str(e))
+        _studio_raise_from_exception(e)
 
 
 @app.post("/api/studio/episodes/{episode_id}/enhance")
 async def studio_enhance_episode(episode_id: str, mode: str = "refine"):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
+    service = _studio_ensure_service_ready()
     try:
-        result = await studio_service.enhance_episode(episode_id, mode=mode)
+        result = await service.enhance_episode(episode_id, mode=mode)
         return result
     except Exception as e:
-        raise HTTPException(500, str(e))
+        _studio_raise_from_exception(e)
 
 
 # --- 共享元素 ---
 
 @app.get("/api/studio/series/{series_id}/elements")
-async def studio_get_elements(series_id: str):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
-    return studio_service.storage.get_shared_elements(series_id)
+async def studio_get_elements(
+    series_id: str,
+    element_type: Optional[str] = Query(None, alias="type"),
+    favorite: Optional[bool] = Query(None),
+):
+    service = _studio_ensure_service_ready()
+    normalized_type = element_type if element_type and element_type != "all" else None
+    return service.storage.get_shared_elements(
+        series_id,
+        element_type=normalized_type,
+        favorites_only=(favorite is True),
+    )
 
 
 @app.post("/api/studio/series/{series_id}/elements")
 async def studio_add_element(series_id: str, req: StudioElementCreateRequest):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
-    return studio_service.storage.add_shared_element(
+    service = _studio_ensure_service_ready()
+    return service.storage.add_shared_element(
         series_id=series_id,
         name=req.name,
         element_type=req.type,
         description=req.description,
         voice_profile=req.voice_profile,
+        is_favorite=req.is_favorite,
     )
 
 
 @app.put("/api/studio/elements/{element_id}")
 async def studio_update_element(element_id: str, req: StudioElementUpdateRequest):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
+    service = _studio_ensure_service_ready()
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
-    result = studio_service.storage.update_shared_element(element_id, updates)
+    result = service.storage.update_shared_element(element_id, updates)
     if not result:
-        raise HTTPException(404, "元素不存在")
+        _studio_raise(404, "元素不存在", "element_not_found", {"element_id": element_id})
     return result
 
 
 @app.delete("/api/studio/elements/{element_id}")
 async def studio_delete_element(element_id: str):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
-    ok = studio_service.storage.delete_shared_element(element_id)
+    service = _studio_ensure_service_ready()
+    ok = service.storage.delete_shared_element(element_id)
     if not ok:
-        raise HTTPException(404, "元素不存在")
+        _studio_raise(404, "元素不存在", "element_not_found", {"element_id": element_id})
     return {"ok": True}
+
+
+@app.get("/api/studio/series/{series_id}/stats")
+async def studio_series_stats(series_id: str):
+    service = _studio_ensure_service_ready()
+    if not service.storage.get_series(series_id):
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    return service.storage.get_series_stats(series_id)
 
 
 # --- 镜头 ---
 
 @app.get("/api/studio/episodes/{episode_id}/shots")
 async def studio_get_shots(episode_id: str):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
-    return studio_service.storage.get_shots(episode_id)
+    service = _studio_ensure_service_ready()
+    return service.storage.get_shots(episode_id)
 
 
 @app.put("/api/studio/shots/{shot_id}")
 async def studio_update_shot(shot_id: str, req: StudioShotUpdateRequest):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
+    service = _studio_ensure_service_ready()
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
-    result = studio_service.storage.update_shot(shot_id, updates)
+    result = service.storage.update_shot(shot_id, updates)
     if not result:
-        raise HTTPException(404, "镜头不存在")
+        _studio_raise(404, "镜头不存在", "shot_not_found", {"shot_id": shot_id})
     return result
 
 
 @app.delete("/api/studio/shots/{shot_id}")
 async def studio_delete_shot(shot_id: str):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
-    ok = studio_service.storage.delete_shot(shot_id)
+    service = _studio_ensure_service_ready()
+    ok = service.storage.delete_shot(shot_id)
     if not ok:
-        raise HTTPException(404, "镜头不存在")
+        _studio_raise(404, "镜头不存在", "shot_not_found", {"shot_id": shot_id})
     return {"ok": True}
 
 
 @app.post("/api/studio/shots/{shot_id}/generate")
 async def studio_generate_shot_asset(shot_id: str, req: StudioGenerateRequest):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
+    service = _studio_ensure_service_ready()
     try:
         if req.stage == "frame":
-            return await studio_service.generate_shot_frame(
+            return await service.generate_shot_frame(
                 shot_id, width=req.width, height=req.height
             )
         elif req.stage == "video":
-            return await studio_service.generate_shot_video(shot_id)
+            return await service.generate_shot_video(shot_id)
         elif req.stage == "audio":
-            return await studio_service.generate_shot_audio(
+            return await service.generate_shot_audio(
                 shot_id, voice_type=req.voice_type
             )
         else:
-            raise HTTPException(400, f"未知的生成阶段: {req.stage}")
+            _studio_raise(400, f"未知的生成阶段: {req.stage}", "invalid_generation_stage")
     except Exception as e:
-        raise HTTPException(500, str(e))
+        _studio_raise_from_exception(e)
 
 
 # --- 元素图片生成 ---
 
 @app.post("/api/studio/elements/{element_id}/generate-image")
 async def studio_generate_element_image(element_id: str):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
+    service = _studio_ensure_service_ready()
     try:
-        return await studio_service.generate_element_image(element_id)
+        return await service.generate_element_image(element_id)
     except Exception as e:
-        raise HTTPException(500, str(e))
+        _studio_raise_from_exception(e)
 
 
 # --- 批量生成 ---
 
 @app.post("/api/studio/episodes/{episode_id}/batch-generate")
 async def studio_batch_generate(episode_id: str, req: StudioBatchGenerateRequest):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
+    service = _studio_ensure_service_ready()
     try:
-        return await studio_service.batch_generate_episode(
+        return await service.batch_generate_episode(
             episode_id, stages=req.stages
         )
     except Exception as e:
-        raise HTTPException(500, str(e))
+        _studio_raise_from_exception(e)
 
 
 # --- Studio 设置 ---
 
 @app.get("/api/studio/settings")
 async def studio_get_settings():
-    return studio_current_settings
+    return studio_current_settings or {}
 
 
 @app.put("/api/studio/settings")
 async def studio_save_settings(req: StudioSettingsRequest):
     global studio_current_settings
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
+    service = _studio_ensure_service_ready()
 
     new_settings = {k: v for k, v in req.model_dump().items() if v is not None}
     studio_current_settings.update(new_settings)
@@ -6119,29 +6162,33 @@ async def studio_save_settings(req: StudioSettingsRequest):
         print(f"[Studio] 保存设置失败: {e}")
 
     # 重新配置服务
-    studio_service.configure(studio_current_settings)
+    service.configure(studio_current_settings)
     return {"ok": True, "settings": studio_current_settings}
+
+
+@app.get("/api/studio/config-check")
+async def studio_config_check():
+    service = _studio_ensure_service_ready()
+    return service.check_config()
 
 
 # --- 导出 ---
 
 @app.post("/api/studio/episodes/{episode_id}/export")
 async def studio_export_episode(episode_id: str):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
-    snapshot = studio_service.storage.get_episode_snapshot(episode_id)
+    service = _studio_ensure_service_ready()
+    snapshot = service.storage.get_episode_snapshot(episode_id)
     if not snapshot:
-        raise HTTPException(404, "集不存在")
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
     return snapshot
 
 
 @app.post("/api/studio/series/{series_id}/export")
 async def studio_export_series(series_id: str):
-    if not studio_service:
-        raise HTTPException(500, "Studio 服务未初始化")
-    snapshot = studio_service.storage.get_series_snapshot(series_id)
+    service = _studio_ensure_service_ready()
+    snapshot = service.storage.get_series_snapshot(series_id)
     if not snapshot:
-        raise HTTPException(404, "系列不存在")
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
     return snapshot
 
 

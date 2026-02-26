@@ -1943,12 +1943,43 @@ export interface StudioElement {
   type: string
   description: string
   voice_profile: string
+  is_favorite: number
   image_url: string
   image_history: string[]
   reference_images: string[]
   appears_in_episodes: string[]
   created_at: string
   updated_at: string
+}
+
+export interface StudioSeriesStats {
+  series_id: string
+  episodes: {
+    total: number
+    planned: number
+    in_progress: number
+    completed: number
+  }
+  shots: {
+    total: number
+    frames: number
+    videos: number
+    audio: number
+    total_duration_seconds: number
+  }
+  elements: {
+    total: number
+    favorites: number
+    by_type: Record<string, number>
+  }
+  storage: {
+    bytes: number
+  }
+}
+
+export interface StudioConfigCheckResult {
+  ok: boolean
+  services: Record<string, { configured: boolean; message: string }>
 }
 
 export interface StudioShot {
@@ -2073,14 +2104,22 @@ export async function studioEnhanceEpisode(
 
 // --- 共享元素 ---
 
-export async function studioGetElements(seriesId: string): Promise<StudioElement[]> {
-  const response = await api.get(`/api/studio/series/${seriesId}/elements`)
+export async function studioGetElements(
+  seriesId: string,
+  options?: { type?: string; favorite?: boolean }
+): Promise<StudioElement[]> {
+  const response = await api.get(`/api/studio/series/${seriesId}/elements`, {
+    params: {
+      type: options?.type,
+      favorite: options?.favorite,
+    },
+  })
   return response.data
 }
 
 export async function studioAddElement(
   seriesId: string,
-  element: { name: string; type: string; description?: string; voice_profile?: string }
+  element: { name: string; type: string; description?: string; voice_profile?: string; is_favorite?: number }
 ): Promise<StudioElement> {
   const response = await api.post(`/api/studio/series/${seriesId}/elements`, element)
   return response.data
@@ -2088,7 +2127,7 @@ export async function studioAddElement(
 
 export async function studioUpdateElement(
   elementId: string,
-  updates: Partial<Pick<StudioElement, 'name' | 'type' | 'description' | 'voice_profile' | 'image_url' | 'reference_images'>>
+  updates: Partial<Pick<StudioElement, 'name' | 'type' | 'description' | 'voice_profile' | 'is_favorite' | 'image_url' | 'reference_images'>>
 ): Promise<StudioElement> {
   const response = await api.put(`/api/studio/elements/${elementId}`, updates)
   return response.data
@@ -2103,6 +2142,11 @@ export async function studioGenerateElementImage(elementId: string): Promise<{
   image_url: string
 }> {
   const response = await api.post(`/api/studio/elements/${elementId}/generate-image`)
+  return response.data
+}
+
+export async function studioGetSeriesStats(seriesId: string): Promise<StudioSeriesStats> {
+  const response = await api.get(`/api/studio/series/${seriesId}/stats`)
   return response.data
 }
 
@@ -2155,6 +2199,11 @@ export async function studioGetSettings(): Promise<Record<string, unknown>> {
 export async function studioSaveSettings(settings: Record<string, unknown>): Promise<Record<string, unknown>> {
   const response = await api.put('/api/studio/settings', settings)
   return response.data
+}
+
+export async function studioCheckConfig(): Promise<StudioConfigCheckResult> {
+  const response = await api.get('/api/studio/config-check')
+  return response.data as StudioConfigCheckResult
 }
 
 // --- 导出 ---

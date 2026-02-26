@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import axios from 'axios'
 import * as api from '../services/api'
 import type {
   StudioSeries,
@@ -9,11 +10,52 @@ import type {
 
 export type { StudioSeries, StudioEpisode, StudioElement, StudioShot }
 
+type StudioErrorParsed = {
+  message: string
+  code: string | null
+  context: Record<string, unknown> | null
+}
+
+function parseStudioError(e: unknown): StudioErrorParsed {
+  if (axios.isAxiosError(e)) {
+    if (!e.response) {
+      if (e.code === 'ECONNABORTED') {
+        return { message: '请求超时，请稍后重试', code: 'network_timeout', context: null }
+      }
+      return { message: '网络连接失败，请检查后端服务是否运行', code: 'network_error', context: null }
+    }
+
+    const detail = (e.response.data as { detail?: unknown } | undefined)?.detail
+    if (typeof detail === 'string') {
+      return { message: detail, code: null, context: null }
+    }
+
+    if (detail && typeof detail === 'object') {
+      const data = detail as { detail?: string; error_code?: string; context?: Record<string, unknown> }
+      return {
+        message: data.detail || '操作失败',
+        code: data.error_code || null,
+        context: data.context || null,
+      }
+    }
+
+    return { message: e.message || '请求失败', code: null, context: null }
+  }
+
+  if (e instanceof Error) {
+    return { message: e.message || '操作失败', code: null, context: null }
+  }
+
+  return { message: '发生未知错误', code: null, context: null }
+}
+
 interface StudioState {
   // 列表
   seriesList: StudioSeries[]
   loading: boolean
   error: string | null
+  errorCode: string | null
+  errorContext: Record<string, unknown> | null
 
   // 当前选中
   currentSeriesId: string | null
@@ -55,7 +97,7 @@ interface StudioState {
   planEpisode: (episodeId: string) => Promise<void>
   enhanceEpisode: (episodeId: string, mode?: 'refine' | 'expand') => Promise<void>
 
-  addElement: (seriesId: string, element: { name: string; type: string; description?: string; voice_profile?: string }) => Promise<void>
+  addElement: (seriesId: string, element: { name: string; type: string; description?: string; voice_profile?: string; is_favorite?: number }) => Promise<void>
   updateElement: (elementId: string, updates: Record<string, unknown>) => Promise<void>
   deleteElement: (elementId: string) => Promise<void>
   generateElementImage: (elementId: string) => Promise<void>
@@ -73,6 +115,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   seriesList: [],
   loading: false,
   error: null,
+  errorCode: null,
+  errorContext: null,
   currentSeriesId: null,
   currentEpisodeId: null,
   currentSeries: null,
@@ -84,15 +128,16 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   planning: false,
   generating: false,
 
-  clearError: () => set({ error: null }),
+  clearError: () => set({ error: null, errorCode: null, errorContext: null }),
 
   loadSeriesList: async () => {
-    set({ loading: true, error: null })
+    set({ loading: true, error: null, errorCode: null, errorContext: null })
     try {
       const list = await api.studioListSeries()
       set({ seriesList: list, loading: false })
     } catch (e: unknown) {
-      set({ loading: false, error: (e as Error).message })
+      const parsed = parseStudioError(e)
+      set({ loading: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
 
@@ -109,7 +154,16 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       })
       return
     }
-    set({ loading: true, error: null, currentSeriesId: seriesId, currentEpisodeId: null, currentEpisode: null, shots: [] })
+    set({
+      loading: true,
+      error: null,
+      errorCode: null,
+      errorContext: null,
+      currentSeriesId: seriesId,
+      currentEpisodeId: null,
+      currentEpisode: null,
+      shots: [],
+    })
     try {
       const detail = await api.studioGetSeries(seriesId)
       set({
@@ -119,7 +173,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         loading: false,
       })
     } catch (e: unknown) {
-      set({ loading: false, error: (e as Error).message })
+      const parsed = parseStudioError(e)
+      set({ loading: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
 
@@ -128,7 +183,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       set({ currentEpisodeId: null, currentEpisode: null, shots: [] })
       return
     }
-    set({ loading: true, error: null, currentEpisodeId: episodeId })
+    set({ loading: true, error: null, errorCode: null, errorContext: null, currentEpisodeId: episodeId })
     try {
       const detail = await api.studioGetEpisode(episodeId)
       set({
@@ -137,12 +192,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         loading: false,
       })
     } catch (e: unknown) {
-      set({ loading: false, error: (e as Error).message })
+      const parsed = parseStudioError(e)
+      set({ loading: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
 
   createSeries: async (params) => {
-    set({ creating: true, error: null })
+    set({ creating: true, error: null, errorCode: null, errorContext: null })
     try {
       const result = await api.studioCreateSeries(params)
       // 刷新列表
@@ -157,7 +213,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       })
       return result.series
     } catch (e: unknown) {
-      set({ creating: false, error: (e as Error).message })
+      const parsed = parseStudioError(e)
+      set({ creating: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
       return null
     }
   },
@@ -170,7 +227,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         await get().selectSeries(seriesId)
       }
     } catch (e: unknown) {
-      set({ error: (e as Error).message })
+      const parsed = parseStudioError(e)
+      set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
 
@@ -182,7 +240,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       }
       await get().loadSeriesList()
     } catch (e: unknown) {
-      set({ error: (e as Error).message })
+      const parsed = parseStudioError(e)
+      set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
 
@@ -193,12 +252,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         await get().selectEpisode(episodeId)
       }
     } catch (e: unknown) {
-      set({ error: (e as Error).message })
+      const parsed = parseStudioError(e)
+      set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
 
   planEpisode: async (episodeId) => {
-    set({ planning: true, error: null })
+    set({ planning: true, error: null, errorCode: null, errorContext: null })
     try {
       await api.studioPlanEpisode(episodeId)
       // 刷新集详情
@@ -211,18 +271,20 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       }
       set({ planning: false })
     } catch (e: unknown) {
-      set({ planning: false, error: (e as Error).message })
+      const parsed = parseStudioError(e)
+      set({ planning: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
 
   enhanceEpisode: async (episodeId, mode = 'refine') => {
-    set({ planning: true, error: null })
+    set({ planning: true, error: null, errorCode: null, errorContext: null })
     try {
       await api.studioEnhanceEpisode(episodeId, mode)
       await get().selectEpisode(episodeId)
       set({ planning: false })
     } catch (e: unknown) {
-      set({ planning: false, error: (e as Error).message })
+      const parsed = parseStudioError(e)
+      set({ planning: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
 
@@ -232,7 +294,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const els = await api.studioGetElements(seriesId)
       set({ sharedElements: els })
     } catch (e: unknown) {
-      set({ error: (e as Error).message })
+      const parsed = parseStudioError(e)
+      set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
 
@@ -245,7 +308,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         set({ sharedElements: els })
       }
     } catch (e: unknown) {
-      set({ error: (e as Error).message })
+      const parsed = parseStudioError(e)
+      set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
 
@@ -258,12 +322,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         set({ sharedElements: els })
       }
     } catch (e: unknown) {
-      set({ error: (e as Error).message })
+      const parsed = parseStudioError(e)
+      set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
 
   generateElementImage: async (elementId) => {
-    set({ generating: true, error: null })
+    set({ generating: true, error: null, errorCode: null, errorContext: null })
     try {
       await api.studioGenerateElementImage(elementId)
       const seriesId = get().currentSeriesId
@@ -273,7 +338,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       }
       set({ generating: false })
     } catch (e: unknown) {
-      set({ generating: false, error: (e as Error).message })
+      const parsed = parseStudioError(e)
+      set({ generating: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
 
@@ -286,7 +352,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         set({ shots })
       }
     } catch (e: unknown) {
-      set({ error: (e as Error).message })
+      const parsed = parseStudioError(e)
+      set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
 
@@ -299,12 +366,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         set({ shots })
       }
     } catch (e: unknown) {
-      set({ error: (e as Error).message })
+      const parsed = parseStudioError(e)
+      set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
 
   generateShotAsset: async (shotId, stage) => {
-    set({ generating: true, error: null })
+    set({ generating: true, error: null, errorCode: null, errorContext: null })
     try {
       await api.studioGenerateShotAsset(shotId, { stage })
       const epId = get().currentEpisodeId
@@ -314,18 +382,20 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       }
       set({ generating: false })
     } catch (e: unknown) {
-      set({ generating: false, error: (e as Error).message })
+      const parsed = parseStudioError(e)
+      set({ generating: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
 
   batchGenerate: async (episodeId, stages) => {
-    set({ generating: true, error: null })
+    set({ generating: true, error: null, errorCode: null, errorContext: null })
     try {
       await api.studioBatchGenerate(episodeId, stages)
       await get().selectEpisode(episodeId)
       set({ generating: false })
     } catch (e: unknown) {
-      set({ generating: false, error: (e as Error).message })
+      const parsed = parseStudioError(e)
+      set({ generating: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },
 }))

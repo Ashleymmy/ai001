@@ -25,6 +25,30 @@ from .video_service import VideoService
 from .tts_service import VolcTTSService, VolcTTSConfig
 
 
+class StudioServiceError(Exception):
+    """Studio 结构化业务错误。"""
+
+    def __init__(
+        self,
+        message: str,
+        error_code: str = "studio_error",
+        context: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(message)
+        self.message = message
+        self.error_code = error_code
+        self.context = context or {}
+
+    def to_payload(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "detail": self.message,
+            "error_code": self.error_code,
+        }
+        if self.context:
+            payload["context"] = self.context
+        return payload
+
+
 class StudioService:
     """长篇制作工作台核心服务"""
 
@@ -35,6 +59,7 @@ class StudioService:
         self.image: Optional[ImageService] = None
         self.video: Optional[VideoService] = None
         self.tts: Optional[VolcTTSService] = None
+        self.generation_defaults: Dict[str, Any] = {}
 
     # ------------------------------------------------------------------
     # 配置
@@ -42,6 +67,12 @@ class StudioService:
 
     def configure(self, settings: Dict[str, Any]) -> None:
         """从设置字典中初始化工具服务实例"""
+        # 每次重配都先清空，避免沿用旧实例
+        self.llm = None
+        self.image = None
+        self.video = None
+        self.tts = None
+
         # LLM
         llm_cfg = settings.get("llm") or {}
         if llm_cfg.get("apiKey"):
@@ -82,6 +113,34 @@ class StudioService:
                 cluster=tts_cfg.get("cluster", "volcano_tts"),
             )
             self.tts = VolcTTSService(config)
+
+        # 生成默认参数
+        self.generation_defaults = settings.get("generation_defaults") or {}
+
+    def check_config(self) -> Dict[str, Any]:
+        """返回 Studio 工具链配置自检结果。"""
+        services = {
+            "llm": {
+                "configured": self.llm is not None,
+                "message": "" if self.llm else "请先在设置中配置 LLM 服务",
+            },
+            "image": {
+                "configured": self.image is not None,
+                "message": "" if self.image else "请先在设置中配置图像服务",
+            },
+            "video": {
+                "configured": self.video is not None,
+                "message": "" if self.video else "请先在设置中配置视频服务",
+            },
+            "tts": {
+                "configured": self.tts is not None,
+                "message": "" if self.tts else "请先在设置中配置 TTS 服务",
+            },
+        }
+        return {
+            "ok": all(v["configured"] for v in services.values()),
+            "services": services,
+        }
 
     # ------------------------------------------------------------------
     # 内部工具
@@ -154,7 +213,10 @@ class StudioService:
     ) -> str:
         """调用 LLM 并返回原始文本"""
         if not self.llm:
-            raise RuntimeError("Studio LLM 服务未配置，请先在设置中配置 LLM API Key")
+            raise StudioServiceError(
+                "Studio LLM 服务未配置，请先在设置中配置 LLM API Key",
+                error_code="config_missing_llm",
+            )
         return await self.llm.generate_text(
             prompt=user_prompt,
             system_prompt=system_prompt,
@@ -198,7 +260,11 @@ class StudioService:
 
         acts = self._extract_json(raw)
         if not isinstance(acts, list) or not acts:
-            raise ValueError(f"LLM 分幕结果解析失败，原始回复:\n{raw[:500]}")
+            raise StudioServiceError(
+                "LLM 分幕结果解析失败",
+                error_code="llm_invalid_split_output",
+                context={"preview": raw[:500]},
+            )
 
         # 确保格式完整
         for i, act in enumerate(acts):
@@ -246,7 +312,11 @@ class StudioService:
 
         elements = self._extract_json(raw)
         if not isinstance(elements, list):
-            raise ValueError(f"LLM 元素提取结果解析失败，原始回复:\n{raw[:500]}")
+            raise StudioServiceError(
+                "LLM 元素提取结果解析失败",
+                error_code="llm_invalid_elements_output",
+                context={"preview": raw[:500]},
+            )
 
         for el in elements:
             el.setdefault("name", "未知")
@@ -337,11 +407,19 @@ class StudioService:
         """为单集生成详细分镜规划"""
         episode = self.storage.get_episode(episode_id)
         if not episode:
-            raise ValueError(f"集 {episode_id} 不存在")
+            raise StudioServiceError(
+                f"集 {episode_id} 不存在",
+                error_code="episode_not_found",
+                context={"episode_id": episode_id},
+            )
 
         series = self.storage.get_series(episode["series_id"])
         if not series:
-            raise ValueError(f"系列 {episode['series_id']} 不存在")
+            raise StudioServiceError(
+                f"系列 {episode['series_id']} 不存在",
+                error_code="series_not_found",
+                context={"series_id": episode["series_id"]},
+            )
 
         # 获取共享元素
         shared_elements = self.storage.get_shared_elements(series["id"])
@@ -389,7 +467,11 @@ class StudioService:
 
         plan = self._extract_json(raw)
         if not isinstance(plan, dict):
-            raise ValueError(f"LLM 分集规划结果解析失败，原始回复:\n{raw[:500]}")
+            raise StudioServiceError(
+                "LLM 分集规划结果解析失败",
+                error_code="llm_invalid_plan_output",
+                context={"episode_id": episode_id, "preview": raw[:500]},
+            )
 
         # 保存 creative_brief
         brief = plan.get("creative_brief", {})
@@ -459,11 +541,19 @@ class StudioService:
         """对单集分镜做 Script Doctor 式增强"""
         episode = self.storage.get_episode(episode_id)
         if not episode:
-            raise ValueError(f"集 {episode_id} 不存在")
+            raise StudioServiceError(
+                f"集 {episode_id} 不存在",
+                error_code="episode_not_found",
+                context={"episode_id": episode_id},
+            )
 
         series = self.storage.get_series(episode["series_id"])
         if not series:
-            raise ValueError(f"系列 {episode['series_id']} 不存在")
+            raise StudioServiceError(
+                f"系列 {episode['series_id']} 不存在",
+                error_code="series_not_found",
+                context={"series_id": episode["series_id"]},
+            )
 
         shared_elements = self.storage.get_shared_elements(series["id"])
         elements_list = "\n".join(
@@ -492,7 +582,11 @@ class StudioService:
 
         patch = self._extract_json(raw)
         if not isinstance(patch, dict):
-            raise ValueError(f"LLM 增强结果解析失败，原始回复:\n{raw[:500]}")
+            raise StudioServiceError(
+                "LLM 增强结果解析失败",
+                error_code="llm_invalid_enhance_output",
+                context={"episode_id": episode_id, "preview": raw[:500]},
+            )
 
         patched_count = 0
         added_count = 0
@@ -513,19 +607,20 @@ class StudioService:
         # 应用 add_shots（新增镜头），仅 expand 模式
         if mode == "expand":
             existing_shots = self.storage.get_shots(episode_id)
-            shot_id_order = {s["id"]: s["sort_order"] for s in existing_shots}
+            ordered_ids = [s["id"] for s in existing_shots]
+            base_sort_order = len(existing_shots) + 1000
 
             for add_item in patch.get("add_shots", []):
                 after_id = add_item.get("after_shot_id", "")
                 shot_data = add_item.get("shot", {})
-                # 确定 sort_order
-                base_order = shot_id_order.get(after_id, len(existing_shots))
-                new_order = base_order + 1
+                insert_at = len(ordered_ids)
+                if after_id and after_id in ordered_ids:
+                    insert_at = ordered_ids.index(after_id) + 1
 
-                self.storage.add_shot(
+                created = self.storage.add_shot(
                     episode_id=episode_id,
                     segment_name=shot_data.get("segment_name", ""),
-                    sort_order=new_order,
+                    sort_order=base_sort_order + added_count,
                     name=shot_data.get("name", ""),
                     shot_type=shot_data.get("type", "standard"),
                     duration=shot_data.get("duration", 5.0),
@@ -535,7 +630,11 @@ class StudioService:
                     narration=shot_data.get("narration", ""),
                     dialogue_script=shot_data.get("dialogue_script", ""),
                 )
+                ordered_ids.insert(insert_at, created["id"])
                 added_count += 1
+
+            if added_count > 0:
+                self.storage.reorder_shots(episode_id, ordered_ids)
 
         print(f"[Studio] 增强完成: 修改 {patched_count} 个镜头, 新增 {added_count} 个镜头")
         return {
@@ -557,11 +656,18 @@ class StudioService:
     ) -> Dict[str, Any]:
         """为共享元素生成参考图"""
         if not self.image:
-            raise RuntimeError("Studio 图像服务未配置")
+            raise StudioServiceError(
+                "Studio 图像服务未配置",
+                error_code="config_missing_image",
+            )
 
         el = self.storage.get_shared_element(element_id)
         if not el:
-            raise ValueError(f"共享元素 {element_id} 不存在")
+            raise StudioServiceError(
+                f"共享元素 {element_id} 不存在",
+                error_code="element_not_found",
+                context={"element_id": element_id},
+            )
 
         prompt = el["description"]
         ref_images = el.get("reference_images") or []
@@ -594,11 +700,18 @@ class StudioService:
     ) -> Dict[str, Any]:
         """为镜头生成起始帧"""
         if not self.image:
-            raise RuntimeError("Studio 图像服务未配置")
+            raise StudioServiceError(
+                "Studio 图像服务未配置",
+                error_code="config_missing_image",
+            )
 
         shot = self.storage.get_shot(shot_id)
         if not shot:
-            raise ValueError(f"镜头 {shot_id} 不存在")
+            raise StudioServiceError(
+                f"镜头 {shot_id} 不存在",
+                error_code="shot_not_found",
+                context={"shot_id": shot_id},
+            )
 
         # 解析 prompt 中的 [SE_XXX] 引用，替换为元素描述
         prompt = self._resolve_element_refs(shot["prompt"], shot["episode_id"])
@@ -625,13 +738,24 @@ class StudioService:
     ) -> Dict[str, Any]:
         """为镜头生成视频"""
         if not self.video:
-            raise RuntimeError("Studio 视频服务未配置")
+            raise StudioServiceError(
+                "Studio 视频服务未配置",
+                error_code="config_missing_video",
+            )
 
         shot = self.storage.get_shot(shot_id)
         if not shot:
-            raise ValueError(f"镜头 {shot_id} 不存在")
+            raise StudioServiceError(
+                f"镜头 {shot_id} 不存在",
+                error_code="shot_not_found",
+                context={"shot_id": shot_id},
+            )
         if not shot.get("start_image_url"):
-            raise ValueError(f"镜头 {shot_id} 尚未生成起始帧，请先生成图片")
+            raise StudioServiceError(
+                f"镜头 {shot_id} 尚未生成起始帧，请先生成图片",
+                error_code="shot_missing_start_frame",
+                context={"shot_id": shot_id},
+            )
 
         video_prompt = self._resolve_element_refs(
             shot.get("video_prompt") or shot.get("prompt", ""),
@@ -665,11 +789,18 @@ class StudioService:
     ) -> Dict[str, Any]:
         """为镜头生成旁白/对白音频"""
         if not self.tts:
-            raise RuntimeError("Studio TTS 服务未配置")
+            raise StudioServiceError(
+                "Studio TTS 服务未配置",
+                error_code="config_missing_tts",
+            )
 
         shot = self.storage.get_shot(shot_id)
         if not shot:
-            raise ValueError(f"镜头 {shot_id} 不存在")
+            raise StudioServiceError(
+                f"镜头 {shot_id} 不存在",
+                error_code="shot_not_found",
+                context={"shot_id": shot_id},
+            )
 
         # 优先使用旁白，其次对白
         text = shot.get("narration", "").strip()
@@ -718,7 +849,11 @@ class StudioService:
 
         episode = self.storage.get_episode(episode_id)
         if not episode:
-            raise ValueError(f"集 {episode_id} 不存在")
+            raise StudioServiceError(
+                f"集 {episode_id} 不存在",
+                error_code="episode_not_found",
+                context={"episode_id": episode_id},
+            )
 
         result: Dict[str, Any] = {"episode_id": episode_id, "stages": {}}
 

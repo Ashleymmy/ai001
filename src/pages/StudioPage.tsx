@@ -4,10 +4,29 @@ import {
   ArrowLeft, Settings2, Plus, Film, Users, MapPin, Package,
   Loader2, Play, RefreshCw, Trash2, ChevronRight, ImageIcon,
   Video, Mic, Layers, Sparkles, Clock, CheckCircle, AlertCircle, X, Save,
+  Star, Eye, Pencil, FileText,
 } from 'lucide-react'
 import { useStudioStore } from '../store/studioStore'
-import { studioGetSettings, studioSaveSettings } from '../services/api'
+import { studioCheckConfig, studioGetSeriesStats, studioGetSettings, studioSaveSettings } from '../services/api'
+import type { StudioSeriesStats } from '../services/api'
 import type { StudioSeries, StudioEpisode, StudioElement, StudioShot } from '../store/studioStore'
+
+type ServiceKey = 'llm' | 'image' | 'video' | 'tts'
+
+interface StudioToast {
+  id: string
+  message: string
+  code?: string | null
+  context?: Record<string, unknown> | null
+}
+
+function formatStorage(bytes: number): string {
+  if (!bytes) return '0 B'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
 
 // ============================================================
 // StudioPage - 长篇制作工作台
@@ -19,11 +38,55 @@ export default function StudioPage() {
   const store = useStudioStore()
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [toasts, setToasts] = useState<StudioToast[]>([])
+
+  const pushToast = useCallback((toast: Omit<StudioToast, 'id'>) => {
+    const id = `toast_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
+    setToasts((prev) => [...prev, { ...toast, id }])
+    window.setTimeout(() => {
+      setToasts((prev) => prev.filter((item) => item.id !== id))
+    }, 5000)
+  }, [])
+
+  const removeToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((item) => item.id !== id))
+  }, [])
+
+  const ensureConfigReady = useCallback(async (required: ServiceKey[]) => {
+    try {
+      const check = await studioCheckConfig()
+      const missing = required.filter((key) => !check.services[key]?.configured)
+      if (missing.length === 0) return true
+
+      const first = missing[0]
+      pushToast({
+        message: check.services[first]?.message || `请先配置 ${first.toUpperCase()} 服务`,
+        code: `config_missing_${first}`,
+        context: { required: missing },
+      })
+      setShowSettings(true)
+      return false
+    } catch {
+      pushToast({ message: '配置检测失败，请检查后端服务状态', code: 'config_check_failed' })
+      return false
+    }
+  }, [pushToast])
 
   // 初始化加载
   useEffect(() => {
     store.loadSeriesList()
   }, [])
+
+  // Store 错误统一转为 Toast
+  useEffect(() => {
+    if (!store.error) return
+    pushToast({
+      message: store.error,
+      code: store.errorCode,
+      context: store.errorContext,
+    })
+    store.clearError()
+  }, [store.error, store.errorCode, store.errorContext])
 
   // 路由参数同步
   useEffect(() => {
@@ -56,6 +119,50 @@ export default function StudioPage() {
     }
   }, [navigate, store.currentSeriesId])
 
+  const handleCreateSeries = useCallback(async (params: {
+    name: string
+    script: string
+    description?: string
+    visual_style?: string
+    target_episode_count?: number
+    episode_duration_seconds?: number
+  }) => {
+    const ok = await ensureConfigReady(['llm'])
+    if (!ok) return null
+    return store.createSeries(params)
+  }, [ensureConfigReady, store])
+
+  const handlePlanEpisode = useCallback(async (id: string) => {
+    const ok = await ensureConfigReady(['llm'])
+    if (!ok) return
+    await store.planEpisode(id)
+  }, [ensureConfigReady, store])
+
+  const handleEnhanceEpisode = useCallback(async (id: string, mode: 'refine' | 'expand') => {
+    const ok = await ensureConfigReady(['llm'])
+    if (!ok) return
+    await store.enhanceEpisode(id, mode)
+  }, [ensureConfigReady, store])
+
+  const handleGenerateShotAsset = useCallback(async (shotId: string, stage: 'frame' | 'video' | 'audio') => {
+    const required: ServiceKey[] =
+      stage === 'frame' ? ['image'] : stage === 'video' ? ['video'] : ['tts']
+    const ok = await ensureConfigReady(required)
+    if (!ok) return
+    await store.generateShotAsset(shotId, stage)
+  }, [ensureConfigReady, store])
+
+  const handleBatchGenerate = useCallback(async (episodeId: string, stages?: string[]) => {
+    const actualStages = stages && stages.length > 0 ? stages : ['elements', 'frames', 'videos', 'audio']
+    const required = new Set<ServiceKey>()
+    if (actualStages.includes('elements') || actualStages.includes('frames')) required.add('image')
+    if (actualStages.includes('videos')) required.add('video')
+    if (actualStages.includes('audio')) required.add('tts')
+    const ok = await ensureConfigReady(Array.from(required))
+    if (!ok) return
+    await store.batchGenerate(episodeId, stages)
+  }, [ensureConfigReady, store])
+
   return (
     <div className="h-screen flex flex-col bg-gray-950 text-gray-100">
       {/* 顶部工具栏 */}
@@ -81,12 +188,6 @@ export default function StudioPage() {
           </h1>
         </div>
         <div className="flex items-center gap-2">
-          {store.error && (
-            <span className="text-xs text-red-400 flex items-center gap-1">
-              <AlertCircle className="w-3 h-3" />
-              {store.error}
-            </span>
-          )}
           <button
             onClick={() => setShowSettings(!showSettings)}
             className="p-1.5 rounded hover:bg-gray-800 text-gray-400 hover:text-white transition-colors"
@@ -175,14 +276,30 @@ export default function StudioPage() {
               episodes={store.episodes}
               elements={store.sharedElements}
               onSelectEpisode={handleSelectEpisode}
-              onPlanEpisode={(id) => store.planEpisode(id)}
+              onPlanEpisode={handlePlanEpisode}
               onDeleteSeries={() => {
                 if (store.currentSeriesId) {
                   store.deleteSeries(store.currentSeriesId)
                   navigate('/studio')
                 }
               }}
+              onUpdateSeries={async (updates) => {
+                if (!store.currentSeriesId) return
+                await store.updateSeries(store.currentSeriesId, updates)
+              }}
+              onAddElement={async (payload) => {
+                if (!store.currentSeriesId) return
+                await store.addElement(store.currentSeriesId, payload)
+              }}
+              onUpdateElement={(elementId, updates) => store.updateElement(elementId, updates)}
+              onDeleteElement={(elementId) => store.deleteElement(elementId)}
+              onGenerateElementImage={async (elementId) => {
+                const ok = await ensureConfigReady(['image'])
+                if (!ok) return
+                await store.generateElementImage(elementId)
+              }}
               planning={store.planning}
+              generating={store.generating}
             />
           )}
 
@@ -192,11 +309,24 @@ export default function StudioPage() {
               shots={store.shots}
               elements={store.sharedElements}
               onBack={handleBackToSeries}
-              onPlan={() => store.currentEpisodeId && store.planEpisode(store.currentEpisodeId)}
-              onEnhance={(mode) => store.currentEpisodeId && store.enhanceEpisode(store.currentEpisodeId, mode)}
-              onGenerateAsset={(shotId, stage) => store.generateShotAsset(shotId, stage)}
+              onPlan={async () => {
+                if (!store.currentEpisodeId) return
+                await handlePlanEpisode(store.currentEpisodeId)
+              }}
+              onEnhance={async (mode) => {
+                if (!store.currentEpisodeId) return
+                await handleEnhanceEpisode(store.currentEpisodeId, mode)
+              }}
+              onGenerateAsset={handleGenerateShotAsset}
               onUpdateShot={(shotId, updates) => store.updateShot(shotId, updates)}
-              onBatchGenerate={(stages) => store.currentEpisodeId && store.batchGenerate(store.currentEpisodeId, stages)}
+              onUpdateEpisode={async (updates) => {
+                if (!store.currentEpisodeId) return
+                await store.updateEpisode(store.currentEpisodeId, updates)
+              }}
+              onBatchGenerate={async (stages) => {
+                if (!store.currentEpisodeId) return
+                await handleBatchGenerate(store.currentEpisodeId, stages)
+              }}
               planning={store.planning}
               generating={store.generating}
             />
@@ -232,14 +362,23 @@ export default function StudioPage() {
         </div>
       </footer>
 
+      {toasts.length > 0 && (
+        <ToastStack
+          toasts={toasts}
+          onClose={removeToast}
+        />
+      )}
+
       {/* 创建对话框 */}
       {showCreateDialog && (
         <CreateSeriesDialog
           onClose={() => setShowCreateDialog(false)}
           onSubmit={async (params) => {
-            const s = await store.createSeries(params)
-            setShowCreateDialog(false)
-            if (s) navigate(`/studio/${s.id}`)
+            const s = await handleCreateSeries(params)
+            if (s) {
+              setShowCreateDialog(false)
+              navigate(`/studio/${s.id}`)
+            }
           }}
           creating={store.creating}
         />
@@ -354,16 +493,61 @@ function SeriesOverview({
   onSelectEpisode,
   onPlanEpisode,
   onDeleteSeries,
+  onUpdateSeries,
+  onAddElement,
+  onUpdateElement,
+  onDeleteElement,
+  onGenerateElementImage,
   planning,
+  generating,
 }: {
   series: StudioSeries
   episodes: StudioEpisode[]
   elements: StudioElement[]
   onSelectEpisode: (id: string) => void
-  onPlanEpisode: (id: string) => void
+  onPlanEpisode: (id: string) => void | Promise<void>
   onDeleteSeries: () => void
+  onUpdateSeries: (updates: Record<string, unknown>) => void | Promise<void>
+  onAddElement: (element: { name: string; type: string; description?: string; voice_profile?: string; is_favorite?: number }) => void | Promise<void>
+  onUpdateElement: (elementId: string, updates: Record<string, unknown>) => void | Promise<void>
+  onDeleteElement: (elementId: string) => void | Promise<void>
+  onGenerateElementImage: (elementId: string) => void | Promise<void>
   planning: boolean
+  generating: boolean
 }) {
+  const [stats, setStats] = useState<StudioSeriesStats | null>(null)
+  const [statsLoading, setStatsLoading] = useState(false)
+  const [elementTypeFilter, setElementTypeFilter] = useState<'all' | 'character' | 'scene' | 'object'>('all')
+  const [favoriteOnly, setFavoriteOnly] = useState(false)
+  const [editingBible, setEditingBible] = useState(false)
+  const [bibleDraft, setBibleDraft] = useState(series.series_bible || '')
+  const [showScriptPreview, setShowScriptPreview] = useState(false)
+  const [showElementDialog, setShowElementDialog] = useState(false)
+  const [editingElement, setEditingElement] = useState<StudioElement | null>(null)
+
+  useEffect(() => {
+    setBibleDraft(series.series_bible || '')
+  }, [series.id, series.series_bible])
+
+  useEffect(() => {
+    setStatsLoading(true)
+    studioGetSeriesStats(series.id)
+      .then((data) => setStats(data))
+      .catch(() => setStats(null))
+      .finally(() => setStatsLoading(false))
+  }, [series.id, episodes.length, elements.length, planning, generating])
+
+  const filteredElements = elements.filter((el) => {
+    if (elementTypeFilter !== 'all' && el.type !== elementTypeFilter) return false
+    if (favoriteOnly && el.is_favorite !== 1) return false
+    return true
+  })
+
+  const saveBible = () => {
+    onUpdateSeries({ series_bible: bibleDraft })
+    setEditingBible(false)
+  }
+
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <div className="max-w-5xl mx-auto space-y-6">
@@ -384,6 +568,44 @@ function SeriesOverview({
             <Trash2 className="w-4 h-4" />
           </button>
         </div>
+
+        {/* 项目统计 */}
+        <section className="p-4 rounded-lg bg-gray-900 border border-gray-800">
+          <h3 className="text-sm font-semibold text-gray-300 mb-3">项目统计</h3>
+          {statsLoading && (
+            <div className="text-xs text-gray-500">统计加载中...</div>
+          )}
+          {!statsLoading && stats && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                <div className="rounded bg-gray-800 px-3 py-2">
+                  <p className="text-gray-500">集数</p>
+                  <p className="text-gray-200">{stats.episodes.total}</p>
+                </div>
+                <div className="rounded bg-gray-800 px-3 py-2">
+                  <p className="text-gray-500">镜头</p>
+                  <p className="text-gray-200">{stats.shots.total}</p>
+                </div>
+                <div className="rounded bg-gray-800 px-3 py-2">
+                  <p className="text-gray-500">预计总时长</p>
+                  <p className="text-gray-200">{stats.shots.total_duration_seconds.toFixed(0)}s</p>
+                </div>
+                <div className="rounded bg-gray-800 px-3 py-2">
+                  <p className="text-gray-500">存储占用</p>
+                  <p className="text-gray-200">{formatStorage(stats.storage.bytes)}</p>
+                </div>
+              </div>
+              <div className="text-xs text-gray-400 flex flex-wrap items-center gap-3">
+                <span>帧 {stats.shots.frames}/{stats.shots.total}</span>
+                <span>视频 {stats.shots.videos}/{stats.shots.total}</span>
+                <span>音频 {stats.shots.audio}/{stats.shots.total}</span>
+                <span>角色 {stats.elements.by_type.character || 0}</span>
+                <span>场景 {stats.elements.by_type.scene || 0}</span>
+                <span>道具 {stats.elements.by_type.object || 0}</span>
+              </div>
+            </div>
+          )}
+        </section>
 
         {/* 分集卡片 */}
         <section>
@@ -442,12 +664,46 @@ function SeriesOverview({
 
         {/* 共享元素库 */}
         <section>
-          <h3 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
-            <Users className="w-4 h-4" />
-            共享元素库（{elements.length}）
-          </h3>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <h3 className="text-sm font-semibold text-gray-300 flex items-center gap-2">
+              <Users className="w-4 h-4" />
+              共享元素库（{filteredElements.length}/{elements.length}）
+            </h3>
+            <div className="flex items-center gap-1.5">
+              {(['all', 'character', 'scene', 'object'] as const).map((type) => (
+                <button
+                  key={type}
+                  onClick={() => setElementTypeFilter(type)}
+                  className={`px-2 py-1 rounded text-xs transition-colors ${
+                    elementTypeFilter === type ? 'bg-purple-700/60 text-purple-100' : 'bg-gray-800 text-gray-400 hover:text-white'
+                  }`}
+                >
+                  {type === 'all' ? '全部' : type === 'character' ? '角色' : type === 'scene' ? '场景' : '道具'}
+                </button>
+              ))}
+              <button
+                onClick={() => setFavoriteOnly((prev) => !prev)}
+                className={`px-2 py-1 rounded text-xs transition-colors flex items-center gap-1 ${
+                  favoriteOnly ? 'bg-yellow-700/50 text-yellow-200' : 'bg-gray-800 text-gray-400 hover:text-white'
+                }`}
+              >
+                <Star className="w-3 h-3" />
+                收藏
+              </button>
+              <button
+                onClick={() => {
+                  setEditingElement(null)
+                  setShowElementDialog(true)
+                }}
+                className="px-2 py-1 rounded text-xs bg-purple-600 hover:bg-purple-500 text-white flex items-center gap-1"
+              >
+                <Plus className="w-3 h-3" />
+                新增
+              </button>
+            </div>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {elements.map((el) => (
+            {filteredElements.map((el) => (
               <div
                 key={el.id}
                 className="p-3 rounded-lg bg-gray-900 border border-gray-800"
@@ -461,7 +717,33 @@ function SeriesOverview({
                     <Package className="w-4 h-4 text-yellow-400" />
                   )}
                   <span className="text-sm font-medium text-gray-200">{el.name}</span>
-                  <span className="text-xs text-gray-500 ml-auto">[{el.id}]</span>
+                  <button
+                    className={`ml-auto ${el.is_favorite === 1 ? 'text-yellow-300' : 'text-gray-600 hover:text-yellow-300'} transition-colors`}
+                    onClick={() => onUpdateElement(el.id, { is_favorite: el.is_favorite === 1 ? 0 : 1 })}
+                    title="收藏"
+                  >
+                    <Star className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      setEditingElement(el)
+                      setShowElementDialog(true)
+                    }}
+                    className="text-gray-500 hover:text-white"
+                    title="编辑"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (confirm(`确定删除元素「${el.name}」吗？`)) onDeleteElement(el.id)
+                    }}
+                    className="text-gray-500 hover:text-red-400"
+                    title="删除"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                  <span className="text-xs text-gray-500">[{el.id}]</span>
                 </div>
                 <p className="text-xs text-gray-400 line-clamp-3">{el.description}</p>
                 {el.voice_profile && (
@@ -477,21 +759,101 @@ function SeriesOverview({
                     className="w-full h-24 object-cover rounded mt-2"
                   />
                 )}
+                <button
+                  onClick={() => onGenerateElementImage(el.id)}
+                  disabled={generating}
+                  className="mt-2 text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 disabled:opacity-50 flex items-center gap-1 transition-colors"
+                >
+                  {generating ? <Loader2 className="w-3 h-3 animate-spin" /> : <ImageIcon className="w-3 h-3" />}
+                  生成参考图
+                </button>
               </div>
             ))}
           </div>
         </section>
 
         {/* Series Bible */}
-        {series.series_bible && (
-          <section>
-            <h3 className="text-sm font-semibold text-gray-300 mb-3">世界观设定</h3>
+        <section>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-semibold text-gray-300">世界观设定</h3>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowScriptPreview(true)}
+                className="text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 flex items-center gap-1"
+              >
+                <Eye className="w-3 h-3" />
+                查看完整脚本
+              </button>
+              {!editingBible ? (
+                <button
+                  onClick={() => setEditingBible(true)}
+                  className="text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 flex items-center gap-1"
+                >
+                  <Pencil className="w-3 h-3" />
+                  编辑
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={saveBible}
+                    className="text-xs px-2 py-1 rounded bg-purple-600 hover:bg-purple-500 text-white"
+                  >
+                    保存
+                  </button>
+                  <button
+                    onClick={() => {
+                      setBibleDraft(series.series_bible || '')
+                      setEditingBible(false)
+                    }}
+                    className="text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-200"
+                  >
+                    取消
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+          {editingBible ? (
+            <textarea
+              value={bibleDraft}
+              onChange={(e) => setBibleDraft(e.target.value)}
+              rows={10}
+              className="w-full p-3 rounded-lg bg-gray-900 border border-gray-800 text-xs text-gray-300 focus:outline-none focus:border-purple-500 resize-y"
+            />
+          ) : (
             <pre className="p-4 rounded-lg bg-gray-900 border border-gray-800 text-xs text-gray-400 whitespace-pre-wrap max-h-64 overflow-y-auto">
-              {series.series_bible}
+              {series.series_bible || '暂无世界观设定'}
             </pre>
-          </section>
-        )}
+          )}
+        </section>
       </div>
+
+      {showElementDialog && (
+        <ElementEditDialog
+          initial={editingElement}
+          onClose={() => {
+            setShowElementDialog(false)
+            setEditingElement(null)
+          }}
+          onSubmit={(payload) => {
+            if (editingElement) {
+              onUpdateElement(editingElement.id, payload)
+            } else {
+              onAddElement(payload)
+            }
+            setShowElementDialog(false)
+            setEditingElement(null)
+          }}
+        />
+      )}
+
+      {showScriptPreview && (
+        <SimpleTextDialog
+          title="完整脚本"
+          text={series.source_script || '暂无完整脚本'}
+          onClose={() => setShowScriptPreview(false)}
+        />
+      )}
     </div>
   )
 }
@@ -509,6 +871,7 @@ function EpisodeWorkbench({
   onEnhance,
   onGenerateAsset,
   onUpdateShot,
+  onUpdateEpisode,
   onBatchGenerate,
   planning,
   generating,
@@ -517,16 +880,27 @@ function EpisodeWorkbench({
   shots: StudioShot[]
   elements: StudioElement[]
   onBack: () => void
-  onPlan: () => void
-  onEnhance: (mode: 'refine' | 'expand') => void
-  onGenerateAsset: (shotId: string, stage: 'frame' | 'video' | 'audio') => void
-  onUpdateShot: (shotId: string, updates: Record<string, unknown>) => void
-  onBatchGenerate: (stages?: string[]) => void
+  onPlan: () => void | Promise<void>
+  onEnhance: (mode: 'refine' | 'expand') => void | Promise<void>
+  onGenerateAsset: (shotId: string, stage: 'frame' | 'video' | 'audio') => void | Promise<void>
+  onUpdateShot: (shotId: string, updates: Record<string, unknown>) => void | Promise<void>
+  onUpdateEpisode: (updates: Record<string, unknown>) => void | Promise<void>
+  onBatchGenerate: (stages?: string[]) => void | Promise<void>
   planning: boolean
   generating: boolean
 }) {
   const [selectedShotId, setSelectedShotId] = useState<string | null>(null)
+  const [showScriptEditor, setShowScriptEditor] = useState(false)
+  const [titleDraft, setTitleDraft] = useState(episode.title || '')
+  const [summaryDraft, setSummaryDraft] = useState(episode.summary || '')
+  const [scriptDraft, setScriptDraft] = useState(episode.script_excerpt || '')
   const selectedShot = shots.find((s) => s.id === selectedShotId)
+
+  useEffect(() => {
+    setTitleDraft(episode.title || '')
+    setSummaryDraft(episode.summary || '')
+    setScriptDraft(episode.script_excerpt || '')
+  }, [episode.id, episode.title, episode.summary, episode.script_excerpt])
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -541,13 +915,28 @@ function EpisodeWorkbench({
             返回
           </button>
           <span className="text-gray-600">|</span>
-          <h3 className="text-sm font-semibold text-gray-200">
-            第{episode.act_number}幕: {episode.title}
-          </h3>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-500">第{episode.act_number}幕</span>
+            <input
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onBlur={() => {
+                if (titleDraft !== episode.title) onUpdateEpisode({ title: titleDraft })
+              }}
+              className="bg-transparent border-b border-transparent hover:border-gray-700 focus:border-purple-500 text-sm font-semibold text-gray-200 focus:outline-none"
+            />
+          </div>
           <StatusDot status={episode.status} />
           <span className="text-xs text-gray-500">{episode.status}</span>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowScriptEditor((v) => !v)}
+            className="flex items-center gap-1 px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-xs text-gray-300 transition-colors"
+          >
+            <FileText className="w-3 h-3" />
+            {showScriptEditor ? '收起脚本' : '查看/编辑脚本'}
+          </button>
           {shots.length === 0 ? (
             <button
               onClick={onPlan}
@@ -587,6 +976,35 @@ function EpisodeWorkbench({
           )}
         </div>
       </div>
+
+      {showScriptEditor && (
+        <div className="px-4 py-3 border-b border-gray-800 bg-gray-900/40 space-y-2 shrink-0">
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">集摘要</label>
+            <textarea
+              value={summaryDraft}
+              onChange={(e) => setSummaryDraft(e.target.value)}
+              onBlur={() => {
+                if (summaryDraft !== episode.summary) onUpdateEpisode({ summary: summaryDraft })
+              }}
+              rows={2}
+              className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-purple-500 resize-none"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">集脚本（script_excerpt）</label>
+            <textarea
+              value={scriptDraft}
+              onChange={(e) => setScriptDraft(e.target.value)}
+              onBlur={() => {
+                if (scriptDraft !== episode.script_excerpt) onUpdateEpisode({ script_excerpt: scriptDraft })
+              }}
+              rows={6}
+              className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-purple-500 resize-y"
+            />
+          </div>
+        </div>
+      )}
 
       {/* 主内容区 */}
       <div className="flex-1 flex overflow-hidden">
@@ -873,6 +1291,171 @@ function DetailField({
   )
 }
 
+function ElementEditDialog({
+  initial,
+  onClose,
+  onSubmit,
+}: {
+  initial: StudioElement | null
+  onClose: () => void
+  onSubmit: (payload: { name: string; type: string; description?: string; voice_profile?: string; is_favorite?: number }) => void
+}) {
+  const [name, setName] = useState(initial?.name || '')
+  const [type, setType] = useState(initial?.type || 'character')
+  const [description, setDescription] = useState(initial?.description || '')
+  const [voiceProfile, setVoiceProfile] = useState(initial?.voice_profile || '')
+  const [favorite, setFavorite] = useState(initial?.is_favorite === 1)
+
+  const submit = () => {
+    if (!name.trim()) return
+    onSubmit({
+      name: name.trim(),
+      type,
+      description: description.trim(),
+      voice_profile: voiceProfile.trim(),
+      is_favorite: favorite ? 1 : 0,
+    })
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+      <div className="bg-gray-900 rounded-xl border border-gray-700 w-full max-w-xl p-6">
+        <h3 className="text-base font-semibold text-gray-100 mb-4">{initial ? '编辑元素' : '新增元素'}</h3>
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">名称</label>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">类型</label>
+            <select
+              value={type}
+              onChange={(e) => setType(e.target.value)}
+              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+            >
+              <option value="character">角色</option>
+              <option value="scene">场景</option>
+              <option value="object">道具</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">描述</label>
+            <textarea
+              rows={4}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-purple-500 resize-y"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">音色（角色可填）</label>
+            <input
+              value={voiceProfile}
+              onChange={(e) => setVoiceProfile(e.target.value)}
+              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+            />
+          </div>
+          <label className="flex items-center gap-2 text-xs text-gray-400">
+            <input
+              type="checkbox"
+              checked={favorite}
+              onChange={(e) => setFavorite(e.target.checked)}
+              className="rounded"
+            />
+            收藏
+          </label>
+        </div>
+        <div className="flex justify-end gap-3 mt-5">
+          <button onClick={onClose} className="px-4 py-2 rounded text-sm text-gray-400 hover:text-white">取消</button>
+          <button
+            onClick={submit}
+            disabled={!name.trim()}
+            className="px-4 py-2 rounded bg-purple-600 hover:bg-purple-500 text-white text-sm disabled:opacity-50"
+          >
+            保存
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SimpleTextDialog({
+  title,
+  text,
+  onClose,
+}: {
+  title: string
+  text: string
+  onClose: () => void
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+      <div className="bg-gray-900 rounded-xl border border-gray-700 w-full max-w-3xl max-h-[85vh] overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-gray-200">{title}</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="p-4 max-h-[70vh] overflow-y-auto">
+          <pre className="text-xs text-gray-300 whitespace-pre-wrap">{text}</pre>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ToastStack({
+  toasts,
+  onClose,
+}: {
+  toasts: StudioToast[]
+  onClose: (id: string) => void
+}) {
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+
+  return (
+    <div className="fixed top-14 right-4 z-[70] space-y-2 w-96 max-w-[calc(100vw-2rem)]">
+      {toasts.map((toast) => (
+        <div key={toast.id} className="bg-gray-900 border border-red-800/60 rounded-lg shadow-lg p-3 text-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-2 min-w-0">
+              <AlertCircle className="w-4 h-4 text-red-400 mt-0.5 shrink-0" />
+              <div className="min-w-0">
+                <p className="text-red-200 break-words">{toast.message}</p>
+                {toast.code && <p className="text-xs text-red-300/70 mt-1">code: {toast.code}</p>}
+              </div>
+            </div>
+            <button onClick={() => onClose(toast.id)} className="text-gray-500 hover:text-white">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          {toast.context && Object.keys(toast.context).length > 0 && (
+            <div className="mt-2">
+              <button
+                className="text-xs text-gray-400 hover:text-white"
+                onClick={() => setExpanded((prev) => ({ ...prev, [toast.id]: !prev[toast.id] }))}
+              >
+                {expanded[toast.id] ? '收起详情' : '查看详情'}
+              </button>
+              {expanded[toast.id] && (
+                <pre className="mt-2 text-xs text-gray-400 bg-gray-950 border border-gray-800 rounded p-2 whitespace-pre-wrap">
+                  {JSON.stringify(toast.context, null, 2)}
+                </pre>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // ============================================================
 // 创建系列对话框
 // ============================================================
@@ -890,7 +1473,7 @@ function CreateSeriesDialog({
     visual_style?: string
     target_episode_count?: number
     episode_duration_seconds?: number
-  }) => void
+  }) => void | Promise<void>
   creating: boolean
 }) {
   const [name, setName] = useState('')
@@ -1073,12 +1656,37 @@ interface ServiceConfig {
   model: string
 }
 
+interface TTSConfig {
+  appid: string
+  accessToken: string
+  cluster: string
+  voiceType: string
+}
+
+interface GenerationDefaults {
+  frame_width: number
+  frame_height: number
+  video_duration_seconds: number
+  split_max_tokens: number
+  plan_max_tokens: number
+  enhance_max_tokens: number
+}
+
 function StudioSettingsPanel({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [llm, setLlm] = useState<ServiceConfig>({ protocol: 'openai', apiKey: '', baseUrl: '', model: '' })
   const [image, setImage] = useState<ServiceConfig>({ protocol: 'wanxiang', apiKey: '', baseUrl: '', model: '' })
   const [video, setVideo] = useState<ServiceConfig>({ protocol: 'volcano', apiKey: '', baseUrl: '', model: '' })
+  const [tts, setTts] = useState<TTSConfig>({ appid: '', accessToken: '', cluster: 'volcano_tts', voiceType: 'BV700_V2_streaming' })
+  const [defaults, setDefaults] = useState<GenerationDefaults>({
+    frame_width: 1280,
+    frame_height: 720,
+    video_duration_seconds: 6,
+    split_max_tokens: 8000,
+    plan_max_tokens: 16000,
+    enhance_max_tokens: 16000,
+  })
 
   useEffect(() => {
     studioGetSettings().then((data) => {
@@ -1094,6 +1702,26 @@ function StudioSettingsPanel({ onClose }: { onClose: () => void }) {
       if (data.llm) setLlm(mapLoad(data.llm as Record<string, unknown>))
       if (data.image) setImage(mapLoad(data.image as Record<string, unknown>))
       if (data.video) setVideo(mapLoad(data.video as Record<string, unknown>))
+      if (data.tts && typeof data.tts === 'object') {
+        const raw = data.tts as Record<string, unknown>
+        setTts({
+          appid: (raw.appid as string) || '',
+          accessToken: (raw.accessToken as string) || '',
+          cluster: (raw.cluster as string) || 'volcano_tts',
+          voiceType: (raw.voiceType as string) || 'BV700_V2_streaming',
+        })
+      }
+      if (data.generation_defaults && typeof data.generation_defaults === 'object') {
+        const raw = data.generation_defaults as Record<string, unknown>
+        setDefaults((prev) => ({
+          frame_width: Number(raw.frame_width) || prev.frame_width,
+          frame_height: Number(raw.frame_height) || prev.frame_height,
+          video_duration_seconds: Number(raw.video_duration_seconds) || prev.video_duration_seconds,
+          split_max_tokens: Number(raw.split_max_tokens) || prev.split_max_tokens,
+          plan_max_tokens: Number(raw.plan_max_tokens) || prev.plan_max_tokens,
+          enhance_max_tokens: Number(raw.enhance_max_tokens) || prev.enhance_max_tokens,
+        }))
+      }
       setLoading(false)
     }).catch(() => setLoading(false))
   }, [])
@@ -1112,6 +1740,13 @@ function StudioSettingsPanel({ onClose }: { onClose: () => void }) {
         llm: mapSave(llm, 'llm'),
         image: mapSave(image, 'image'),
         video: mapSave(video, 'video'),
+        tts: {
+          appid: tts.appid,
+          accessToken: tts.accessToken,
+          cluster: tts.cluster,
+          voiceType: tts.voiceType,
+        },
+        generation_defaults: defaults,
       })
       onClose()
     } catch (e) {
@@ -1167,6 +1802,117 @@ function StudioSettingsPanel({ onClose }: { onClose: () => void }) {
               config={video}
               onChange={setVideo}
             />
+
+            <div className="p-4 rounded-lg bg-gray-800/50 border border-gray-700">
+              <h3 className="text-sm font-semibold text-gray-200 mb-1">语音合成（TTS）</h3>
+              <p className="text-xs text-gray-500 mb-3">用于镜头旁白/对白音频生成</p>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">App ID</label>
+                  <input
+                    value={tts.appid}
+                    onChange={(e) => setTts((prev) => ({ ...prev, appid: e.target.value }))}
+                    className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                    placeholder="火山引擎 App ID"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Access Token</label>
+                  <input
+                    type="password"
+                    value={tts.accessToken}
+                    onChange={(e) => setTts((prev) => ({ ...prev, accessToken: e.target.value }))}
+                    className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                    placeholder="火山引擎 Access Token"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1">Cluster</label>
+                    <input
+                      value={tts.cluster}
+                      onChange={(e) => setTts((prev) => ({ ...prev, cluster: e.target.value }))}
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                      placeholder="volcano_tts"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1">默认音色</label>
+                    <input
+                      value={tts.voiceType}
+                      onChange={(e) => setTts((prev) => ({ ...prev, voiceType: e.target.value }))}
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                      placeholder="BV700_V2_streaming"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-lg bg-gray-800/50 border border-gray-700">
+              <h3 className="text-sm font-semibold text-gray-200 mb-1">默认生成参数</h3>
+              <p className="text-xs text-gray-500 mb-3">用于控制默认画面、视频和 LLM token 配置</p>
+              <div className="space-y-3">
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1">帧宽度</label>
+                    <input
+                      type="number"
+                      value={defaults.frame_width}
+                      onChange={(e) => setDefaults((prev) => ({ ...prev, frame_width: parseInt(e.target.value) || 1280 }))}
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1">帧高度</label>
+                    <input
+                      type="number"
+                      value={defaults.frame_height}
+                      onChange={(e) => setDefaults((prev) => ({ ...prev, frame_height: parseInt(e.target.value) || 720 }))}
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1">默认视频时长(s)</label>
+                    <input
+                      type="number"
+                      value={defaults.video_duration_seconds}
+                      onChange={(e) => setDefaults((prev) => ({ ...prev, video_duration_seconds: parseInt(e.target.value) || 6 }))}
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1">split max_tokens</label>
+                    <input
+                      type="number"
+                      value={defaults.split_max_tokens}
+                      onChange={(e) => setDefaults((prev) => ({ ...prev, split_max_tokens: parseInt(e.target.value) || 8000 }))}
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1">plan max_tokens</label>
+                    <input
+                      type="number"
+                      value={defaults.plan_max_tokens}
+                      onChange={(e) => setDefaults((prev) => ({ ...prev, plan_max_tokens: parseInt(e.target.value) || 16000 }))}
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1">enhance max_tokens</label>
+                    <input
+                      type="number"
+                      value={defaults.enhance_max_tokens}
+                      onChange={(e) => setDefaults((prev) => ({ ...prev, enhance_max_tokens: parseInt(e.target.value) || 16000 }))}
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
 
             <div className="flex justify-end gap-3 pt-4 border-t border-gray-800">
               <button

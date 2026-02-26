@@ -6,8 +6,11 @@ import uuid
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+BACKEND_DIR = os.path.dirname(os.path.dirname(__file__))
+DATA_DIR = os.path.join(BACKEND_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "studio.db")
+UPLOAD_DIR = os.path.join(BACKEND_DIR, "uploads")
+STUDIO_AUDIO_DIR = os.path.join(DATA_DIR, "studio_audio")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -54,6 +57,7 @@ CREATE TABLE IF NOT EXISTS shared_elements (
     type                TEXT NOT NULL,
     description         TEXT DEFAULT '',
     voice_profile       TEXT DEFAULT '',
+    is_favorite         INTEGER DEFAULT 0,
     image_url           TEXT DEFAULT '',
     image_history       TEXT DEFAULT '[]',
     reference_images    TEXT DEFAULT '[]',
@@ -125,9 +129,30 @@ class StudioStorage:
         conn = self._connect()
         try:
             conn.executescript(_SCHEMA_SQL)
+            self._migrate_schema(conn)
             conn.commit()
         finally:
             conn.close()
+
+    @staticmethod
+    def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(r["name"] == column for r in rows)
+
+    def _ensure_column(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        column: str,
+        column_ddl: str,
+    ) -> None:
+        if self._column_exists(conn, table, column):
+            return
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_ddl}")
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        """为历史数据库补齐新列。"""
+        self._ensure_column(conn, "shared_elements", "is_favorite", "INTEGER DEFAULT 0")
 
     @staticmethod
     def _row_to_dict(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
@@ -354,6 +379,7 @@ class StudioStorage:
         element_type: str,
         description: str = "",
         voice_profile: str = "",
+        is_favorite: int = 0,
         image_url: str = "",
         appears_in_episodes: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
@@ -364,11 +390,11 @@ class StudioStorage:
             conn.execute(
                 """INSERT INTO shared_elements
                    (id, series_id, name, type, description, voice_profile,
-                    image_url, image_history, reference_images,
+                    is_favorite, image_url, image_history, reference_images,
                     appears_in_episodes, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (eid, series_id, name, element_type, description, voice_profile,
-                 image_url, "[]", "[]",
+                 int(is_favorite), image_url, "[]", "[]",
                  self._json_field(appears_in_episodes or []), now, now),
             )
             conn.commit()
@@ -389,13 +415,23 @@ class StudioStorage:
         finally:
             conn.close()
 
-    def get_shared_elements(self, series_id: str) -> List[Dict[str, Any]]:
+    def get_shared_elements(
+        self,
+        series_id: str,
+        element_type: Optional[str] = None,
+        favorites_only: bool = False,
+    ) -> List[Dict[str, Any]]:
         conn = self._connect()
         try:
-            rows = conn.execute(
-                "SELECT * FROM shared_elements WHERE series_id=? ORDER BY type, name",
-                (series_id,),
-            ).fetchall()
+            sql = "SELECT * FROM shared_elements WHERE series_id=?"
+            params: List[Any] = [series_id]
+            if element_type:
+                sql += " AND type=?"
+                params.append(element_type)
+            if favorites_only:
+                sql += " AND is_favorite=1"
+            sql += " ORDER BY is_favorite DESC, type, name"
+            rows = conn.execute(sql, tuple(params)).fetchall()
             return [self._row_to_dict(r) for r in rows]  # type: ignore[misc]
         finally:
             conn.close()
@@ -405,7 +441,7 @@ class StudioStorage:
     ) -> Optional[Dict[str, Any]]:
         allowed = {
             "name", "type", "description", "voice_profile", "image_url",
-            "image_history", "reference_images", "appears_in_episodes",
+            "image_history", "reference_images", "appears_in_episodes", "is_favorite",
         }
         fields = []
         values: list = []
@@ -678,6 +714,146 @@ class StudioStorage:
                 "SELECT * FROM episode_elements WHERE id=?", (eid,)
             ).fetchone()
             return self._row_to_dict(row)  # type: ignore[return-value]
+        finally:
+            conn.close()
+
+    # ==================================================================
+    # 统计
+    # ==================================================================
+
+    @staticmethod
+    def _resolve_local_media_path(url: str) -> Optional[str]:
+        if not url:
+            return None
+        if url.startswith("/api/uploads/"):
+            rel = url[len("/api/uploads/") :].strip().replace("/", os.sep)
+            return os.path.join(UPLOAD_DIR, rel)
+        if url.startswith("/data/studio_audio/"):
+            name = os.path.basename(url)
+            return os.path.join(STUDIO_AUDIO_DIR, name)
+        if os.path.isabs(url):
+            return url
+        return None
+
+    def _estimate_storage_bytes(self, conn: sqlite3.Connection, series_id: str) -> int:
+        urls: List[str] = []
+        rows = conn.execute(
+            """
+            SELECT image_url
+            FROM shared_elements
+            WHERE series_id=?
+            """,
+            (series_id,),
+        ).fetchall()
+        urls.extend([r["image_url"] for r in rows if r["image_url"]])
+
+        rows = conn.execute(
+            """
+            SELECT s.start_image_url, s.video_url, s.audio_url
+            FROM shots s
+            INNER JOIN episodes e ON e.id = s.episode_id
+            WHERE e.series_id=?
+            """,
+            (series_id,),
+        ).fetchall()
+        for r in rows:
+            urls.extend([
+                r["start_image_url"] or "",
+                r["video_url"] or "",
+                r["audio_url"] or "",
+            ])
+
+        total = 0
+        seen: set[str] = set()
+        for raw in urls:
+            path = self._resolve_local_media_path(raw)
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            if os.path.exists(path):
+                try:
+                    total += os.path.getsize(path)
+                except OSError:
+                    continue
+        return total
+
+    def get_series_stats(self, series_id: str) -> Dict[str, Any]:
+        conn = self._connect()
+        try:
+            episodes_row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN status='planned' THEN 1 ELSE 0 END) AS planned,
+                    SUM(CASE WHEN status='in_progress' THEN 1 ELSE 0 END) AS in_progress,
+                    SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed
+                FROM episodes
+                WHERE series_id=?
+                """,
+                (series_id,),
+            ).fetchone()
+
+            shots_row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN s.start_image_url IS NOT NULL AND s.start_image_url!='' THEN 1 ELSE 0 END) AS frames,
+                    SUM(CASE WHEN s.video_url IS NOT NULL AND s.video_url!='' THEN 1 ELSE 0 END) AS videos,
+                    SUM(CASE WHEN s.audio_url IS NOT NULL AND s.audio_url!='' THEN 1 ELSE 0 END) AS audio,
+                    COALESCE(SUM(s.duration), 0) AS total_duration_seconds
+                FROM shots s
+                INNER JOIN episodes e ON e.id = s.episode_id
+                WHERE e.series_id=?
+                """,
+                (series_id,),
+            ).fetchone()
+
+            element_rows = conn.execute(
+                """
+                SELECT
+                    type,
+                    COUNT(*) AS count,
+                    SUM(CASE WHEN is_favorite=1 THEN 1 ELSE 0 END) AS favorites
+                FROM shared_elements
+                WHERE series_id=?
+                GROUP BY type
+                """,
+                (series_id,),
+            ).fetchall()
+
+            by_type = {"character": 0, "scene": 0, "object": 0}
+            favorite_count = 0
+            for row in element_rows:
+                et = row["type"] or "object"
+                by_type[et] = int(row["count"] or 0)
+                favorite_count += int(row["favorites"] or 0)
+
+            total_elements = sum(by_type.values())
+
+            return {
+                "series_id": series_id,
+                "episodes": {
+                    "total": int((episodes_row and episodes_row["total"]) or 0),
+                    "planned": int((episodes_row and episodes_row["planned"]) or 0),
+                    "in_progress": int((episodes_row and episodes_row["in_progress"]) or 0),
+                    "completed": int((episodes_row and episodes_row["completed"]) or 0),
+                },
+                "shots": {
+                    "total": int((shots_row and shots_row["total"]) or 0),
+                    "frames": int((shots_row and shots_row["frames"]) or 0),
+                    "videos": int((shots_row and shots_row["videos"]) or 0),
+                    "audio": int((shots_row and shots_row["audio"]) or 0),
+                    "total_duration_seconds": float((shots_row and shots_row["total_duration_seconds"]) or 0),
+                },
+                "elements": {
+                    "total": total_elements,
+                    "favorites": favorite_count,
+                    "by_type": by_type,
+                },
+                "storage": {
+                    "bytes": self._estimate_storage_bytes(conn, series_id),
+                },
+            }
         finally:
             conn.close()
 
