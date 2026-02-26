@@ -6,9 +6,10 @@ import type {
   StudioEpisode,
   StudioElement,
   StudioShot,
+  StudioEpisodeElement,
 } from '../services/api'
 
-export type { StudioSeries, StudioEpisode, StudioElement, StudioShot }
+export type { StudioSeries, StudioEpisode, StudioElement, StudioShot, StudioEpisodeElement }
 
 type StudioErrorParsed = {
   message: string
@@ -104,7 +105,8 @@ interface StudioState {
 
   updateShot: (shotId: string, updates: Record<string, unknown>) => Promise<void>
   deleteShot: (shotId: string) => Promise<void>
-  generateShotAsset: (shotId: string, stage: 'frame' | 'video' | 'audio') => Promise<void>
+  generateShotAsset: (shotId: string, stage: 'frame' | 'end_frame' | 'video' | 'audio') => Promise<void>
+  inpaintShotFrame: (shotId: string, params: { edit_prompt: string; mask_data?: string; width?: number; height?: number }) => Promise<void>
 
   batchGenerate: (episodeId: string, stages?: string[]) => Promise<void>
 
@@ -375,6 +377,22 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     set({ generating: true, error: null, errorCode: null, errorContext: null })
     try {
       await api.studioGenerateShotAsset(shotId, { stage })
+      const epId = get().currentEpisodeId
+      if (epId) {
+        const shots = await api.studioGetShots(epId)
+        set({ shots })
+      }
+      set({ generating: false })
+    } catch (e: unknown) {
+      const parsed = parseStudioError(e)
+      set({ generating: false, error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
+    }
+  },
+
+  inpaintShotFrame: async (shotId, params) => {
+    set({ generating: true, error: null, errorCode: null, errorContext: null })
+    try {
+      await api.studioInpaintShotFrame(shotId, params)
       const epId = get().currentEpisodeId
       if (epId) {
         const shots = await api.studioGetShots(epId)

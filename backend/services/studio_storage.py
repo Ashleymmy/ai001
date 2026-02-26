@@ -76,12 +76,17 @@ CREATE TABLE IF NOT EXISTS shots (
     duration        REAL DEFAULT 5.0,
     description     TEXT DEFAULT '',
     prompt          TEXT DEFAULT '',
+    end_prompt      TEXT DEFAULT '',
     video_prompt    TEXT DEFAULT '',
     narration       TEXT DEFAULT '',
     dialogue_script TEXT DEFAULT '',
     start_image_url TEXT DEFAULT '',
+    end_image_url   TEXT DEFAULT '',
+    frame_history   TEXT DEFAULT '[]',
     video_url       TEXT DEFAULT '',
+    video_history   TEXT DEFAULT '[]',
     audio_url       TEXT DEFAULT '',
+    visual_action   TEXT DEFAULT '{}',
     status          TEXT DEFAULT 'pending',
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
@@ -153,6 +158,11 @@ class StudioStorage:
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
         """为历史数据库补齐新列。"""
         self._ensure_column(conn, "shared_elements", "is_favorite", "INTEGER DEFAULT 0")
+        self._ensure_column(conn, "shots", "end_prompt", "TEXT DEFAULT ''")
+        self._ensure_column(conn, "shots", "end_image_url", "TEXT DEFAULT ''")
+        self._ensure_column(conn, "shots", "frame_history", "TEXT DEFAULT '[]'")
+        self._ensure_column(conn, "shots", "video_history", "TEXT DEFAULT '[]'")
+        self._ensure_column(conn, "shots", "visual_action", "TEXT DEFAULT '{}'")
 
     @staticmethod
     def _row_to_dict(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
@@ -161,7 +171,8 @@ class StudioStorage:
         d = dict(row)
         # 自动反序列化 JSON 字段
         for key in ("settings", "creative_brief", "image_history",
-                     "reference_images", "appears_in_episodes"):
+                     "reference_images", "appears_in_episodes",
+                     "frame_history", "video_history", "visual_action"):
             if key in d and isinstance(d[key], str):
                 try:
                     d[key] = json.loads(d[key])
@@ -494,6 +505,7 @@ class StudioStorage:
         duration: float = 5.0,
         description: str = "",
         prompt: str = "",
+        end_prompt: str = "",
         video_prompt: str = "",
         narration: str = "",
         dialogue_script: str = "",
@@ -506,15 +518,18 @@ class StudioStorage:
             conn.execute(
                 """INSERT INTO shots
                    (id, episode_id, segment_name, sort_order, name, type,
-                    duration, description, prompt, video_prompt,
+                    duration, description, prompt, end_prompt, video_prompt,
                     narration, dialogue_script,
-                    start_image_url, video_url, audio_url,
+                    start_image_url, end_image_url, frame_history, video_url, video_history, audio_url, visual_action,
                     status, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (sid, episode_id, segment_name, sort_order, name, shot_type,
-                 duration, description, prompt, video_prompt,
-                 narration, dialogue_script,
-                 "", "", "", "pending", now, now),
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    sid, episode_id, segment_name, sort_order, name, shot_type,
+                    duration, description, prompt, end_prompt, video_prompt,
+                    narration, dialogue_script,
+                    "", "", "[]", "", "[]", "", "{}",
+                    "pending", now, now,
+                ),
             )
             conn.commit()
             row = conn.execute(
@@ -550,14 +565,16 @@ class StudioStorage:
     ) -> Optional[Dict[str, Any]]:
         allowed = {
             "segment_name", "sort_order", "name", "type", "duration",
-            "description", "prompt", "video_prompt", "narration",
-            "dialogue_script", "start_image_url", "video_url", "audio_url",
-            "status",
+            "description", "prompt", "end_prompt", "video_prompt", "narration",
+            "dialogue_script", "start_image_url", "end_image_url", "frame_history",
+            "video_url", "video_history", "audio_url", "visual_action", "status",
         }
         fields = []
         values: list = []
         for k, v in updates.items():
             if k in allowed:
+                if k in ("frame_history", "video_history", "visual_action"):
+                    v = self._json_field(v)
                 fields.append(f"{k}=?")
                 values.append(v)
         if not fields:
@@ -614,17 +631,20 @@ class StudioStorage:
                 conn.execute(
                     """INSERT INTO shots
                        (id, episode_id, segment_name, sort_order, name, type,
-                        duration, description, prompt, video_prompt,
+                        duration, description, prompt, end_prompt, video_prompt,
                         narration, dialogue_script,
-                        start_image_url, video_url, audio_url,
+                        start_image_url, end_image_url, frame_history, video_url, video_history, audio_url, visual_action,
                         status, created_at, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (sid, episode_id, s.get("segment_name", ""),
-                     idx, s.get("name", ""), s.get("type", "standard"),
-                     s.get("duration", 5.0), s.get("description", ""),
-                     s.get("prompt", ""), s.get("video_prompt", ""),
-                     s.get("narration", ""), s.get("dialogue_script", ""),
-                     "", "", "", "pending", now, now),
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        sid, episode_id, s.get("segment_name", ""),
+                        idx, s.get("name", ""), s.get("type", "standard"),
+                        s.get("duration", 5.0), s.get("description", ""),
+                        s.get("prompt", ""), s.get("end_prompt", ""), s.get("video_prompt", ""),
+                        s.get("narration", ""), s.get("dialogue_script", ""),
+                        "", "", "[]", "", "[]", "", "{}",
+                        "pending", now, now,
+                    ),
                 )
                 result_ids.append(sid)
             conn.commit()

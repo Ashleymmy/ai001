@@ -5828,21 +5828,34 @@ class StudioShotUpdateRequest(BaseModel):
     duration: Optional[float] = None
     description: Optional[str] = None
     prompt: Optional[str] = None
+    end_prompt: Optional[str] = None
     video_prompt: Optional[str] = None
     narration: Optional[str] = None
     dialogue_script: Optional[str] = None
     segment_name: Optional[str] = None
+    start_image_url: Optional[str] = None
+    end_image_url: Optional[str] = None
+    frame_history: Optional[List[str]] = None
+    video_history: Optional[List[str]] = None
+    visual_action: Optional[Dict[str, Any]] = None
 
 
 class StudioGenerateRequest(BaseModel):
-    stage: str = "frame"  # frame / video / audio
+    stage: str = "frame"  # frame / end_frame / video / audio
     width: int = 1280
     height: int = 720
     voice_type: Optional[str] = None
 
 
+class StudioInpaintRequest(BaseModel):
+    edit_prompt: str
+    mask_data: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+
+
 class StudioBatchGenerateRequest(BaseModel):
-    stages: List[str] = ["elements", "frames", "videos", "audio"]
+    stages: List[str] = ["elements", "frames", "end_frames", "videos", "audio"]
 
 
 class StudioSettingsRequest(BaseModel):
@@ -5889,6 +5902,7 @@ def _studio_raise_from_exception(e: Exception) -> None:
             "config_missing_image",
             "config_missing_video",
             "config_missing_tts",
+            "invalid_inpaint_prompt",
         } else 500
         raise HTTPException(status, e.to_payload())
     _studio_raise(500, str(e), "studio_internal_error")
@@ -6101,6 +6115,10 @@ async def studio_generate_shot_asset(shot_id: str, req: StudioGenerateRequest):
             return await service.generate_shot_frame(
                 shot_id, width=req.width, height=req.height
             )
+        elif req.stage == "end_frame":
+            return await service.generate_shot_end_frame(
+                shot_id, width=req.width, height=req.height
+            )
         elif req.stage == "video":
             return await service.generate_shot_video(shot_id)
         elif req.stage == "audio":
@@ -6109,6 +6127,21 @@ async def studio_generate_shot_asset(shot_id: str, req: StudioGenerateRequest):
             )
         else:
             _studio_raise(400, f"未知的生成阶段: {req.stage}", "invalid_generation_stage")
+    except Exception as e:
+        _studio_raise_from_exception(e)
+
+
+@app.post("/api/studio/shots/{shot_id}/inpaint")
+async def studio_inpaint_shot_frame(shot_id: str, req: StudioInpaintRequest):
+    service = _studio_ensure_service_ready()
+    try:
+        return await service.inpaint_shot_frame(
+            shot_id=shot_id,
+            edit_prompt=req.edit_prompt,
+            mask_data=req.mask_data,
+            width=req.width,
+            height=req.height,
+        )
     except Exception as e:
         _studio_raise_from_exception(e)
 

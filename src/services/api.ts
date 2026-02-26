@@ -1992,12 +1992,17 @@ export interface StudioShot {
   duration: number
   description: string
   prompt: string
+  end_prompt: string
   video_prompt: string
   narration: string
   dialogue_script: string
   start_image_url: string
+  end_image_url: string
+  frame_history: string[]
   video_url: string
+  video_history: string[]
   audio_url: string
+  visual_action: Record<string, unknown>
   status: string
   created_at: string
   updated_at: string
@@ -2159,7 +2164,7 @@ export async function studioGetShots(episodeId: string): Promise<StudioShot[]> {
 
 export async function studioUpdateShot(
   shotId: string,
-  updates: Partial<Pick<StudioShot, 'name' | 'type' | 'duration' | 'description' | 'prompt' | 'video_prompt' | 'narration' | 'dialogue_script' | 'segment_name'>>
+  updates: Partial<Pick<StudioShot, 'name' | 'type' | 'duration' | 'description' | 'prompt' | 'end_prompt' | 'video_prompt' | 'narration' | 'dialogue_script' | 'segment_name' | 'start_image_url' | 'end_image_url' | 'frame_history' | 'video_history' | 'visual_action'>>
 ): Promise<StudioShot> {
   const response = await api.put(`/api/studio/shots/${shotId}`, updates)
   return response.data
@@ -2171,9 +2176,17 @@ export async function studioDeleteShot(shotId: string): Promise<void> {
 
 export async function studioGenerateShotAsset(
   shotId: string,
-  params: { stage: 'frame' | 'video' | 'audio'; width?: number; height?: number; voice_type?: string }
+  params: { stage: 'frame' | 'end_frame' | 'video' | 'audio'; width?: number; height?: number; voice_type?: string }
 ): Promise<Record<string, unknown>> {
   const response = await api.post(`/api/studio/shots/${shotId}/generate`, params)
+  return response.data
+}
+
+export async function studioInpaintShotFrame(
+  shotId: string,
+  params: { edit_prompt: string; mask_data?: string; width?: number; height?: number }
+): Promise<Record<string, unknown>> {
+  const response = await api.post(`/api/studio/shots/${shotId}/inpaint`, params)
   return response.data
 }
 
@@ -2184,7 +2197,7 @@ export async function studioBatchGenerate(
   stages?: string[]
 ): Promise<Record<string, unknown>> {
   const response = await studioApi.post(`/api/studio/episodes/${episodeId}/batch-generate`, {
-    stages: stages || ['elements', 'frames', 'videos', 'audio'],
+    stages: stages || ['elements', 'frames', 'end_frames', 'videos', 'audio'],
   })
   return response.data
 }

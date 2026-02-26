@@ -9,7 +9,7 @@ import {
 import { useStudioStore } from '../store/studioStore'
 import { studioCheckConfig, studioGetSeriesStats, studioGetSettings, studioSaveSettings } from '../services/api'
 import type { StudioSeriesStats } from '../services/api'
-import type { StudioSeries, StudioEpisode, StudioElement, StudioShot } from '../store/studioStore'
+import type { StudioSeries, StudioEpisode, StudioElement, StudioShot, StudioEpisodeElement } from '../store/studioStore'
 
 type ServiceKey = 'llm' | 'image' | 'video' | 'tts'
 
@@ -144,18 +144,30 @@ export default function StudioPage() {
     await store.enhanceEpisode(id, mode)
   }, [ensureConfigReady, store])
 
-  const handleGenerateShotAsset = useCallback(async (shotId: string, stage: 'frame' | 'video' | 'audio') => {
+  const handleGenerateShotAsset = useCallback(async (shotId: string, stage: 'frame' | 'end_frame' | 'video' | 'audio') => {
     const required: ServiceKey[] =
-      stage === 'frame' ? ['image'] : stage === 'video' ? ['video'] : ['tts']
+      stage === 'frame' || stage === 'end_frame' ? ['image'] : stage === 'video' ? ['video'] : ['tts']
     const ok = await ensureConfigReady(required)
     if (!ok) return
     await store.generateShotAsset(shotId, stage)
   }, [ensureConfigReady, store])
 
+  const handleInpaintShot = useCallback(async (
+    shotId: string,
+    payload: { editPrompt: string; maskData?: string },
+  ) => {
+    const ok = await ensureConfigReady(['image'])
+    if (!ok) return
+    await store.inpaintShotFrame(shotId, {
+      edit_prompt: payload.editPrompt,
+      mask_data: payload.maskData,
+    })
+  }, [ensureConfigReady, store])
+
   const handleBatchGenerate = useCallback(async (episodeId: string, stages?: string[]) => {
-    const actualStages = stages && stages.length > 0 ? stages : ['elements', 'frames', 'videos', 'audio']
+    const actualStages = stages && stages.length > 0 ? stages : ['elements', 'frames', 'end_frames', 'videos', 'audio']
     const required = new Set<ServiceKey>()
-    if (actualStages.includes('elements') || actualStages.includes('frames')) required.add('image')
+    if (actualStages.includes('elements') || actualStages.includes('frames') || actualStages.includes('end_frames')) required.add('image')
     if (actualStages.includes('videos')) required.add('video')
     if (actualStages.includes('audio')) required.add('tts')
     const ok = await ensureConfigReady(Array.from(required))
@@ -308,6 +320,7 @@ export default function StudioPage() {
               episode={store.currentEpisode}
               shots={store.shots}
               elements={store.sharedElements}
+              episodeElements={store.currentEpisode.episode_elements || []}
               onBack={handleBackToSeries}
               onPlan={async () => {
                 if (!store.currentEpisodeId) return
@@ -318,6 +331,7 @@ export default function StudioPage() {
                 await handleEnhanceEpisode(store.currentEpisodeId, mode)
               }}
               onGenerateAsset={handleGenerateShotAsset}
+              onInpaintShot={handleInpaintShot}
               onUpdateShot={(shotId, updates) => store.updateShot(shotId, updates)}
               onUpdateEpisode={async (updates) => {
                 if (!store.currentEpisodeId) return
@@ -522,8 +536,10 @@ function SeriesOverview({
   const [editingBible, setEditingBible] = useState(false)
   const [bibleDraft, setBibleDraft] = useState(series.series_bible || '')
   const [showScriptPreview, setShowScriptPreview] = useState(false)
+  const [showElementLibrary, setShowElementLibrary] = useState(false)
   const [showElementDialog, setShowElementDialog] = useState(false)
   const [editingElement, setEditingElement] = useState<StudioElement | null>(null)
+  const [historyElement, setHistoryElement] = useState<StudioElement | null>(null)
 
   useEffect(() => {
     setBibleDraft(series.series_bible || '')
@@ -691,6 +707,12 @@ function SeriesOverview({
                 收藏
               </button>
               <button
+                onClick={() => setShowElementLibrary(true)}
+                className="px-2 py-1 rounded text-xs bg-gray-800 hover:bg-gray-700 text-gray-300"
+              >
+                素材库视图
+              </button>
+              <button
                 onClick={() => {
                   setEditingElement(null)
                   setShowElementDialog(true)
@@ -767,6 +789,14 @@ function SeriesOverview({
                   {generating ? <Loader2 className="w-3 h-3 animate-spin" /> : <ImageIcon className="w-3 h-3" />}
                   生成参考图
                 </button>
+                {el.image_history && el.image_history.length > 0 && (
+                  <button
+                    onClick={() => setHistoryElement(el)}
+                    className="mt-2 ml-2 text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"
+                  >
+                    历史({el.image_history.length})
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -854,6 +884,27 @@ function SeriesOverview({
           onClose={() => setShowScriptPreview(false)}
         />
       )}
+
+      {historyElement && (
+        <ImageHistoryDialog
+          title={`${historyElement.name} · 图片历史`}
+          current={historyElement.image_url}
+          history={historyElement.image_history || []}
+          onClose={() => setHistoryElement(null)}
+          onApply={(url) => {
+            onUpdateElement(historyElement.id, { image_url: url })
+            setHistoryElement(null)
+          }}
+        />
+      )}
+
+      {showElementLibrary && (
+        <ElementLibraryPanel
+          sharedElements={elements}
+          episodeElements={[]}
+          onClose={() => setShowElementLibrary(false)}
+        />
+      )}
     </div>
   )
 }
@@ -866,10 +917,12 @@ function EpisodeWorkbench({
   episode,
   shots,
   elements,
+  episodeElements,
   onBack,
   onPlan,
   onEnhance,
   onGenerateAsset,
+  onInpaintShot,
   onUpdateShot,
   onUpdateEpisode,
   onBatchGenerate,
@@ -879,10 +932,12 @@ function EpisodeWorkbench({
   episode: StudioEpisode
   shots: StudioShot[]
   elements: StudioElement[]
+  episodeElements: StudioEpisodeElement[]
   onBack: () => void
   onPlan: () => void | Promise<void>
   onEnhance: (mode: 'refine' | 'expand') => void | Promise<void>
-  onGenerateAsset: (shotId: string, stage: 'frame' | 'video' | 'audio') => void | Promise<void>
+  onGenerateAsset: (shotId: string, stage: 'frame' | 'end_frame' | 'video' | 'audio') => void | Promise<void>
+  onInpaintShot: (shotId: string, payload: { editPrompt: string; maskData?: string }) => void | Promise<void>
   onUpdateShot: (shotId: string, updates: Record<string, unknown>) => void | Promise<void>
   onUpdateEpisode: (updates: Record<string, unknown>) => void | Promise<void>
   onBatchGenerate: (stages?: string[]) => void | Promise<void>
@@ -891,6 +946,7 @@ function EpisodeWorkbench({
 }) {
   const [selectedShotId, setSelectedShotId] = useState<string | null>(null)
   const [showScriptEditor, setShowScriptEditor] = useState(false)
+  const [showElementLibrary, setShowElementLibrary] = useState(false)
   const [titleDraft, setTitleDraft] = useState(episode.title || '')
   const [summaryDraft, setSummaryDraft] = useState(episode.summary || '')
   const [scriptDraft, setScriptDraft] = useState(episode.script_excerpt || '')
@@ -930,6 +986,13 @@ function EpisodeWorkbench({
           <span className="text-xs text-gray-500">{episode.status}</span>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowElementLibrary(true)}
+            className="flex items-center gap-1 px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-xs text-gray-300 transition-colors"
+          >
+            <Layers className="w-3 h-3" />
+            素材库
+          </button>
           <button
             onClick={() => setShowScriptEditor((v) => !v)}
             className="flex items-center gap-1 px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-xs text-gray-300 transition-colors"
@@ -1024,6 +1087,7 @@ function EpisodeWorkbench({
                   isSelected={shot.id === selectedShotId}
                   onClick={() => setSelectedShotId(shot.id === selectedShotId ? null : shot.id)}
                   onGenerateFrame={() => onGenerateAsset(shot.id, 'frame')}
+                  onGenerateEndFrame={() => onGenerateAsset(shot.id, 'end_frame')}
                   onGenerateVideo={() => onGenerateAsset(shot.id, 'video')}
                   onGenerateAudio={() => onGenerateAsset(shot.id, 'audio')}
                   generating={generating}
@@ -1039,12 +1103,22 @@ function EpisodeWorkbench({
             <ShotDetailPanel
               shot={selectedShot}
               elements={elements}
+              onGenerateAsset={(stage) => onGenerateAsset(selectedShot.id, stage)}
+              onInpaint={(payload) => onInpaintShot(selectedShot.id, payload)}
               onUpdate={(updates) => onUpdateShot(selectedShot.id, updates)}
               onClose={() => setSelectedShotId(null)}
             />
           </div>
         )}
       </div>
+
+      {showElementLibrary && (
+        <ElementLibraryPanel
+          sharedElements={elements}
+          episodeElements={episodeElements}
+          onClose={() => setShowElementLibrary(false)}
+        />
+      )}
     </div>
   )
 }
@@ -1059,6 +1133,7 @@ function ShotCard({
   isSelected,
   onClick,
   onGenerateFrame,
+  onGenerateEndFrame,
   onGenerateVideo,
   onGenerateAudio,
   generating,
@@ -1068,6 +1143,7 @@ function ShotCard({
   isSelected: boolean
   onClick: () => void
   onGenerateFrame: () => void
+  onGenerateEndFrame: () => void
   onGenerateVideo: () => void
   onGenerateAudio: () => void
   generating: boolean
@@ -1100,6 +1176,11 @@ function ShotCard({
         <div className="absolute top-1 right-1 bg-black/60 text-white text-xs px-1.5 py-0.5 rounded">
           {shot.duration}s
         </div>
+        {shot.end_image_url && (
+          <div className="absolute bottom-1 left-1 w-12 h-8 rounded border border-white/30 overflow-hidden bg-black/40">
+            <img src={shot.end_image_url} alt="end-frame" className="w-full h-full object-cover" />
+          </div>
+        )}
         {shot.video_url && (
           <div className="absolute bottom-1 right-1 bg-green-500/80 text-white text-xs px-1.5 py-0.5 rounded flex items-center gap-0.5">
             <Video className="w-3 h-3" />
@@ -1118,8 +1199,8 @@ function ShotCard({
         )}
 
         {/* 操作按钮 */}
-        <div className="flex items-center gap-1">
-          {!shot.start_image_url && (
+        <div className="flex items-center gap-1 flex-wrap">
+          {!shot.start_image_url ? (
             <button
               onClick={(e) => { e.stopPropagation(); onGenerateFrame() }}
               disabled={generating}
@@ -1128,25 +1209,44 @@ function ShotCard({
               <ImageIcon className="w-3 h-3" />
               帧
             </button>
+          ) : (
+            <button
+              onClick={(e) => { e.stopPropagation(); onGenerateFrame() }}
+              disabled={generating}
+              className="text-xs px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 disabled:opacity-50 flex items-center gap-1 transition-colors"
+            >
+              <RefreshCw className="w-3 h-3" />
+              重做帧
+            </button>
           )}
-          {shot.start_image_url && !shot.video_url && (
+          {shot.end_prompt && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onGenerateEndFrame() }}
+              disabled={generating}
+              className="text-xs px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 disabled:opacity-50 flex items-center gap-1 transition-colors"
+            >
+              <ImageIcon className="w-3 h-3" />
+              {shot.end_image_url ? '重做尾帧' : '尾帧'}
+            </button>
+          )}
+          {shot.start_image_url && (
             <button
               onClick={(e) => { e.stopPropagation(); onGenerateVideo() }}
               disabled={generating}
               className="text-xs px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 disabled:opacity-50 flex items-center gap-1 transition-colors"
             >
-              <Video className="w-3 h-3" />
-              视频
+              {shot.video_url ? <RefreshCw className="w-3 h-3" /> : <Video className="w-3 h-3" />}
+              {shot.video_url ? '重做视频' : '视频'}
             </button>
           )}
-          {(shot.narration || shot.dialogue_script) && !shot.audio_url && (
+          {(shot.narration || shot.dialogue_script) && (
             <button
               onClick={(e) => { e.stopPropagation(); onGenerateAudio() }}
               disabled={generating}
               className="text-xs px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 disabled:opacity-50 flex items-center gap-1 transition-colors"
             >
-              <Mic className="w-3 h-3" />
-              音频
+              {shot.audio_url ? <RefreshCw className="w-3 h-3" /> : <Mic className="w-3 h-3" />}
+              {shot.audio_url ? '重做音频' : '音频'}
             </button>
           )}
           {shot.status === 'completed' && (
@@ -1165,15 +1265,28 @@ function ShotCard({
 function ShotDetailPanel({
   shot,
   elements,
+  onGenerateAsset,
+  onInpaint,
   onUpdate,
   onClose,
 }: {
   shot: StudioShot
   elements: StudioElement[]
+  onGenerateAsset: (stage: 'frame' | 'end_frame' | 'video' | 'audio') => void | Promise<void>
+  onInpaint: (payload: { editPrompt: string; maskData?: string }) => void | Promise<void>
   onUpdate: (updates: Record<string, unknown>) => void
   onClose: () => void
 }) {
   const [editing, setEditing] = useState<Record<string, string>>({})
+  const [inpaintPrompt, setInpaintPrompt] = useState((shot.prompt || shot.description || '').trim())
+  const [maskData, setMaskData] = useState('')
+  const [inpainting, setInpainting] = useState(false)
+
+  useEffect(() => {
+    setInpaintPrompt((shot.prompt || shot.description || '').trim())
+    setMaskData('')
+    setInpainting(false)
+  }, [shot.id, shot.prompt, shot.description])
 
   const handleSave = (field: string) => {
     if (editing[field] !== undefined) {
@@ -1189,6 +1302,20 @@ function ShotDetailPanel({
   const fieldValue = (field: string) =>
     editing[field] !== undefined ? editing[field] : (shot as unknown as Record<string, unknown>)[field] as string || ''
 
+  const handleInpaint = async () => {
+    const prompt = inpaintPrompt.trim()
+    if (!shot.start_image_url || !prompt) return
+    setInpainting(true)
+    try {
+      await onInpaint({
+        editPrompt: prompt,
+        maskData: maskData.trim() || undefined,
+      })
+    } finally {
+      setInpainting(false)
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -1198,8 +1325,84 @@ function ShotDetailPanel({
         </button>
       </div>
 
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          onClick={() => onGenerateAsset('frame')}
+          className="text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 flex items-center justify-center gap-1"
+        >
+          <ImageIcon className="w-3 h-3" />
+          {shot.start_image_url ? '重做首帧' : '生成首帧'}
+        </button>
+        <button
+          onClick={() => onGenerateAsset('end_frame')}
+          className="text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 flex items-center justify-center gap-1"
+        >
+          <ImageIcon className="w-3 h-3" />
+          {shot.end_image_url ? '重做尾帧' : '生成尾帧'}
+        </button>
+        <button
+          onClick={() => onGenerateAsset('video')}
+          className="text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 flex items-center justify-center gap-1"
+        >
+          <Video className="w-3 h-3" />
+          {shot.video_url ? '重做视频' : '生成视频'}
+        </button>
+        <button
+          onClick={() => onGenerateAsset('audio')}
+          className="text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 flex items-center justify-center gap-1"
+        >
+          <Mic className="w-3 h-3" />
+          {shot.audio_url ? '重做音频' : '生成音频'}
+        </button>
+      </div>
+
+      <div className="p-3 rounded-lg border border-gray-800 bg-gray-900/70 space-y-2">
+        <p className="text-xs font-medium text-gray-300">局部重绘（Inpaint）</p>
+        <textarea
+          rows={3}
+          value={inpaintPrompt}
+          onChange={(e) => setInpaintPrompt(e.target.value)}
+          placeholder="描述需要修改的局部效果，例如：将人物手中的道具改为折扇，保持服饰和背景不变"
+          className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-purple-500 resize-y"
+        />
+        <textarea
+          rows={2}
+          value={maskData}
+          onChange={(e) => setMaskData(e.target.value)}
+          placeholder="可选：mask 数据（base64 / URL / JSON）。当前未接入画布选区时可留空"
+          className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-purple-500 resize-y"
+        />
+        <button
+          onClick={handleInpaint}
+          disabled={!shot.start_image_url || !inpaintPrompt.trim() || inpainting}
+          className="w-full text-xs px-2 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50 flex items-center justify-center gap-1 transition-colors"
+        >
+          {inpainting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+          {!shot.start_image_url ? '请先生成首帧' : '执行局部重绘'}
+        </button>
+      </div>
+
       {/* 基本信息 */}
       <div className="space-y-3">
+        <DetailField
+          label="时长（秒）"
+          value={String(fieldValue('duration') || '')}
+          onChange={(v) => setEditing((p) => ({ ...p, duration: v }))}
+          onBlur={() => {
+            const raw = editing.duration
+            if (raw !== undefined) {
+              const duration = Number(raw)
+              if (!Number.isNaN(duration) && duration > 0) {
+                onUpdate({ duration })
+              }
+              setEditing((prev) => {
+                const next = { ...prev }
+                delete next.duration
+                return next
+              })
+            }
+          }}
+        />
         <DetailField
           label="描述"
           value={fieldValue('description')}
@@ -1212,6 +1415,13 @@ function ShotDetailPanel({
           value={fieldValue('prompt')}
           onChange={(v) => setEditing((p) => ({ ...p, prompt: v }))}
           onBlur={() => handleSave('prompt')}
+          multiline
+        />
+        <DetailField
+          label="尾帧提示词"
+          value={fieldValue('end_prompt')}
+          onChange={(v) => setEditing((p) => ({ ...p, end_prompt: v }))}
+          onBlur={() => handleSave('end_prompt')}
           multiline
         />
         <DetailField
@@ -1236,6 +1446,55 @@ function ShotDetailPanel({
           multiline
         />
       </div>
+
+      <VisualActionDesigner
+        value={(shot.visual_action || {}) as Record<string, unknown>}
+        onChange={(visualAction) => onUpdate({ visual_action: visualAction })}
+        onApplyToPrompt={(text) => {
+          const current = fieldValue('video_prompt')
+          const next = current ? `${current}\n${text}` : text
+          onUpdate({ video_prompt: next })
+        }}
+      />
+
+      {(shot.frame_history && shot.frame_history.length > 0) && (
+        <div>
+          <p className="text-xs text-gray-500 mb-1">首帧历史（{shot.frame_history.length}）</p>
+          <div className="grid grid-cols-3 gap-2">
+            {shot.frame_history.slice().reverse().map((url, idx) => (
+              <button
+                key={`${url}_${idx}`}
+                onClick={() => onUpdate({ start_image_url: url })}
+                className="relative aspect-video rounded border border-gray-700 overflow-hidden hover:border-purple-500"
+                title="点击设为当前首帧"
+              >
+                <img src={url} alt="frame-history" className="w-full h-full object-cover" />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {(shot.video_history && shot.video_history.length > 0) && (
+        <div>
+          <p className="text-xs text-gray-500 mb-1">视频历史（{shot.video_history.length}）</p>
+          <div className="space-y-1">
+            {shot.video_history.slice().reverse().map((url, idx) => (
+              <div key={`${url}_${idx}`} className="flex items-center gap-2">
+                <a href={url} target="_blank" rel="noreferrer" className="text-xs text-purple-300 truncate flex-1">
+                  {url}
+                </a>
+                <button
+                  onClick={() => onUpdate({ video_url: url })}
+                  className="text-xs px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-200"
+                >
+                  设为当前
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 引用的共享元素 */}
       {elements.length > 0 && (
@@ -1287,6 +1546,319 @@ function DetailField({
           onBlur={onBlur}
         />
       )}
+    </div>
+  )
+}
+
+function ElementLibraryPanel({
+  sharedElements,
+  episodeElements,
+  onClose,
+}: {
+  sharedElements: StudioElement[]
+  episodeElements: StudioEpisodeElement[]
+  onClose: () => void
+}) {
+  const [keyword, setKeyword] = useState('')
+  const [typeFilter, setTypeFilter] = useState<'all' | 'character' | 'scene' | 'object'>('all')
+  const [favoriteOnly, setFavoriteOnly] = useState(false)
+
+  const norm = keyword.trim().toLowerCase()
+  const filterByKeyword = (name: string, desc: string) =>
+    !norm || `${name} ${desc}`.toLowerCase().includes(norm)
+
+  const sharedFiltered = sharedElements.filter((el) => {
+    if (typeFilter !== 'all' && el.type !== typeFilter) return false
+    if (favoriteOnly && el.is_favorite !== 1) return false
+    return filterByKeyword(el.name, el.description)
+  })
+
+  const episodeOnly = episodeElements.filter((el) => !el.shared_element_id).filter((el) => {
+    if (typeFilter !== 'all' && el.type !== typeFilter) return false
+    return filterByKeyword(el.name, el.description)
+  })
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+      <div className="bg-gray-900 rounded-xl border border-gray-700 w-full max-w-5xl max-h-[90vh] overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold text-gray-100">素材库</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="p-4 border-b border-gray-800 space-y-2">
+          <input
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            placeholder="搜索名称或描述..."
+            className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+          />
+          <div className="flex items-center gap-2 flex-wrap">
+            {(['all', 'character', 'scene', 'object'] as const).map((type) => (
+              <button
+                key={type}
+                onClick={() => setTypeFilter(type)}
+                className={`px-2 py-1 rounded text-xs ${
+                  typeFilter === type ? 'bg-purple-700/60 text-purple-100' : 'bg-gray-800 text-gray-400 hover:text-white'
+                }`}
+              >
+                {type === 'all' ? '全部' : type === 'character' ? '角色' : type === 'scene' ? '场景' : '道具'}
+              </button>
+            ))}
+            <button
+              onClick={() => setFavoriteOnly((v) => !v)}
+              className={`px-2 py-1 rounded text-xs flex items-center gap-1 ${
+                favoriteOnly ? 'bg-yellow-700/50 text-yellow-200' : 'bg-gray-800 text-gray-400 hover:text-white'
+              }`}
+            >
+              <Star className="w-3 h-3" />
+              仅收藏
+            </button>
+          </div>
+        </div>
+        <div className="p-4 overflow-y-auto max-h-[calc(90vh-130px)] space-y-5">
+          <section>
+            <h4 className="text-sm font-medium text-gray-300 mb-2">系列共享素材（{sharedFiltered.length}）</h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {sharedFiltered.map((el) => (
+                <div key={el.id} className="p-3 rounded-lg border border-gray-800 bg-gray-950/60">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs px-1.5 py-0.5 rounded bg-gray-800 text-gray-400">{el.type}</span>
+                    <span className="text-sm text-gray-200 truncate">{el.name}</span>
+                    {el.is_favorite === 1 && <Star className="w-3.5 h-3.5 text-yellow-300 ml-auto" />}
+                  </div>
+                  {el.image_url ? (
+                    <img src={el.image_url} alt={el.name} className="w-full h-24 rounded object-cover mb-2" />
+                  ) : (
+                    <div className="w-full h-24 rounded bg-gray-800 mb-2 flex items-center justify-center text-gray-600">
+                      <ImageIcon className="w-5 h-5" />
+                    </div>
+                  )}
+                  <p className="text-xs text-gray-400 line-clamp-3">{el.description}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section>
+            <h4 className="text-sm font-medium text-gray-300 mb-2">本集特有素材（{episodeOnly.length}）</h4>
+            {episodeOnly.length === 0 ? (
+              <p className="text-xs text-gray-500">暂无本集特有素材</p>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {episodeOnly.map((el) => (
+                  <div key={el.id} className="p-3 rounded-lg border border-gray-800 bg-gray-950/60">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-blue-900/30 text-blue-300">{el.type}</span>
+                      <span className="text-sm text-gray-200 truncate">{el.name}</span>
+                    </div>
+                    <p className="text-xs text-gray-400 line-clamp-3">{el.description}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const GRID_POSITIONS = [
+  'TL', 'TC', 'TR',
+  'ML', 'MC', 'MR',
+  'BL', 'BC', 'BR',
+] as const
+
+function VisualActionDesigner({
+  value,
+  onChange,
+  onApplyToPrompt,
+}: {
+  value: Record<string, unknown>
+  onChange: (next: Record<string, unknown>) => void
+  onApplyToPrompt: (text: string) => void
+}) {
+  const [subject, setSubject] = useState((value.subject as string) || '主体')
+  const [fromPos, setFromPos] = useState((value.from as string) || 'MC')
+  const [toPos, setToPos] = useState((value.to as string) || 'TR')
+  const [motion, setMotion] = useState((value.motion as string) || '缓慢转身并移动')
+  const [pickTarget, setPickTarget] = useState<'from' | 'to'>('from')
+
+  useEffect(() => {
+    setSubject((value.subject as string) || '主体')
+    setFromPos((value.from as string) || 'MC')
+    setToPos((value.to as string) || 'TR')
+    setMotion((value.motion as string) || '缓慢转身并移动')
+  }, [value])
+
+  const description = `${subject} 从画面 ${fromPos} 向 ${toPos} 运动，${motion}。`
+
+  const persist = () => {
+    onChange({
+      subject,
+      from: fromPos,
+      to: toPos,
+      motion,
+      generated_text: description,
+    })
+  }
+
+  return (
+    <div className="p-3 rounded-lg border border-gray-800 bg-gray-900/70 space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium text-gray-300">视觉动作设计（3×3）</p>
+        <button
+          onClick={() => {
+            persist()
+            onApplyToPrompt(`动作设计: ${description}`)
+          }}
+          className="text-xs px-2 py-1 rounded bg-purple-600 hover:bg-purple-500 text-white"
+        >
+          应用到视频提示词
+        </button>
+      </div>
+      <div className="grid grid-cols-3 gap-1 w-36">
+        {GRID_POSITIONS.map((pos) => {
+          const isFrom = pos === fromPos
+          const isTo = pos === toPos
+          return (
+            <button
+              key={pos}
+              onClick={() => {
+                if (pickTarget === 'from') {
+                  setFromPos(pos)
+                  onChange({
+                    subject,
+                    from: pos,
+                    to: toPos,
+                    motion,
+                    generated_text: `${subject} 从画面 ${pos} 向 ${toPos} 运动，${motion}。`,
+                  })
+                } else {
+                  setToPos(pos)
+                  onChange({
+                    subject,
+                    from: fromPos,
+                    to: pos,
+                    motion,
+                    generated_text: `${subject} 从画面 ${fromPos} 向 ${pos} 运动，${motion}。`,
+                  })
+                }
+              }}
+              className={`h-8 text-[10px] rounded border ${
+                isFrom ? 'border-blue-400 bg-blue-900/30 text-blue-200' :
+                isTo ? 'border-green-400 bg-green-900/30 text-green-200' :
+                'border-gray-700 bg-gray-800 text-gray-500'
+              }`}
+              title={pos}
+            >
+              {pos}
+            </button>
+          )
+        })}
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          onClick={() => setPickTarget('from')}
+          className={`text-xs px-2 py-1 rounded ${pickTarget === 'from' ? 'bg-blue-700/50 text-blue-100' : 'bg-gray-800 text-gray-400'}`}
+        >
+          点击网格设置起点
+        </button>
+        <button
+          onClick={() => setPickTarget('to')}
+          className={`text-xs px-2 py-1 rounded ${pickTarget === 'to' ? 'bg-green-700/50 text-green-100' : 'bg-gray-800 text-gray-400'}`}
+        >
+          点击网格设置终点
+        </button>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <input
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+          onBlur={persist}
+          placeholder="主体"
+          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+        />
+        <input
+          value={motion}
+          onChange={(e) => setMotion(e.target.value)}
+          onBlur={persist}
+          placeholder="动作描述"
+          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <select
+          value={fromPos}
+          onChange={(e) => {
+            setFromPos(e.target.value)
+            onChange({ ...value, from: e.target.value, to: toPos, subject, motion })
+          }}
+          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+        >
+          {GRID_POSITIONS.map((p) => <option key={p} value={p}>起点 {p}</option>)}
+        </select>
+        <select
+          value={toPos}
+          onChange={(e) => {
+            setToPos(e.target.value)
+            onChange({ ...value, from: fromPos, to: e.target.value, subject, motion })
+          }}
+          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+        >
+          {GRID_POSITIONS.map((p) => <option key={p} value={p}>终点 {p}</option>)}
+        </select>
+      </div>
+      <p className="text-xs text-gray-400">{description}</p>
+    </div>
+  )
+}
+
+function ImageHistoryDialog({
+  title,
+  current,
+  history,
+  onClose,
+  onApply,
+}: {
+  title: string
+  current: string
+  history: string[]
+  onClose: () => void
+  onApply: (url: string) => void
+}) {
+  const list = [current, ...history.slice().reverse()].filter((url, idx, arr) => !!url && arr.indexOf(url) === idx)
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+      <div className="bg-gray-900 rounded-xl border border-gray-700 w-full max-w-4xl max-h-[90vh] overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-gray-200">{title}</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="p-4 grid grid-cols-2 md:grid-cols-3 gap-3 overflow-y-auto max-h-[78vh]">
+          {list.map((url, idx) => (
+            <button
+              key={`${url}_${idx}`}
+              onClick={() => onApply(url)}
+              className={`text-left rounded-lg border overflow-hidden ${
+                url === current ? 'border-purple-500' : 'border-gray-800 hover:border-purple-600'
+              }`}
+            >
+              <div className="aspect-video bg-gray-800">
+                <img src={url} alt={`history-${idx}`} className="w-full h-full object-cover" />
+              </div>
+              <div className="px-2 py-1 text-xs text-gray-300">
+                {idx === 0 ? '当前' : `历史 #${idx}`}
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }

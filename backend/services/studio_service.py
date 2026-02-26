@@ -224,6 +224,26 @@ class StudioService:
             max_tokens=max_tokens,
         )
 
+    def _default_frame_size(self) -> tuple[int, int]:
+        raw_w = self.generation_defaults.get("frame_width", 1280)
+        raw_h = self.generation_defaults.get("frame_height", 720)
+        try:
+            w = max(64, int(raw_w))
+        except Exception:
+            w = 1280
+        try:
+            h = max(64, int(raw_h))
+        except Exception:
+            h = 720
+        return w, h
+
+    def _default_video_duration(self) -> float:
+        raw = self.generation_defaults.get("video_duration_seconds", 6.0)
+        try:
+            return max(1.0, float(raw))
+        except Exception:
+            return 6.0
+
     # ------------------------------------------------------------------
     # A. 大脚本分幕拆解
     # ------------------------------------------------------------------
@@ -254,7 +274,7 @@ class StudioService:
         raw = await self._llm_call(
             user_prompt=user_prompt,
             system_prompt=SCRIPT_SPLIT_SYSTEM_PROMPT,
-            max_tokens=8000,
+            max_tokens=int(self.generation_defaults.get("split_max_tokens", 8000)),
             temperature=0.5,
         )
 
@@ -461,7 +481,7 @@ class StudioService:
         raw = await self._llm_call(
             user_prompt=user_prompt,
             system_prompt=EPISODE_PLANNING_SYSTEM_PROMPT,
-            max_tokens=16000,
+            max_tokens=int(self.generation_defaults.get("plan_max_tokens", 16000)),
             temperature=0.7,
         )
 
@@ -508,6 +528,7 @@ class StudioService:
                     "duration": shot.get("duration", 6.0),
                     "description": shot.get("description", ""),
                     "prompt": shot.get("prompt", ""),
+                    "end_prompt": shot.get("end_prompt", ""),
                     "video_prompt": shot.get("video_prompt", ""),
                     "narration": shot.get("narration", ""),
                     "dialogue_script": shot.get("dialogue_script", ""),
@@ -576,7 +597,7 @@ class StudioService:
         raw = await self._llm_call(
             user_prompt=user_prompt,
             system_prompt=EPISODE_ENHANCE_SYSTEM_PROMPT,
-            max_tokens=16000,
+            max_tokens=int(self.generation_defaults.get("enhance_max_tokens", 16000)),
             temperature=0.7,
         )
 
@@ -597,7 +618,7 @@ class StudioService:
             if not shot_id:
                 continue
             updates = {}
-            for field in ("description", "prompt", "video_prompt", "narration", "dialogue_script", "duration"):
+            for field in ("description", "prompt", "end_prompt", "video_prompt", "narration", "dialogue_script", "duration"):
                 if field in sp:
                     updates[field] = sp[field]
             if updates:
@@ -669,6 +690,10 @@ class StudioService:
                 context={"element_id": element_id},
             )
 
+        default_w, default_h = self._default_frame_size()
+        width = int(width or default_w)
+        height = int(height or default_h)
+
         prompt = el["description"]
         ref_images = el.get("reference_images") or []
 
@@ -713,6 +738,10 @@ class StudioService:
                 context={"shot_id": shot_id},
             )
 
+        default_w, default_h = self._default_frame_size()
+        width = int(width or default_w)
+        height = int(height or default_h)
+
         # 解析 prompt 中的 [SE_XXX] 引用，替换为元素描述
         prompt = self._resolve_element_refs(shot["prompt"], shot["episode_id"])
 
@@ -728,9 +757,187 @@ class StudioService:
 
         url = result.get("url", "")
         if url:
-            self.storage.update_shot(shot_id, {"start_image_url": url})
+            history = shot.get("frame_history") or []
+            if not isinstance(history, list):
+                history = []
+            if shot.get("start_image_url"):
+                history.append(shot["start_image_url"])
+            self.storage.update_shot(shot_id, {
+                "start_image_url": url,
+                "frame_history": history,
+            })
 
         return {"shot_id": shot_id, "start_image_url": url, "result": result}
+
+    async def generate_shot_end_frame(
+        self,
+        shot_id: str,
+        width: int = 1280,
+        height: int = 720,
+    ) -> Dict[str, Any]:
+        """为镜头生成尾帧。"""
+        if not self.image:
+            raise StudioServiceError(
+                "Studio 图像服务未配置",
+                error_code="config_missing_image",
+            )
+
+        shot = self.storage.get_shot(shot_id)
+        if not shot:
+            raise StudioServiceError(
+                f"镜头 {shot_id} 不存在",
+                error_code="shot_not_found",
+                context={"shot_id": shot_id},
+            )
+
+        default_w, default_h = self._default_frame_size()
+        width = int(width or default_w)
+        height = int(height or default_h)
+
+        prompt_text = (shot.get("end_prompt") or shot.get("video_prompt") or shot.get("prompt") or "").strip()
+        prompt = self._resolve_element_refs(prompt_text, shot["episode_id"])
+        ref_images = self._collect_ref_images(prompt_text, shot["episode_id"])
+        if shot.get("start_image_url"):
+            ref_images.append(shot["start_image_url"])
+
+        result = await self.image.generate(
+            prompt=prompt,
+            reference_images=ref_images if ref_images else None,
+            width=width,
+            height=height,
+        )
+
+        url = result.get("url", "")
+        if url:
+            self.storage.update_shot(shot_id, {"end_image_url": url})
+
+        return {"shot_id": shot_id, "end_image_url": url, "result": result}
+
+    async def inpaint_shot_frame(
+        self,
+        shot_id: str,
+        edit_prompt: str,
+        mask_data: Optional[str] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """镜头首帧局部重绘（若后端不支持原生 inpaint，则回退为参考图重生成）。"""
+        if not self.image:
+            raise StudioServiceError(
+                "Studio 图像服务未配置",
+                error_code="config_missing_image",
+            )
+
+        shot = self.storage.get_shot(shot_id)
+        if not shot:
+            raise StudioServiceError(
+                f"镜头 {shot_id} 不存在",
+                error_code="shot_not_found",
+                context={"shot_id": shot_id},
+            )
+
+        current_url = (shot.get("start_image_url") or "").strip()
+        if not current_url:
+            raise StudioServiceError(
+                f"镜头 {shot_id} 尚未生成起始帧，请先生成图片",
+                error_code="shot_missing_start_frame",
+                context={"shot_id": shot_id},
+            )
+
+        base_prompt = (edit_prompt or "").strip()
+        if not base_prompt:
+            base_prompt = (shot.get("prompt") or shot.get("description") or "").strip()
+        if not base_prompt:
+            raise StudioServiceError(
+                "局部重绘提示词不能为空",
+                error_code="invalid_inpaint_prompt",
+                context={"shot_id": shot_id},
+            )
+
+        default_w, default_h = self._default_frame_size()
+        frame_w = int(width or default_w)
+        frame_h = int(height or default_h)
+
+        prompt = self._resolve_element_refs(base_prompt, shot["episode_id"])
+        ref_images = self._collect_ref_images(base_prompt, shot["episode_id"])
+        if current_url:
+            ref_images = [current_url, *[u for u in ref_images if u != current_url]]
+
+        mode = "fallback_regenerate"
+        note = "当前图像服务未实现 inpaint，已回退为参考图重生成"
+
+        native_inpaint = getattr(self.image, "inpaint", None)
+        if callable(native_inpaint):
+            try:
+                native_result = await native_inpaint(
+                    image_url=current_url,
+                    prompt=prompt,
+                    mask_data=mask_data,
+                    width=frame_w,
+                    height=frame_h,
+                )
+                if isinstance(native_result, str):
+                    result = {"url": native_result}
+                elif isinstance(native_result, dict):
+                    result = native_result
+                else:
+                    result = {}
+                mode = "inpaint"
+                note = ""
+            except NotImplementedError:
+                result = await self.image.generate(
+                    prompt=prompt,
+                    reference_images=ref_images if ref_images else [current_url],
+                    width=frame_w,
+                    height=frame_h,
+                )
+            except TypeError as te:
+                # 兼容 inpaint 方法签名不一致的实现
+                if "unexpected keyword" not in str(te):
+                    raise
+                result = await self.image.generate(
+                    prompt=prompt,
+                    reference_images=ref_images if ref_images else [current_url],
+                    width=frame_w,
+                    height=frame_h,
+                )
+            except Exception:
+                raise
+        else:
+            result = await self.image.generate(
+                prompt=prompt,
+                reference_images=ref_images if ref_images else [current_url],
+                width=frame_w,
+                height=frame_h,
+            )
+
+        url = result.get("url", "")
+        if not url:
+            raise StudioServiceError(
+                "局部重绘未返回有效图片",
+                error_code="inpaint_empty_result",
+                context={"shot_id": shot_id, "mode": mode},
+            )
+
+        history = shot.get("frame_history") or []
+        if not isinstance(history, list):
+            history = []
+        if current_url:
+            history.append(current_url)
+        self.storage.update_shot(shot_id, {
+            "start_image_url": url,
+            "frame_history": history,
+        })
+
+        payload: Dict[str, Any] = {
+            "shot_id": shot_id,
+            "start_image_url": url,
+            "mode": mode,
+            "result": result,
+        }
+        if note:
+            payload["note"] = note
+        return payload
 
     async def generate_shot_video(
         self,
@@ -765,15 +972,26 @@ class StudioService:
         self.storage.update_shot(shot_id, {"status": "generating"})
 
         try:
+            duration = shot.get("duration", self._default_video_duration())
+            existing_video = shot.get("video_url") or ""
+            video_history = shot.get("video_history") or []
+            if not isinstance(video_history, list):
+                video_history = []
             result = await self.video.generate(
                 image_url=shot["start_image_url"],
                 prompt=video_prompt,
-                duration=shot.get("duration", 5.0),
+                duration=duration,
+                reference_mode="first_last" if shot.get("end_image_url") else "single",
+                first_frame_url=shot.get("start_image_url"),
+                last_frame_url=shot.get("end_image_url"),
             )
 
             video_url = result.get("video_url", "")
+            if existing_video:
+                video_history.append(existing_video)
             self.storage.update_shot(shot_id, {
                 "video_url": video_url,
+                "video_history": video_history,
                 "status": "completed" if video_url else "failed",
             })
             return {"shot_id": shot_id, "video_url": video_url, "result": result}
@@ -841,11 +1059,11 @@ class StudioService:
     ) -> Dict[str, Any]:
         """批量生成单集资产
 
-        stages 可包含: "elements", "frames", "videos", "audio"
+        stages 可包含: "elements", "frames", "end_frames", "videos", "audio"
         默认全部执行。
         """
         if stages is None:
-            stages = ["elements", "frames", "videos", "audio"]
+            stages = ["elements", "frames", "end_frames", "videos", "audio"]
 
         episode = self.storage.get_episode(episode_id)
         if not episode:
@@ -884,6 +1102,19 @@ class StudioService:
                     except Exception as e:
                         frame_results.append({"shot_id": shot["id"], "error": str(e)})
             result["stages"]["frames"] = frame_results
+
+        # 2.5) 生成尾帧
+        if "end_frames" in stages:
+            end_frame_results = []
+            shots = self.storage.get_shots(episode_id)
+            for shot in shots:
+                if shot.get("end_prompt") and not shot.get("end_image_url"):
+                    try:
+                        r = await self.generate_shot_end_frame(shot["id"])
+                        end_frame_results.append(r)
+                    except Exception as e:
+                        end_frame_results.append({"shot_id": shot["id"], "error": str(e)})
+            result["stages"]["end_frames"] = end_frame_results
 
         # 3) 生成视频
         if "videos" in stages:
