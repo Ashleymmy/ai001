@@ -854,6 +854,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         const els = await api.studioGetElements(seriesId)
         set({ sharedElements: els })
       }
+      const episodeId = get().currentEpisodeId
+      if (episodeId) {
+        const shots = await api.studioGetShots(episodeId)
+        set({ shots })
+      }
       set({ generating: false, generationScope: 'none', generationMessage: '' })
       return result
     } catch (e: unknown) {

@@ -28,10 +28,54 @@ storyboard:
   model: Doubao-Seedream-4.5
   provider: custom_2dcc19a3
 tts:
-  accessToken: ''
-  appid: ''
-  cluster: volcano_tts
-  voiceType: BV700_V2_streaming
+  bailian:
+    apiKey: e523a52e21184d6ebba903585c67418d
+    baseUrl: https://openspeech.bytedance.com/api/v1/tts
+    dialogueFemaleVoiceType: ''
+    dialogueMaleVoiceType: ''
+    dialogueVoiceType: ''
+    encoding: mp3
+    model: cosyvoice-v1
+    narratorVoiceType: ''
+    rate: 24000
+    speedRatio: 1
+    workspace: ''
+  custom:
+    apiKey: ''
+    baseUrl: https://api.openai.com/v1
+    dialogueFemaleVoiceType: ''
+    dialogueMaleVoiceType: ''
+    dialogueVoiceType: ''
+    encoding: mp3
+    model: gpt-4o-mini-tts
+    narratorVoiceType: ''
+    rate: 24000
+    speedRatio: 1
+  fish:
+    apiKey: ''
+    baseUrl: ''
+    dialogueFemaleVoiceType: ''
+    dialogueMaleVoiceType: ''
+    dialogueVoiceType: ''
+    encoding: mp3
+    model: speech-1.5
+    narratorVoiceType: ''
+    rate: 24000
+    speedRatio: 1
+  provider: aliyun_bailian_tts_v2
+  volc:
+    accessToken: ''
+    appid: ''
+    cluster: volcano_tts
+    dialogueFemaleVoiceType: ''
+    dialogueMaleVoiceType: ''
+    dialogueVoiceType: ''
+    encoding: mp3
+    endpoint: https://openspeech.bytedance.com/api/v1/tts
+    model: seed-tts-1.1
+    narratorVoiceType: BV700_V2_streaming
+    rate: 24000
+    speedRatio: 1
 updated_at: '2026-02-06T15:11:13.050315'
 video:
   apiKey: 67577c84-5f7a-467f-aa59-909b8ede888a

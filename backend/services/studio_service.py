@@ -16,7 +16,16 @@ from .studio.prompt_sentinel import build_prompt_optimize_llm_payload
 from .llm_service import LLMService
 from .image_service import ImageService
 from .video_service import VideoService
-from .tts_service import VolcTTSService, VolcTTSConfig
+from .tts_service import (
+    DashScopeTTSConfig,
+    DashScopeTTSService,
+    FishTTSConfig,
+    FishTTSService,
+    OpenAITTSConfig,
+    OpenAITTSService,
+    VolcTTSConfig,
+    VolcTTSService,
+)
 
 
 class StudioServiceError(Exception):
@@ -52,7 +61,9 @@ class StudioService:
         self.llm: Optional[LLMService] = None
         self.image: Optional[ImageService] = None
         self.video: Optional[VideoService] = None
-        self.tts: Optional[VolcTTSService] = None
+        self.tts: Optional[Any] = None
+        self.tts_provider: str = "none"
+        self.tts_defaults: Dict[str, Any] = {}
         self.generation_defaults: Dict[str, Any] = {}
         self.custom_prompts: Dict[str, Dict[str, str]] = {}
 
@@ -67,6 +78,8 @@ class StudioService:
         self.image = None
         self.video = None
         self.tts = None
+        self.tts_provider = "none"
+        self.tts_defaults = {}
 
         # LLM
         llm_cfg = settings.get("llm") or {}
@@ -111,14 +124,70 @@ class StudioService:
                 print(f"[Studio] 视频服务未激活：provider={vid_provider} 缺少 API Key")
 
         # TTS
-        tts_cfg = settings.get("tts") or {}
-        if tts_cfg.get("appid") and tts_cfg.get("accessToken"):
-            config = VolcTTSConfig(
-                appid=tts_cfg["appid"],
-                access_token=tts_cfg["accessToken"],
-                cluster=tts_cfg.get("cluster", "volcano_tts"),
-            )
-            self.tts = VolcTTSService(config)
+        tts_cfg_raw = settings.get("tts") or {}
+        tts_cfg = self._normalize_tts_settings(tts_cfg_raw)
+        provider = str(tts_cfg.get("provider") or "volc_tts_v1_http").strip() or "volc_tts_v1_http"
+        self.tts_provider = provider
+        self.tts_defaults = tts_cfg
+
+        if provider == "volc_tts_v1_http":
+            volc = tts_cfg.get("volc") or {}
+            appid = str(volc.get("appid") or "").strip()
+            access_token = str(volc.get("accessToken") or "").strip()
+            if appid and access_token:
+                self.tts = VolcTTSService(
+                    VolcTTSConfig(
+                        appid=appid,
+                        access_token=access_token,
+                        endpoint=str(volc.get("endpoint") or "").strip() or "https://openspeech.bytedance.com/api/v1/tts",
+                        cluster=str(volc.get("cluster") or "").strip() or "volcano_tts",
+                        model=str(volc.get("model") or "").strip() or "seed-tts-1.1",
+                    )
+                )
+            else:
+                print("[Studio] TTS 未激活：Volc 需要 appid + accessToken")
+        elif provider.startswith("fish"):
+            fish = tts_cfg.get("fish") or {}
+            api_key = str(fish.get("apiKey") or "").strip()
+            if api_key:
+                self.tts = FishTTSService(
+                    FishTTSConfig(
+                        api_key=api_key,
+                        base_url=str(fish.get("baseUrl") or "").strip() or "https://api.fish.audio",
+                        model=str(fish.get("model") or "").strip() or "speech-1.5",
+                    )
+                )
+            else:
+                print("[Studio] TTS 未激活：Fish 需要 apiKey")
+        elif provider in {"aliyun_bailian_tts_v2", "dashscope_tts_v2"}:
+            bailian = tts_cfg.get("bailian") or {}
+            api_key = str(bailian.get("apiKey") or "").strip()
+            if api_key:
+                self.tts = DashScopeTTSService(
+                    DashScopeTTSConfig(
+                        api_key=api_key,
+                        base_url=str(bailian.get("baseUrl") or "").strip() or "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+                        model=str(bailian.get("model") or "").strip() or "cosyvoice-v1",
+                        workspace=str(bailian.get("workspace") or "").strip(),
+                    )
+                )
+            else:
+                print("[Studio] TTS 未激活：阿里百炼需要 apiKey")
+        elif provider.startswith("custom_") or provider in {"custom_openai_tts", "openai_tts_compatible", "openai_tts"}:
+            custom = tts_cfg.get("custom") or {}
+            api_key = str(custom.get("apiKey") or "").strip()
+            if api_key:
+                self.tts = OpenAITTSService(
+                    OpenAITTSConfig(
+                        api_key=api_key,
+                        base_url=str(custom.get("baseUrl") or "").strip() or "https://api.openai.com/v1",
+                        model=str(custom.get("model") or "").strip() or "gpt-4o-mini-tts",
+                    )
+                )
+            else:
+                print("[Studio] TTS 未激活：自定义 TTS 需要 apiKey")
+        else:
+            print(f"[Studio] TTS 未激活：未知 provider={provider}")
 
         # 生成默认参数
         self.generation_defaults = settings.get("generation_defaults") or {}
@@ -141,12 +210,252 @@ class StudioService:
             },
             "tts": {
                 "configured": self.tts is not None,
-                "message": "" if self.tts else "请先在设置中配置 TTS 服务",
+                "message": (
+                    ""
+                    if self.tts
+                    else f"请先在设置中配置 TTS 服务（当前 provider: {self.tts_provider or 'none'}）"
+                ),
             },
         }
         return {
             "ok": all(v["configured"] for v in services.values()),
             "services": services,
+        }
+
+    @staticmethod
+    def _normalize_tts_settings(tts_cfg_raw: Any) -> Dict[str, Any]:
+        cfg = tts_cfg_raw if isinstance(tts_cfg_raw, dict) else {}
+
+        def as_dict(value: Any) -> Dict[str, Any]:
+            return value if isinstance(value, dict) else {}
+
+        def as_text(value: Any, default: str = "") -> str:
+            text = str(value or "").strip()
+            return text if text else default
+
+        def as_int(value: Any, default: int) -> int:
+            try:
+                iv = int(value)
+                return iv if iv > 0 else default
+            except Exception:
+                return default
+
+        def as_float(value: Any, default: float) -> float:
+            try:
+                fv = float(value)
+                return fv if fv > 0 else default
+            except Exception:
+                return default
+
+        raw_provider = as_text(cfg.get("provider"), "")
+        raw_base_url = as_text(cfg.get("baseUrl") or cfg.get("base_url"), "")
+        raw_access = as_text(cfg.get("accessToken") or cfg.get("access_token"), "")
+        raw_api_key = as_text(cfg.get("apiKey") or cfg.get("api_key"), "")
+        raw_model = as_text(cfg.get("model"), "")
+        raw_voice = as_text(cfg.get("voiceType"), "")
+
+        provider = raw_provider
+        if not provider:
+            if raw_base_url and "fish.audio" in raw_base_url:
+                provider = "fish_tts_v1"
+            elif raw_base_url and "dashscope.aliyuncs.com" in raw_base_url:
+                provider = "aliyun_bailian_tts_v2"
+            else:
+                provider = "volc_tts_v1_http"
+
+        volc_raw = as_dict(cfg.get("volc"))
+        fish_raw = as_dict(cfg.get("fish"))
+        bailian_raw = as_dict(cfg.get("bailian"))
+        custom_raw = as_dict(cfg.get("custom"))
+
+        volc: Dict[str, Any] = {
+            "appid": as_text(volc_raw.get("appid") or cfg.get("appid"), ""),
+            "accessToken": as_text(
+                volc_raw.get("accessToken")
+                or (
+                    raw_access
+                    if provider not in {"fish_tts_v1", "aliyun_bailian_tts_v2", "dashscope_tts_v2"} and not provider.startswith("custom_")
+                    else ""
+                ),
+                "",
+            ),
+            "endpoint": as_text(
+                volc_raw.get("endpoint"),
+                "https://openspeech.bytedance.com/api/v1/tts",
+            ),
+            "cluster": as_text(volc_raw.get("cluster") or cfg.get("cluster"), "volcano_tts"),
+            "model": as_text(volc_raw.get("model") or raw_model, "seed-tts-1.1"),
+            "encoding": as_text(volc_raw.get("encoding") or cfg.get("encoding"), "mp3"),
+            "rate": as_int(volc_raw.get("rate") if "rate" in volc_raw else cfg.get("rate"), 24000),
+            "speedRatio": as_float(
+                volc_raw.get("speedRatio") if "speedRatio" in volc_raw else cfg.get("speedRatio"),
+                1.0,
+            ),
+            "narratorVoiceType": as_text(
+                volc_raw.get("narratorVoiceType") or cfg.get("narratorVoiceType") or raw_voice,
+                "",
+            ),
+            "dialogueVoiceType": as_text(
+                volc_raw.get("dialogueVoiceType") or cfg.get("dialogueVoiceType"),
+                "",
+            ),
+            "dialogueMaleVoiceType": as_text(
+                volc_raw.get("dialogueMaleVoiceType") or cfg.get("dialogueMaleVoiceType"),
+                "",
+            ),
+            "dialogueFemaleVoiceType": as_text(
+                volc_raw.get("dialogueFemaleVoiceType") or cfg.get("dialogueFemaleVoiceType"),
+                "",
+            ),
+        }
+
+        fish_model_default = "speech-1.5"
+        fish_model = as_text(fish_raw.get("model") or raw_model, fish_model_default)
+        if fish_model.startswith("seed-"):
+            fish_model = fish_model_default
+        fish: Dict[str, Any] = {
+            "apiKey": as_text(
+                fish_raw.get("apiKey")
+                or (
+                    raw_api_key
+                    or (
+                        raw_access
+                        if provider.startswith("fish")
+                        else ""
+                    )
+                ),
+                "",
+            ),
+            "baseUrl": as_text(
+                fish_raw.get("baseUrl")
+                or (
+                    raw_base_url
+                    if "fish.audio" in raw_base_url or provider.startswith("fish")
+                    else ""
+                ),
+                "https://api.fish.audio",
+            ),
+            "model": fish_model,
+            "encoding": as_text(fish_raw.get("encoding") or cfg.get("encoding"), "mp3"),
+            "rate": as_int(fish_raw.get("rate") if "rate" in fish_raw else cfg.get("rate"), 24000),
+            "speedRatio": as_float(
+                fish_raw.get("speedRatio") if "speedRatio" in fish_raw else cfg.get("speedRatio"),
+                1.0,
+            ),
+            "narratorVoiceType": as_text(
+                fish_raw.get("narratorVoiceType")
+                or cfg.get("narratorVoiceType")
+                or (raw_voice if provider.startswith("fish") else ""),
+                "",
+            ),
+            "dialogueVoiceType": as_text(
+                fish_raw.get("dialogueVoiceType") or cfg.get("dialogueVoiceType"),
+                "",
+            ),
+            "dialogueMaleVoiceType": as_text(
+                fish_raw.get("dialogueMaleVoiceType") or cfg.get("dialogueMaleVoiceType"),
+                "",
+            ),
+            "dialogueFemaleVoiceType": as_text(
+                fish_raw.get("dialogueFemaleVoiceType") or cfg.get("dialogueFemaleVoiceType"),
+                "",
+            ),
+        }
+
+        bailian: Dict[str, Any] = {
+            "apiKey": as_text(
+                bailian_raw.get("apiKey")
+                or (
+                    raw_api_key
+                    or (
+                        raw_access
+                        if provider in {"aliyun_bailian_tts_v2", "dashscope_tts_v2"}
+                        else ""
+                    )
+                ),
+                "",
+            ),
+            "baseUrl": as_text(
+                bailian_raw.get("baseUrl")
+                or (
+                    raw_base_url
+                    if "dashscope.aliyuncs.com" in raw_base_url
+                    else ""
+                ),
+                "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+            ),
+            "workspace": as_text(bailian_raw.get("workspace"), ""),
+            "model": as_text(bailian_raw.get("model") or raw_model, "cosyvoice-v1"),
+            "encoding": as_text(bailian_raw.get("encoding") or cfg.get("encoding"), "mp3"),
+            "rate": as_int(bailian_raw.get("rate") if "rate" in bailian_raw else cfg.get("rate"), 24000),
+            "speedRatio": as_float(
+                bailian_raw.get("speedRatio") if "speedRatio" in bailian_raw else cfg.get("speedRatio"),
+                1.0,
+            ),
+            "narratorVoiceType": as_text(
+                bailian_raw.get("narratorVoiceType")
+                or cfg.get("narratorVoiceType")
+                or (
+                    raw_voice
+                    if provider in {"aliyun_bailian_tts_v2", "dashscope_tts_v2"}
+                    else ""
+                ),
+                "",
+            ),
+            "dialogueVoiceType": as_text(
+                bailian_raw.get("dialogueVoiceType") or cfg.get("dialogueVoiceType"),
+                "",
+            ),
+            "dialogueMaleVoiceType": as_text(
+                bailian_raw.get("dialogueMaleVoiceType") or cfg.get("dialogueMaleVoiceType"),
+                "",
+            ),
+            "dialogueFemaleVoiceType": as_text(
+                bailian_raw.get("dialogueFemaleVoiceType") or cfg.get("dialogueFemaleVoiceType"),
+                "",
+            ),
+        }
+
+        custom: Dict[str, Any] = {
+            "apiKey": as_text(custom_raw.get("apiKey") or raw_api_key, ""),
+            "baseUrl": as_text(custom_raw.get("baseUrl") or raw_base_url, "https://api.openai.com/v1"),
+            "model": as_text(custom_raw.get("model") or raw_model, "gpt-4o-mini-tts"),
+            "encoding": as_text(custom_raw.get("encoding") or cfg.get("encoding"), "mp3"),
+            "rate": as_int(custom_raw.get("rate") if "rate" in custom_raw else cfg.get("rate"), 24000),
+            "speedRatio": as_float(
+                custom_raw.get("speedRatio") if "speedRatio" in custom_raw else cfg.get("speedRatio"),
+                1.0,
+            ),
+            "narratorVoiceType": as_text(
+                custom_raw.get("narratorVoiceType")
+                or cfg.get("narratorVoiceType")
+                or (
+                    raw_voice
+                    if provider.startswith("custom_") or provider in {"custom_openai_tts", "openai_tts_compatible", "openai_tts"}
+                    else ""
+                ),
+                "",
+            ),
+            "dialogueVoiceType": as_text(
+                custom_raw.get("dialogueVoiceType") or cfg.get("dialogueVoiceType"),
+                "",
+            ),
+            "dialogueMaleVoiceType": as_text(
+                custom_raw.get("dialogueMaleVoiceType") or cfg.get("dialogueMaleVoiceType"),
+                "",
+            ),
+            "dialogueFemaleVoiceType": as_text(
+                custom_raw.get("dialogueFemaleVoiceType") or cfg.get("dialogueFemaleVoiceType"),
+                "",
+            ),
+        }
+
+        return {
+            "provider": provider,
+            "volc": volc,
+            "fish": fish,
+            "bailian": bailian,
+            "custom": custom,
         }
 
     # ------------------------------------------------------------------
@@ -268,6 +577,148 @@ class StudioService:
             "画面必须为统一的二维影视概念插画；"
             "禁止切换为写实照片风、3D渲染、Q版卡通。"
         ).strip()
+
+    def _get_series_visual_style_for_episode(self, episode_id: str) -> str:
+        episode = self.storage.get_episode(episode_id)
+        if not episode:
+            return ""
+        series_id = str(episode.get("series_id") or "").strip()
+        if not series_id:
+            return ""
+        series = self.storage.get_series(series_id)
+        if not series:
+            return ""
+        return str(series.get("visual_style") or "").strip()
+
+    def _build_shot_image_prompt(
+        self,
+        shot: Dict[str, Any],
+        raw_prompt: str,
+        stage: str = "start_frame",
+    ) -> str:
+        episode_id = str(shot.get("episode_id") or "").strip()
+        resolved_prompt = self._resolve_element_refs(raw_prompt, episode_id).strip()
+        style_anchor = self._get_series_visual_style_for_episode(episode_id) or "国风叙事动画插画风格"
+        base_rules = (
+            f"整体视觉风格：{style_anchor}。"
+            "保持与同系列素材一致的角色比例、线条语言、配色与材质；"
+            "这是单张关键帧构图，禁止四宫格/分屏/拼贴海报/漫画多格排版；"
+            "禁止写实照片风、3D渲染实拍质感、文字水印和字幕。"
+        )
+        if stage == "inpaint":
+            stage_clause = "在保持主体身份与场景连续性的前提下，只修改用户要求的局部区域。"
+        elif stage == "end_frame":
+            stage_clause = "该画面用于镜头尾帧，请保持与起始帧的叙事连续性。"
+        else:
+            stage_clause = "该画面用于镜头起始帧，请聚焦单一时刻的核心视觉信息。"
+
+        if resolved_prompt:
+            return f"{resolved_prompt}\n{base_rules}{stage_clause}".strip()
+        return f"{base_rules}{stage_clause}".strip()
+
+    def _collect_shot_ref_images(
+        self,
+        shot: Dict[str, Any],
+        prompt_text: str,
+        include_start_frame: bool = False,
+        limit: int = 6,
+    ) -> List[str]:
+        episode_id = str(shot.get("episode_id") or "").strip()
+        images: List[str] = []
+
+        def push(url: Any) -> None:
+            text = str(url or "").strip()
+            if not text:
+                return
+            if text in images:
+                return
+            images.append(text)
+
+        # 优先基于当前提示词提取显式 [SE_xxx] 引用，再退回镜头其他文本字段。
+        candidates = [
+            str(prompt_text or ""),
+            str(shot.get("prompt") or ""),
+            str(shot.get("end_prompt") or ""),
+            str(shot.get("video_prompt") or ""),
+            str(shot.get("description") or ""),
+        ]
+        for text in candidates:
+            for url in self._collect_ref_images(text, episode_id):
+                push(url)
+                if len(images) >= limit:
+                    return images[:limit]
+
+        if include_start_frame:
+            push(shot.get("start_image_url"))
+            if len(images) >= limit:
+                return images[:limit]
+
+        # 若显式引用不足，回退到相邻镜头的首帧，降低同集画风漂移。
+        if episode_id and len(images) < 2:
+            shots = self.storage.get_shots(episode_id)
+            current_id = str(shot.get("id") or "").strip()
+            current_index = next(
+                (idx for idx, item in enumerate(shots) if str(item.get("id") or "").strip() == current_id),
+                -1,
+            )
+            if current_index >= 0:
+                neighbor_indexes = [
+                    current_index - 1,
+                    current_index + 1,
+                    current_index - 2,
+                    current_index + 2,
+                ]
+                for idx in neighbor_indexes:
+                    if idx < 0 or idx >= len(shots):
+                        continue
+                    push(shots[idx].get("start_image_url"))
+                    if len(images) >= limit:
+                        break
+
+        return images[:limit]
+
+    @staticmethod
+    def _normalize_element_base_name(name: str) -> str:
+        text = str(name or "").strip()
+        if not text:
+            return ""
+        # 去掉括号内阶段标注，如“石上麻吕（中年期）”/“石上麻吕(中年期)”
+        text = re.sub(r"[（(][^（）()]{0,32}[）)]", "", text).strip()
+        text = re.sub(r"\s+", "", text)
+        return text
+
+    def _collect_character_consistency_refs(
+        self,
+        element: Dict[str, Any],
+        limit: int = 3,
+    ) -> List[str]:
+        series_id = str(element.get("series_id") or "").strip()
+        if not series_id:
+            return []
+        current_id = str(element.get("id") or "").strip()
+        current_name = str(element.get("name") or "").strip()
+        base_name = self._normalize_element_base_name(current_name)
+
+        refs: List[str] = []
+        siblings = self.storage.get_shared_elements(series_id, element_type="character")
+        for sibling in siblings:
+            sibling_id = str(sibling.get("id") or "").strip()
+            if not sibling_id or sibling_id == current_id:
+                continue
+            image_url = str(sibling.get("image_url") or "").strip()
+            if not image_url:
+                continue
+
+            sibling_name = str(sibling.get("name") or "").strip()
+            sibling_base = self._normalize_element_base_name(sibling_name)
+            if base_name and sibling_base:
+                if sibling_base != base_name and base_name not in sibling_name and sibling_base not in current_name:
+                    continue
+            if image_url not in refs:
+                refs.append(image_url)
+            if len(refs) >= max(1, int(limit)):
+                break
+        return refs
 
     @staticmethod
     def _contains_multi_age_signals(text: str) -> bool:
@@ -402,6 +853,108 @@ class StudioService:
             existing_map[name.lower()] = created
 
         return created_elements, updated_elements, skipped
+
+    @staticmethod
+    def _build_split_profile_candidates(
+        profiles: List[Dict[str, Any]],
+        resolved_map: Dict[str, Dict[str, Any]],
+        old_element_id: str,
+    ) -> List[Dict[str, Any]]:
+        candidates: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for profile in profiles:
+            name = str(profile.get("name") or "").strip()
+            if not name:
+                continue
+            row = resolved_map.get(name.lower())
+            if not row:
+                continue
+            element_id = str(row.get("id") or "").strip()
+            if not element_id or element_id == old_element_id or element_id in seen_ids:
+                continue
+            seen_ids.add(element_id)
+            keywords = profile.get("keywords")
+            safe_keywords = [str(v).strip() for v in keywords] if isinstance(keywords, list) else []
+            candidates.append({
+                "element_id": element_id,
+                "name": name,
+                "stage_label": str(profile.get("stage_label") or "").strip(),
+                "keywords": [k for k in safe_keywords if k],
+            })
+        return candidates
+
+    @staticmethod
+    def _pick_split_candidate_for_context(
+        context_text: str,
+        candidates: List[Dict[str, Any]],
+    ) -> str:
+        if not candidates:
+            return ""
+        lowered = str(context_text or "").lower()
+        best_id = str(candidates[0].get("element_id") or "")
+        best_score = -1
+        for candidate in candidates:
+            score = 0
+            stage_label = str(candidate.get("stage_label") or "").strip().lower()
+            if stage_label and stage_label in lowered:
+                score += 10 + min(len(stage_label), 10)
+            name = str(candidate.get("name") or "").strip().lower()
+            if name and name in lowered:
+                score += 6
+            for kw in candidate.get("keywords") or []:
+                kw_text = str(kw or "").strip().lower()
+                if kw_text and kw_text in lowered:
+                    score += 2
+            if score > best_score:
+                best_score = score
+                best_id = str(candidate.get("element_id") or "")
+        return best_id
+
+    def _migrate_split_references_in_shots(
+        self,
+        series_id: str,
+        old_element_id: str,
+        candidates: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        token = f"[{old_element_id}]"
+        if not candidates:
+            return {"updated_shots": 0, "updated_fields": 0}
+
+        updated_shots = 0
+        updated_fields = 0
+        episodes = self.storage.list_episodes(series_id)
+        for episode in episodes:
+            episode_id = str(episode.get("id") or "")
+            if not episode_id:
+                continue
+            shots = self.storage.get_shots(episode_id)
+            for shot in shots:
+                context = " ".join([
+                    str(shot.get("name") or ""),
+                    str(shot.get("description") or ""),
+                    str(shot.get("narration") or ""),
+                    str(shot.get("dialogue_script") or ""),
+                    str(shot.get("prompt") or ""),
+                    str(shot.get("end_prompt") or ""),
+                    str(shot.get("video_prompt") or ""),
+                ])
+                replacement_id = self._pick_split_candidate_for_context(context, candidates)
+                if not replacement_id:
+                    continue
+                replacement_token = f"[{replacement_id}]"
+                updates: Dict[str, Any] = {}
+                for field in ("prompt", "end_prompt", "video_prompt"):
+                    value = str(shot.get(field) or "")
+                    if token in value:
+                        replaced = value.replace(token, replacement_token)
+                        if replaced != value:
+                            updates[field] = replaced
+                            updated_fields += 1
+                if updates:
+                    self.storage.update_shot(str(shot.get("id") or ""), updates)
+                    updated_shots += 1
+
+        return {"updated_shots": updated_shots, "updated_fields": updated_fields}
 
     async def import_character_document(
         self,
@@ -572,7 +1125,15 @@ class StudioService:
         )
 
         deleted_original = False
+        migrated_refs: Dict[str, Any] = {"updated_shots": 0, "updated_fields": 0}
         if replace_original:
+            resolved_map = self._build_existing_character_map(series_id)
+            candidates = self._build_split_profile_candidates(profiles, resolved_map, element_id)
+            migrated_refs = self._migrate_split_references_in_shots(
+                series_id=series_id,
+                old_element_id=element_id,
+                candidates=candidates,
+            )
             deleted_original = self.storage.delete_shared_element(element_id)
 
         return {
@@ -583,6 +1144,7 @@ class StudioService:
             "created": len(created_elements),
             "updated": len(updated_elements),
             "deleted_original": deleted_original,
+            "migrated_refs": migrated_refs,
             "created_elements": created_elements,
             "updated_elements": updated_elements,
         }
@@ -1423,16 +1985,24 @@ class StudioService:
         if isinstance(source_refs, list):
             raw_refs = [str(u).strip() for u in source_refs if isinstance(u, str) and str(u).strip()]
         current_image = str(el.get("image_url") or "").strip()
+        sibling_refs = self._collect_character_consistency_refs(el, limit=3) if element_type == "character" else []
 
         if mode == "light":
             if current_image:
                 ref_images = [current_image]
             elif raw_refs:
                 ref_images = [raw_refs[0]]
+            elif sibling_refs:
+                ref_images = [sibling_refs[0]]
         elif mode == "full":
             if current_image:
                 ref_images.append(current_image)
             for url in raw_refs:
+                if url and url not in ref_images:
+                    ref_images.append(url)
+                if len(ref_images) >= 3:
+                    break
+            for url in sibling_refs:
                 if url and url not in ref_images:
                     ref_images.append(url)
                 if len(ref_images) >= 3:
@@ -1461,7 +2031,13 @@ class StudioService:
             "image_history": history,
         })
 
-        return {"element_id": element_id, "image_url": url, "result": result}
+        return {
+            "element_id": element_id,
+            "image_url": url,
+            "reference_mode_applied": mode,
+            "reference_images_used": len(ref_images),
+            "result": result,
+        }
 
     async def generate_shot_frame(
         self,
@@ -1488,11 +2064,22 @@ class StudioService:
         width = int(width or default_w)
         height = int(height or default_h)
 
-        # 解析 prompt 中的 [SE_XXX] 引用，替换为元素描述
-        prompt = self._resolve_element_refs(shot["prompt"], shot["episode_id"])
+        prompt_text = str(shot.get("prompt") or shot.get("description") or "").strip()
+        if not prompt_text:
+            raise StudioServiceError(
+                f"镜头 {shot_id} 缺少起始帧提示词",
+                error_code="shot_missing_prompt",
+                context={"shot_id": shot_id},
+            )
 
-        # 收集引用元素的参考图
-        ref_images = self._collect_ref_images(shot["prompt"], shot["episode_id"])
+        # 解析引用并注入系列画风锚点，避免同集画风漂移。
+        prompt = self._build_shot_image_prompt(shot, prompt_text, stage="start_frame")
+        ref_images = self._collect_shot_ref_images(
+            shot=shot,
+            prompt_text=prompt_text,
+            include_start_frame=False,
+            limit=6,
+        )
 
         result = await self.image.generate(
             prompt=prompt,
@@ -1545,10 +2132,19 @@ class StudioService:
         height = int(height or default_h)
 
         prompt_text = (shot.get("end_prompt") or shot.get("video_prompt") or shot.get("prompt") or "").strip()
-        prompt = self._resolve_element_refs(prompt_text, shot["episode_id"])
-        ref_images = self._collect_ref_images(prompt_text, shot["episode_id"])
-        if shot.get("start_image_url"):
-            ref_images.append(shot["start_image_url"])
+        if not prompt_text:
+            raise StudioServiceError(
+                f"镜头 {shot_id} 缺少尾帧提示词",
+                error_code="shot_missing_end_prompt",
+                context={"shot_id": shot_id},
+            )
+        prompt = self._build_shot_image_prompt(shot, prompt_text, stage="end_frame")
+        ref_images = self._collect_shot_ref_images(
+            shot=shot,
+            prompt_text=prompt_text,
+            include_start_frame=True,
+            limit=6,
+        )
 
         result = await self.image.generate(
             prompt=prompt,
@@ -1612,8 +2208,13 @@ class StudioService:
         frame_w = int(width or default_w)
         frame_h = int(height or default_h)
 
-        prompt = self._resolve_element_refs(base_prompt, shot["episode_id"])
-        ref_images = self._collect_ref_images(base_prompt, shot["episode_id"])
+        prompt = self._build_shot_image_prompt(shot, base_prompt, stage="inpaint")
+        ref_images = self._collect_shot_ref_images(
+            shot=shot,
+            prompt_text=base_prompt,
+            include_start_frame=True,
+            limit=8,
+        )
         if current_url:
             ref_images = [current_url, *[u for u in ref_images if u != current_url]]
 
@@ -1789,30 +2390,217 @@ class StudioService:
         if not text:
             return {"shot_id": shot_id, "audio_url": "", "message": "无旁白/对白文本"}
 
-        # 自动选择音色
-        if not voice_type:
-            voice_type = VolcTTSService.auto_pick_voice_type(
-                role="narration" if shot.get("narration") else "dialogue",
-                description=text,
-            )
-
-        audio_data, _ = await self.tts.synthesize(
+        role = "narration" if str(shot.get("narration") or "").strip() else "dialogue"
+        provider = str(self.tts_provider or "volc_tts_v1_http").strip() or "volc_tts_v1_http"
+        provider_defaults = self._resolve_provider_tts_defaults(provider)
+        selected_voice = self._resolve_tts_voice(
+            provider=provider,
+            role=role,
             text=text,
-            voice_type=voice_type,
+            provider_defaults=provider_defaults,
+            override_voice=voice_type,
+        )
+        encoding = self._normalize_tts_encoding(provider_defaults.get("encoding"))
+        speed_ratio = self._normalize_tts_speed(provider_defaults.get("speedRatio"))
+        rate = self._normalize_tts_rate(provider_defaults.get("rate"))
+
+        audio_data, _ = await self._synthesize_with_provider_tts(
+            provider=provider,
+            text=text,
+            voice=selected_voice,
+            encoding=encoding,
+            speed_ratio=speed_ratio,
+            rate=rate,
         )
 
         # 保存音频文件
         import os
         audio_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "studio_audio")
         os.makedirs(audio_dir, exist_ok=True)
-        audio_path = os.path.join(audio_dir, f"{shot_id}.mp3")
+        ext = self._audio_extension_for_encoding(encoding)
+        audio_path = os.path.join(audio_dir, f"{shot_id}.{ext}")
         with open(audio_path, "wb") as f:
             f.write(audio_data)
 
-        audio_url = f"/data/studio_audio/{shot_id}.mp3"
+        audio_url = f"/data/studio_audio/{shot_id}.{ext}"
         self.storage.update_shot(shot_id, {"audio_url": audio_url})
 
-        return {"shot_id": shot_id, "audio_url": audio_url}
+        return {
+            "shot_id": shot_id,
+            "audio_url": audio_url,
+            "provider": provider,
+            "voice_type": selected_voice,
+            "encoding": encoding,
+        }
+
+    def _resolve_provider_tts_defaults(self, provider: str) -> Dict[str, Any]:
+        cfg = self.tts_defaults if isinstance(self.tts_defaults, dict) else {}
+        if provider.startswith("fish"):
+            return cfg.get("fish") or {}
+        if provider in {"aliyun_bailian_tts_v2", "dashscope_tts_v2"}:
+            return cfg.get("bailian") or {}
+        if provider.startswith("custom_") or provider in {"custom_openai_tts", "openai_tts_compatible", "openai_tts"}:
+            return cfg.get("custom") or {}
+        return cfg.get("volc") or {}
+
+    @staticmethod
+    def _normalize_tts_encoding(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        if raw in {"mp3", "wav", "pcm", "opus"}:
+            return raw
+        return "mp3"
+
+    @staticmethod
+    def _audio_extension_for_encoding(encoding: str) -> str:
+        enc = (encoding or "mp3").strip().lower()
+        if enc == "opus":
+            return "opus"
+        if enc == "wav":
+            return "wav"
+        if enc == "pcm":
+            return "pcm"
+        return "mp3"
+
+    @staticmethod
+    def _normalize_tts_rate(value: Any) -> int:
+        try:
+            rate = int(value)
+            return rate if rate > 0 else 24000
+        except Exception:
+            return 24000
+
+    @staticmethod
+    def _normalize_tts_speed(value: Any) -> float:
+        try:
+            speed = float(value)
+            return speed if speed > 0 else 1.0
+        except Exception:
+            return 1.0
+
+    def _resolve_tts_voice(
+        self,
+        *,
+        provider: str,
+        role: str,
+        text: str,
+        provider_defaults: Dict[str, Any],
+        override_voice: Optional[str] = None,
+    ) -> str:
+        manual = str(override_voice or "").strip()
+        if manual:
+            return manual
+
+        narrator_voice = str(provider_defaults.get("narratorVoiceType") or "").strip()
+        dialogue_voice = str(provider_defaults.get("dialogueVoiceType") or "").strip()
+        dialogue_male_voice = str(provider_defaults.get("dialogueMaleVoiceType") or "").strip()
+        dialogue_female_voice = str(provider_defaults.get("dialogueFemaleVoiceType") or "").strip()
+
+        selected = ""
+        if role == "narration":
+            selected = narrator_voice or dialogue_voice
+        else:
+            gender = VolcTTSService.detect_gender(text)
+            if gender == "male":
+                selected = dialogue_male_voice or dialogue_voice or narrator_voice
+            elif gender == "female":
+                selected = dialogue_female_voice or dialogue_voice or narrator_voice
+            else:
+                selected = dialogue_voice or narrator_voice or dialogue_male_voice or dialogue_female_voice
+
+        if selected:
+            return selected
+
+        if provider == "volc_tts_v1_http":
+            return VolcTTSService.auto_pick_voice_type(
+                role=role,
+                description=text,
+            )
+
+        if provider.startswith("fish"):
+            raise StudioServiceError(
+                "Fish TTS 未配置默认 reference_id，请在 Studio 设置里填写旁白/对白音色",
+                error_code="tts_missing_voice",
+                context={"provider": provider},
+            )
+        if provider in {"aliyun_bailian_tts_v2", "dashscope_tts_v2"}:
+            raise StudioServiceError(
+                "阿里百炼 TTS 未配置默认 voice，请在 Studio 设置里填写旁白/对白音色",
+                error_code="tts_missing_voice",
+                context={"provider": provider},
+            )
+        raise StudioServiceError(
+            "自定义 TTS 未配置默认 voice，请在 Studio 设置里填写旁白/对白音色",
+            error_code="tts_missing_voice",
+            context={"provider": provider},
+        )
+
+    async def _synthesize_with_provider_tts(
+        self,
+        *,
+        provider: str,
+        text: str,
+        voice: str,
+        encoding: str,
+        speed_ratio: float,
+        rate: int,
+    ) -> Tuple[bytes, int]:
+        if provider == "volc_tts_v1_http":
+            if not isinstance(self.tts, VolcTTSService):
+                raise StudioServiceError(
+                    "Volc TTS 服务未初始化",
+                    error_code="config_missing_tts",
+                    context={"provider": provider},
+                )
+            return await self.tts.synthesize(
+                text=text,
+                voice_type=voice,
+                encoding=encoding,
+                speed_ratio=speed_ratio,
+                rate=rate,
+            )
+
+        if provider.startswith("fish"):
+            if not isinstance(self.tts, FishTTSService):
+                raise StudioServiceError(
+                    "Fish TTS 服务未初始化",
+                    error_code="config_missing_tts",
+                    context={"provider": provider},
+                )
+            return await self.tts.synthesize(
+                text=text,
+                reference_id=voice,
+                encoding=encoding,
+                speed_ratio=speed_ratio,
+                rate=rate,
+            )
+
+        if provider in {"aliyun_bailian_tts_v2", "dashscope_tts_v2"}:
+            if not isinstance(self.tts, DashScopeTTSService):
+                raise StudioServiceError(
+                    "阿里百炼 TTS 服务未初始化",
+                    error_code="config_missing_tts",
+                    context={"provider": provider},
+                )
+            return await self.tts.synthesize(
+                text=text,
+                voice=voice,
+                encoding=encoding,
+                speed_ratio=speed_ratio,
+                rate=rate,
+            )
+
+        if not isinstance(self.tts, OpenAITTSService):
+            raise StudioServiceError(
+                "自定义 TTS 服务未初始化",
+                error_code="config_missing_tts",
+                context={"provider": provider},
+            )
+        return await self.tts.synthesize(
+            text=text,
+            voice=voice,
+            encoding=encoding,
+            speed_ratio=speed_ratio,
+        )
 
     async def batch_generate_episode(
         self,

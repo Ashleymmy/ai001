@@ -108,6 +108,16 @@ class VideoService:
             )
         
         if self.provider == "kling":
+            base_url = (self.base_url or "").lower()
+            # 兼容历史误配置：provider=kling 但实际 base_url 是火山 Ark。
+            if "volces.com" in base_url or "ark.cn" in base_url:
+                return await self._generate_volcengine_video(
+                    image_url, prompt, duration, seed,
+                    resolution=resolution, ratio=ratio,
+                    camera_fixed=camera_fixed, watermark=watermark,
+                    generate_audio=generate_audio,
+                    reference_images=extra_images,
+                )
             return await self._generate_kling(image_url, prompt, duration, motion_strength, seed)
         elif self.provider == "runway":
             return await self._generate_runway(image_url, prompt, duration, seed)
@@ -115,8 +125,16 @@ class VideoService:
             return await self._generate_minimax(image_url, prompt, duration, seed)
         elif self.provider == "luma":
             return await self._generate_luma(image_url, prompt, duration, seed)
-        elif self.provider == "qwen-video":
-            return await self._generate_qwen_video(image_url, prompt, duration, seed)
+        elif self.provider in {"qwen-video", "dashscope"}:
+            return await self._generate_dashscope_video(image_url, prompt, duration, seed)
+        elif self.provider in {"doubao", "volcengine"}:
+            return await self._generate_volcengine_video(
+                image_url, prompt, duration, seed,
+                resolution=resolution, ratio=ratio,
+                camera_fixed=camera_fixed, watermark=watermark,
+                generate_audio=generate_audio,
+                reference_images=extra_images,
+            )
         elif self.provider == "custom":
             # 检查是否是阿里云 dashscope API
             if self.base_url and "dashscope" in self.base_url:
@@ -138,6 +156,8 @@ class VideoService:
         """检查异步任务状态"""
         base_url = (self.base_url or "").lower()
         if self.provider == "kling":
+            if "volces.com" in base_url or "ark.cn" in base_url:
+                return await self._check_volcengine_status(task_id)
             return await self._check_kling_status(task_id)
         elif self.provider == "runway":
             return await self._check_runway_status(task_id)
@@ -145,8 +165,10 @@ class VideoService:
             return await self._check_minimax_status(task_id)
         elif self.provider == "luma":
             return await self._check_luma_status(task_id)
-        elif self.provider == "qwen-video":
+        elif self.provider in {"qwen-video", "dashscope"}:
             return await self._check_dashscope_status(task_id)
+        elif self.provider in {"doubao", "volcengine"}:
+            return await self._check_volcengine_status(task_id)
         elif self.provider == "custom" and "dashscope" in base_url:
             return await self._check_dashscope_status(task_id)
         elif self.provider == "custom" and ("volces.com" in base_url or "ark.cn" in base_url):

@@ -1994,6 +1994,10 @@ export interface StudioCharacterSplitResult {
   created: number
   updated: number
   deleted_original?: boolean
+  migrated_refs?: {
+    updated_shots: number
+    updated_fields: number
+  }
 }
 
 export interface StudioSeriesStats {

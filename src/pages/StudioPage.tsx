@@ -922,7 +922,11 @@ export default function StudioPage() {
     const result = await store.splitCharacterByAge(elementId, options)
     if (result) {
       if (result.need_split) {
-        pushToast({ message: `角色拆分完成：新增 ${result.created}，更新 ${result.updated}` })
+        const migrated = result.migrated_refs
+        const migratedText = migrated && (migrated.updated_shots > 0 || migrated.updated_fields > 0)
+          ? `，镜头引用迁移 ${migrated.updated_shots} 条`
+          : ''
+        pushToast({ message: `角色拆分完成：新增 ${result.created}，更新 ${result.updated}${migratedText}` })
       } else {
         pushToast({ message: result.reason || '该角色当前无需按阶段拆分' })
       }
@@ -1945,7 +1949,7 @@ function SeriesOverview({
 
   const getCharacterRefMode = (element: StudioElement): 'none' | 'light' | 'full' => {
     if (element.type !== 'character') return 'none'
-    return characterRefModeMap[element.id] || (element.image_url ? 'light' : 'none')
+    return characterRefModeMap[element.id] || 'light'
   }
 
   return (
@@ -4128,7 +4132,7 @@ function ElementLibraryPanel({
 
   const getCharacterRefMode = (element: StudioElement): 'none' | 'light' | 'full' => {
     if (element.type !== 'character') return 'none'
-    return characterRefModeMap[element.id] || (element.image_url ? 'light' : 'none')
+    return characterRefModeMap[element.id] || 'light'
   }
 
   return (
@@ -5517,10 +5521,10 @@ const MODEL_HINTS: Record<string, Record<string, string>> = {
     relay: '按中转站支持的模型名填写',
   },
   video: {
-    openai: '按 API 支持的视频模型填写',
-    volcano: 'kling-v1 / kling-v1-5',
-    wanxiang: '按万相视频模型填写',
-    relay: '按中转站支持的模型名填写',
+    openai: '按 OpenAI 兼容视频模型填写',
+    volcano: 'doubao-seedance-1-0-pro-250528 / doubao-seedance-1-5-pro-250926',
+    wanxiang: 'wanx2.1-i2v-plus / wanx2.1-i2v-turbo',
+    relay: '按中转站支持的视频模型名填写',
   },
 }
 
@@ -5528,7 +5532,8 @@ const MODEL_HINTS: Record<string, Record<string, string>> = {
 const PROTOCOL_TO_PROVIDER: Record<string, Record<string, string>> = {
   llm: { openai: 'openai', volcano: 'doubao', wanxiang: 'qwen', relay: 'openai' },
   image: { openai: 'openai', volcano: 'doubao', wanxiang: 'dashscope', relay: 'openai' },
-  video: { openai: 'openai', volcano: 'kling', wanxiang: 'dashscope', relay: 'openai' },
+  // Studio 视频统一走 custom 分支，实际路由由 baseUrl 域名自动识别（ark/dashscope/relay）
+  video: { openai: 'custom', volcano: 'custom', wanxiang: 'custom', relay: 'custom' },
 }
 
 // 后端 provider 值 → 协议值（反向映射，用于加载）
@@ -5538,6 +5543,8 @@ const PROVIDER_TO_PROTOCOL: Record<string, string> = {
   qwen: 'wanxiang',
   dashscope: 'wanxiang',
   kling: 'volcano',
+  'qwen-video': 'wanxiang',
+  custom: 'relay',
   // 其他一律归为中转站
 }
 
@@ -5548,11 +5555,216 @@ interface ServiceConfig {
   model: string
 }
 
-interface TTSConfig {
+type StudioTtsProvider =
+  | 'volc_tts_v1_http'
+  | 'fish_tts_v1'
+  | 'aliyun_bailian_tts_v2'
+  | 'custom_openai_tts'
+
+interface StudioVolcTtsConfig {
   appid: string
   accessToken: string
+  endpoint: string
   cluster: string
-  voiceType: string
+  model: string
+  encoding: string
+  rate: number
+  speedRatio: number
+  narratorVoiceType: string
+  dialogueVoiceType: string
+  dialogueMaleVoiceType: string
+  dialogueFemaleVoiceType: string
+}
+
+interface StudioFishTtsConfig {
+  apiKey: string
+  baseUrl: string
+  model: string
+  encoding: string
+  rate: number
+  speedRatio: number
+  narratorVoiceType: string
+  dialogueVoiceType: string
+  dialogueMaleVoiceType: string
+  dialogueFemaleVoiceType: string
+}
+
+interface StudioBailianTtsConfig {
+  apiKey: string
+  baseUrl: string
+  workspace: string
+  model: string
+  encoding: string
+  rate: number
+  speedRatio: number
+  narratorVoiceType: string
+  dialogueVoiceType: string
+  dialogueMaleVoiceType: string
+  dialogueFemaleVoiceType: string
+}
+
+interface StudioCustomTtsConfig {
+  apiKey: string
+  baseUrl: string
+  model: string
+  encoding: string
+  rate: number
+  speedRatio: number
+  narratorVoiceType: string
+  dialogueVoiceType: string
+  dialogueMaleVoiceType: string
+  dialogueFemaleVoiceType: string
+}
+
+interface TTSConfig {
+  provider: StudioTtsProvider | string
+  volc: StudioVolcTtsConfig
+  fish: StudioFishTtsConfig
+  bailian: StudioBailianTtsConfig
+  custom: StudioCustomTtsConfig
+}
+
+const DEFAULT_STUDIO_TTS: TTSConfig = {
+  provider: 'volc_tts_v1_http',
+  volc: {
+    appid: '',
+    accessToken: '',
+    endpoint: 'https://openspeech.bytedance.com/api/v1/tts',
+    cluster: 'volcano_tts',
+    model: 'seed-tts-1.1',
+    encoding: 'mp3',
+    rate: 24000,
+    speedRatio: 1,
+    narratorVoiceType: '',
+    dialogueVoiceType: '',
+    dialogueMaleVoiceType: '',
+    dialogueFemaleVoiceType: '',
+  },
+  fish: {
+    apiKey: '',
+    baseUrl: 'https://api.fish.audio',
+    model: 'speech-1.5',
+    encoding: 'mp3',
+    rate: 24000,
+    speedRatio: 1,
+    narratorVoiceType: '',
+    dialogueVoiceType: '',
+    dialogueMaleVoiceType: '',
+    dialogueFemaleVoiceType: '',
+  },
+  bailian: {
+    apiKey: '',
+    baseUrl: 'wss://dashscope.aliyuncs.com/api-ws/v1/inference',
+    workspace: '',
+    model: 'cosyvoice-v1',
+    encoding: 'mp3',
+    rate: 24000,
+    speedRatio: 1,
+    narratorVoiceType: '',
+    dialogueVoiceType: '',
+    dialogueMaleVoiceType: '',
+    dialogueFemaleVoiceType: '',
+  },
+  custom: {
+    apiKey: '',
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini-tts',
+    encoding: 'mp3',
+    rate: 24000,
+    speedRatio: 1,
+    narratorVoiceType: '',
+    dialogueVoiceType: '',
+    dialogueMaleVoiceType: '',
+    dialogueFemaleVoiceType: '',
+  },
+}
+
+function normalizeStudioTtsConfig(raw: unknown): TTSConfig {
+  if (!raw || typeof raw !== 'object') return DEFAULT_STUDIO_TTS
+  const obj = raw as Record<string, unknown>
+
+  const asObj = (value: unknown): Record<string, unknown> => (
+    value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  )
+  const asText = (value: unknown, fallback = ''): string => {
+    if (typeof value === 'string') return value
+    if (typeof value === 'number') return String(value)
+    return fallback
+  }
+  const asNum = (value: unknown, fallback: number): number => {
+    const n = Number(value)
+    return Number.isFinite(n) && n > 0 ? n : fallback
+  }
+
+  const rawProvider = asText(obj.provider).trim()
+  const legacyBase = asText(obj.baseUrl).trim()
+  let provider = rawProvider
+  if (!provider) {
+    if (legacyBase.includes('fish.audio')) provider = 'fish_tts_v1'
+    else if (legacyBase.includes('dashscope.aliyuncs.com')) provider = 'aliyun_bailian_tts_v2'
+    else provider = 'volc_tts_v1_http'
+  }
+
+  const legacyVoice = asText(obj.voiceType).trim()
+  const volcRaw = asObj(obj.volc)
+  const fishRaw = asObj(obj.fish)
+  const bailianRaw = asObj(obj.bailian)
+  const customRaw = asObj(obj.custom)
+
+  return {
+    provider,
+    volc: {
+      appid: asText(volcRaw.appid ?? obj.appid, ''),
+      accessToken: asText(volcRaw.accessToken ?? obj.accessToken, ''),
+      endpoint: asText(volcRaw.endpoint, 'https://openspeech.bytedance.com/api/v1/tts'),
+      cluster: asText(volcRaw.cluster ?? obj.cluster, 'volcano_tts'),
+      model: asText(volcRaw.model ?? obj.model, 'seed-tts-1.1'),
+      encoding: asText(volcRaw.encoding ?? obj.encoding, 'mp3'),
+      rate: asNum(volcRaw.rate ?? obj.rate, 24000),
+      speedRatio: asNum(volcRaw.speedRatio ?? obj.speedRatio, 1),
+      narratorVoiceType: asText(volcRaw.narratorVoiceType ?? obj.narratorVoiceType ?? legacyVoice, ''),
+      dialogueVoiceType: asText(volcRaw.dialogueVoiceType ?? obj.dialogueVoiceType, ''),
+      dialogueMaleVoiceType: asText(volcRaw.dialogueMaleVoiceType ?? obj.dialogueMaleVoiceType, ''),
+      dialogueFemaleVoiceType: asText(volcRaw.dialogueFemaleVoiceType ?? obj.dialogueFemaleVoiceType, ''),
+    },
+    fish: {
+      apiKey: asText(fishRaw.apiKey ?? obj.apiKey ?? (provider === 'fish_tts_v1' ? obj.accessToken : ''), ''),
+      baseUrl: asText(fishRaw.baseUrl ?? (legacyBase.includes('fish.audio') ? legacyBase : ''), 'https://api.fish.audio'),
+      model: asText(fishRaw.model ?? obj.model, 'speech-1.5'),
+      encoding: asText(fishRaw.encoding ?? obj.encoding, 'mp3'),
+      rate: asNum(fishRaw.rate ?? obj.rate, 24000),
+      speedRatio: asNum(fishRaw.speedRatio ?? obj.speedRatio, 1),
+      narratorVoiceType: asText(fishRaw.narratorVoiceType ?? obj.narratorVoiceType ?? (provider === 'fish_tts_v1' ? legacyVoice : ''), ''),
+      dialogueVoiceType: asText(fishRaw.dialogueVoiceType ?? obj.dialogueVoiceType, ''),
+      dialogueMaleVoiceType: asText(fishRaw.dialogueMaleVoiceType ?? obj.dialogueMaleVoiceType, ''),
+      dialogueFemaleVoiceType: asText(fishRaw.dialogueFemaleVoiceType ?? obj.dialogueFemaleVoiceType, ''),
+    },
+    bailian: {
+      apiKey: asText(bailianRaw.apiKey ?? obj.apiKey ?? (provider === 'aliyun_bailian_tts_v2' ? obj.accessToken : ''), ''),
+      baseUrl: asText(bailianRaw.baseUrl ?? (legacyBase.includes('dashscope.aliyuncs.com') ? legacyBase : ''), 'wss://dashscope.aliyuncs.com/api-ws/v1/inference'),
+      workspace: asText(bailianRaw.workspace, ''),
+      model: asText(bailianRaw.model ?? obj.model, 'cosyvoice-v1'),
+      encoding: asText(bailianRaw.encoding ?? obj.encoding, 'mp3'),
+      rate: asNum(bailianRaw.rate ?? obj.rate, 24000),
+      speedRatio: asNum(bailianRaw.speedRatio ?? obj.speedRatio, 1),
+      narratorVoiceType: asText(bailianRaw.narratorVoiceType ?? obj.narratorVoiceType ?? (provider === 'aliyun_bailian_tts_v2' ? legacyVoice : ''), ''),
+      dialogueVoiceType: asText(bailianRaw.dialogueVoiceType ?? obj.dialogueVoiceType, ''),
+      dialogueMaleVoiceType: asText(bailianRaw.dialogueMaleVoiceType ?? obj.dialogueMaleVoiceType, ''),
+      dialogueFemaleVoiceType: asText(bailianRaw.dialogueFemaleVoiceType ?? obj.dialogueFemaleVoiceType, ''),
+    },
+    custom: {
+      apiKey: asText(customRaw.apiKey ?? obj.apiKey, ''),
+      baseUrl: asText(customRaw.baseUrl ?? obj.baseUrl, 'https://api.openai.com/v1'),
+      model: asText(customRaw.model ?? obj.model, 'gpt-4o-mini-tts'),
+      encoding: asText(customRaw.encoding ?? obj.encoding, 'mp3'),
+      rate: asNum(customRaw.rate ?? obj.rate, 24000),
+      speedRatio: asNum(customRaw.speedRatio ?? obj.speedRatio, 1),
+      narratorVoiceType: asText(customRaw.narratorVoiceType ?? obj.narratorVoiceType ?? (provider === 'custom_openai_tts' ? legacyVoice : ''), ''),
+      dialogueVoiceType: asText(customRaw.dialogueVoiceType ?? obj.dialogueVoiceType, ''),
+      dialogueMaleVoiceType: asText(customRaw.dialogueMaleVoiceType ?? obj.dialogueMaleVoiceType, ''),
+      dialogueFemaleVoiceType: asText(customRaw.dialogueFemaleVoiceType ?? obj.dialogueFemaleVoiceType, ''),
+    },
+  }
 }
 
 interface GenerationDefaults {
@@ -5681,7 +5893,7 @@ function StudioSettingsPanel({ onClose }: { onClose: () => void }) {
   const [llm, setLlm] = useState<ServiceConfig>({ protocol: 'openai', apiKey: '', baseUrl: '', model: '' })
   const [image, setImage] = useState<ServiceConfig>({ protocol: 'wanxiang', apiKey: '', baseUrl: '', model: '' })
   const [video, setVideo] = useState<ServiceConfig>({ protocol: 'volcano', apiKey: '', baseUrl: '', model: '' })
-  const [tts, setTts] = useState<TTSConfig>({ appid: '', accessToken: '', cluster: 'volcano_tts', voiceType: 'BV700_V2_streaming' })
+  const [tts, setTts] = useState<TTSConfig>(DEFAULT_STUDIO_TTS)
   const [defaults, setDefaults] = useState<GenerationDefaults>({
     frame_width: 1280,
     frame_height: 720,
@@ -5703,6 +5915,12 @@ function StudioSettingsPanel({ onClose }: { onClose: () => void }) {
   const currentPromptVariableHints = promptVariableHints[promptModule] || []
   const currentPromptUsesDefault =
     !currentPromptCustom.system.trim() && !currentPromptCustom.user.trim()
+  const ttsProvider = (tts.provider || 'volc_tts_v1_http').trim()
+  const isVolcTTS = ttsProvider === 'volc_tts_v1_http'
+  const isFishTTS = ttsProvider.startsWith('fish')
+  const isBailianTTS = ttsProvider === 'aliyun_bailian_tts_v2' || ttsProvider === 'dashscope_tts_v2'
+  const isCustomTTS = ttsProvider.startsWith('custom_') || ttsProvider === 'custom_openai_tts'
+  const activeTts = isFishTTS ? tts.fish : isBailianTTS ? tts.bailian : isCustomTTS ? tts.custom : tts.volc
 
   useEffect(() => {
     let mounted = true
@@ -5726,27 +5944,39 @@ function StudioSettingsPanel({ onClose }: { onClose: () => void }) {
         return
       }
 
-      const mapLoad = (raw: Record<string, unknown>): ServiceConfig => {
+      const mapLoad = (raw: Record<string, unknown>, service: 'llm' | 'image' | 'video'): ServiceConfig => {
         const provider = (raw.provider as string) || ''
+        const baseUrl = (raw.baseUrl as string) || ''
+        let protocol = PROVIDER_TO_PROTOCOL[provider] || (provider ? 'relay' : 'openai')
+        if (service === 'video') {
+          const lowerBase = baseUrl.toLowerCase()
+          const lowerProvider = provider.toLowerCase()
+          if (lowerProvider === 'custom' || lowerProvider.startsWith('custom_')) {
+            if (lowerBase.includes('ark.cn') || lowerBase.includes('volces.com')) {
+              protocol = 'volcano'
+            } else if (lowerBase.includes('dashscope')) {
+              protocol = 'wanxiang'
+            } else {
+              protocol = 'relay'
+            }
+          } else if (lowerProvider === 'kling' && (lowerBase.includes('ark.cn') || lowerBase.includes('volces.com'))) {
+            // 兼容历史误映射：provider 被写成 kling，但 baseUrl 实际是火山 Ark
+            protocol = 'volcano'
+          } else if (lowerProvider === 'qwen-video' || lowerProvider === 'dashscope') {
+            protocol = 'wanxiang'
+          }
+        }
         return {
-          protocol: PROVIDER_TO_PROTOCOL[provider] || (provider ? 'relay' : 'openai'),
+          protocol,
           apiKey: (raw.apiKey as string) || '',
-          baseUrl: (raw.baseUrl as string) || '',
+          baseUrl,
           model: (raw.model as string) || '',
         }
       }
-      if (settings.llm) setLlm(mapLoad(settings.llm as Record<string, unknown>))
-      if (settings.image) setImage(mapLoad(settings.image as Record<string, unknown>))
-      if (settings.video) setVideo(mapLoad(settings.video as Record<string, unknown>))
-      if (settings.tts && typeof settings.tts === 'object') {
-        const raw = settings.tts as Record<string, unknown>
-        setTts({
-          appid: (raw.appid as string) || '',
-          accessToken: (raw.accessToken as string) || '',
-          cluster: (raw.cluster as string) || 'volcano_tts',
-          voiceType: (raw.voiceType as string) || 'BV700_V2_streaming',
-        })
-      }
+      if (settings.llm) setLlm(mapLoad(settings.llm as Record<string, unknown>, 'llm'))
+      if (settings.image) setImage(mapLoad(settings.image as Record<string, unknown>, 'image'))
+      if (settings.video) setVideo(mapLoad(settings.video as Record<string, unknown>, 'video'))
+      if (settings.tts) setTts(normalizeStudioTtsConfig(settings.tts))
       if (settings.generation_defaults && typeof settings.generation_defaults === 'object') {
         const raw = settings.generation_defaults as Record<string, unknown>
         setDefaults((prev) => ({
@@ -5800,12 +6030,7 @@ function StudioSettingsPanel({ onClose }: { onClose: () => void }) {
         llm: mapSave(llm, 'llm'),
         image: mapSave(image, 'image'),
         video: mapSave(video, 'video'),
-        tts: {
-          appid: tts.appid,
-          accessToken: tts.accessToken,
-          cluster: tts.cluster,
-          voiceType: tts.voiceType,
-        },
+        tts,
         generation_defaults: defaults,
         custom_prompts: compactCustomPrompts(customPrompts),
       })
@@ -5894,41 +6119,275 @@ function StudioSettingsPanel({ onClose }: { onClose: () => void }) {
                   <p className="text-xs text-gray-500 mb-3">用于镜头旁白/对白音频生成</p>
                   <div className="space-y-3">
                     <div>
-                      <label className="text-xs text-gray-400 block mb-1">App ID</label>
-                      <input
-                        value={tts.appid}
-                        onChange={(e) => setTts((prev) => ({ ...prev, appid: e.target.value }))}
+                      <label className="text-xs text-gray-400 block mb-1">Provider</label>
+                      <select
+                        value={ttsProvider}
+                        onChange={(e) => setTts((prev) => ({ ...prev, provider: e.target.value }))}
                         className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
-                        placeholder="火山引擎 App ID"
-                      />
+                      >
+                        {isCustomTTS && ttsProvider !== 'custom_openai_tts' && (
+                          <option value={ttsProvider}>{`自定义（${ttsProvider}）`}</option>
+                        )}
+                        <option value="volc_tts_v1_http">Volc OpenSpeech</option>
+                        <option value="fish_tts_v1">Fish Audio</option>
+                        <option value="aliyun_bailian_tts_v2">阿里百炼（DashScope）</option>
+                        <option value="custom_openai_tts">自定义（OpenAI 兼容）</option>
+                      </select>
                     </div>
-                    <div>
-                      <label className="text-xs text-gray-400 block mb-1">Access Token</label>
-                      <input
-                        type="password"
-                        value={tts.accessToken}
-                        onChange={(e) => setTts((prev) => ({ ...prev, accessToken: e.target.value }))}
-                        className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
-                        placeholder="火山引擎 Access Token"
-                      />
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
+
+                    {isVolcTTS && (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-xs text-gray-400 block mb-1">App ID</label>
+                          <input
+                            value={tts.volc.appid}
+                            onChange={(e) => setTts((prev) => ({ ...prev, volc: { ...prev.volc, appid: e.target.value } }))}
+                            className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                            placeholder="火山引擎 App ID"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-gray-400 block mb-1">Access Token</label>
+                          <input
+                            type="password"
+                            value={tts.volc.accessToken}
+                            onChange={(e) => setTts((prev) => ({ ...prev, volc: { ...prev.volc, accessToken: e.target.value } }))}
+                            className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                            placeholder="火山引擎 Access Token"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {isFishTTS && (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-xs text-gray-400 block mb-1">API Key</label>
+                          <input
+                            type="password"
+                            value={tts.fish.apiKey}
+                            onChange={(e) => setTts((prev) => ({ ...prev, fish: { ...prev.fish, apiKey: e.target.value } }))}
+                            className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                            placeholder="Fish API Key"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-gray-400 block mb-1">Base URL</label>
+                          <input
+                            value={tts.fish.baseUrl}
+                            onChange={(e) => setTts((prev) => ({ ...prev, fish: { ...prev.fish, baseUrl: e.target.value } }))}
+                            className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                            placeholder="https://api.fish.audio"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {isBailianTTS && (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-xs text-gray-400 block mb-1">API Key</label>
+                          <input
+                            type="password"
+                            value={tts.bailian.apiKey}
+                            onChange={(e) => setTts((prev) => ({ ...prev, bailian: { ...prev.bailian, apiKey: e.target.value } }))}
+                            className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                            placeholder="阿里百炼 API Key"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-gray-400 block mb-1">WebSocket URL</label>
+                          <input
+                            value={tts.bailian.baseUrl}
+                            onChange={(e) => setTts((prev) => ({ ...prev, bailian: { ...prev.bailian, baseUrl: e.target.value } }))}
+                            className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                            placeholder="wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {isCustomTTS && (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-xs text-gray-400 block mb-1">API Key</label>
+                          <input
+                            type="password"
+                            value={tts.custom.apiKey}
+                            onChange={(e) => setTts((prev) => ({ ...prev, custom: { ...prev.custom, apiKey: e.target.value } }))}
+                            className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                            placeholder="OpenAI 兼容 API Key"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-gray-400 block mb-1">Base URL</label>
+                          <input
+                            value={tts.custom.baseUrl}
+                            onChange={(e) => setTts((prev) => ({ ...prev, custom: { ...prev.custom, baseUrl: e.target.value } }))}
+                            className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                            placeholder="https://your-host/v1"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-3 gap-3">
                       <div>
-                        <label className="text-xs text-gray-400 block mb-1">Cluster</label>
+                        <label className="text-xs text-gray-400 block mb-1">模型</label>
                         <input
-                          value={tts.cluster}
-                          onChange={(e) => setTts((prev) => ({ ...prev, cluster: e.target.value }))}
+                          value={activeTts.model}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setTts((prev) => {
+                              if (isFishTTS) return { ...prev, fish: { ...prev.fish, model: v } }
+                              if (isBailianTTS) return { ...prev, bailian: { ...prev.bailian, model: v } }
+                              if (isCustomTTS) return { ...prev, custom: { ...prev.custom, model: v } }
+                              return { ...prev, volc: { ...prev.volc, model: v } }
+                            })
+                          }}
                           className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
-                          placeholder="volcano_tts"
+                          placeholder={isVolcTTS ? 'seed-tts-1.1' : isFishTTS ? 'speech-1.5' : isBailianTTS ? 'cosyvoice-v1' : 'gpt-4o-mini-tts'}
                         />
                       </div>
                       <div>
-                        <label className="text-xs text-gray-400 block mb-1">默认音色</label>
+                        <label className="text-xs text-gray-400 block mb-1">编码</label>
                         <input
-                          value={tts.voiceType}
-                          onChange={(e) => setTts((prev) => ({ ...prev, voiceType: e.target.value }))}
+                          value={activeTts.encoding}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setTts((prev) => {
+                              if (isFishTTS) return { ...prev, fish: { ...prev.fish, encoding: v } }
+                              if (isBailianTTS) return { ...prev, bailian: { ...prev.bailian, encoding: v } }
+                              if (isCustomTTS) return { ...prev, custom: { ...prev.custom, encoding: v } }
+                              return { ...prev, volc: { ...prev.volc, encoding: v } }
+                            })
+                          }}
                           className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
-                          placeholder="BV700_V2_streaming"
+                          placeholder="mp3 / wav / pcm / opus"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-400 block mb-1">采样率</label>
+                        <input
+                          type="number"
+                          value={activeTts.rate}
+                          onChange={(e) => {
+                            const v = parseInt(e.target.value, 10) || 24000
+                            setTts((prev) => {
+                              if (isFishTTS) return { ...prev, fish: { ...prev.fish, rate: v } }
+                              if (isBailianTTS) return { ...prev, bailian: { ...prev.bailian, rate: v } }
+                              if (isCustomTTS) return { ...prev, custom: { ...prev.custom, rate: v } }
+                              return { ...prev, volc: { ...prev.volc, rate: v } }
+                            })
+                          }}
+                          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                          placeholder="24000"
+                        />
+                      </div>
+                    </div>
+
+                    {isVolcTTS && (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-xs text-gray-400 block mb-1">Endpoint</label>
+                          <input
+                            value={tts.volc.endpoint}
+                            onChange={(e) => setTts((prev) => ({ ...prev, volc: { ...prev.volc, endpoint: e.target.value } }))}
+                            className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                            placeholder="https://openspeech.bytedance.com/api/v1/tts"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-gray-400 block mb-1">Cluster</label>
+                          <input
+                            value={tts.volc.cluster}
+                            onChange={(e) => setTts((prev) => ({ ...prev, volc: { ...prev.volc, cluster: e.target.value } }))}
+                            className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                            placeholder="volcano_tts"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {isBailianTTS && (
+                      <div>
+                        <label className="text-xs text-gray-400 block mb-1">Workspace（可选）</label>
+                        <input
+                          value={tts.bailian.workspace}
+                          onChange={(e) => setTts((prev) => ({ ...prev, bailian: { ...prev.bailian, workspace: e.target.value } }))}
+                          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                          placeholder="workspace id"
+                        />
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-4 gap-3">
+                      <div>
+                        <label className="text-xs text-gray-400 block mb-1">旁白音色</label>
+                        <input
+                          value={activeTts.narratorVoiceType}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setTts((prev) => {
+                              if (isFishTTS) return { ...prev, fish: { ...prev.fish, narratorVoiceType: v } }
+                              if (isBailianTTS) return { ...prev, bailian: { ...prev.bailian, narratorVoiceType: v } }
+                              if (isCustomTTS) return { ...prev, custom: { ...prev.custom, narratorVoiceType: v } }
+                              return { ...prev, volc: { ...prev.volc, narratorVoiceType: v } }
+                            })
+                          }}
+                          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                          placeholder={isFishTTS ? 'reference_id' : isVolcTTS ? 'voice_type' : 'voice'}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-400 block mb-1">对白（男）</label>
+                        <input
+                          value={activeTts.dialogueMaleVoiceType}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setTts((prev) => {
+                              if (isFishTTS) return { ...prev, fish: { ...prev.fish, dialogueMaleVoiceType: v } }
+                              if (isBailianTTS) return { ...prev, bailian: { ...prev.bailian, dialogueMaleVoiceType: v } }
+                              if (isCustomTTS) return { ...prev, custom: { ...prev.custom, dialogueMaleVoiceType: v } }
+                              return { ...prev, volc: { ...prev.volc, dialogueMaleVoiceType: v } }
+                            })
+                          }}
+                          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                          placeholder={isFishTTS ? 'reference_id' : isVolcTTS ? 'voice_type' : 'voice'}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-400 block mb-1">对白（女）</label>
+                        <input
+                          value={activeTts.dialogueFemaleVoiceType}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setTts((prev) => {
+                              if (isFishTTS) return { ...prev, fish: { ...prev.fish, dialogueFemaleVoiceType: v } }
+                              if (isBailianTTS) return { ...prev, bailian: { ...prev.bailian, dialogueFemaleVoiceType: v } }
+                              if (isCustomTTS) return { ...prev, custom: { ...prev.custom, dialogueFemaleVoiceType: v } }
+                              return { ...prev, volc: { ...prev.volc, dialogueFemaleVoiceType: v } }
+                            })
+                          }}
+                          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                          placeholder={isFishTTS ? 'reference_id' : isVolcTTS ? 'voice_type' : 'voice'}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-400 block mb-1">对白（通用）</label>
+                        <input
+                          value={activeTts.dialogueVoiceType}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setTts((prev) => {
+                              if (isFishTTS) return { ...prev, fish: { ...prev.fish, dialogueVoiceType: v } }
+                              if (isBailianTTS) return { ...prev, bailian: { ...prev.bailian, dialogueVoiceType: v } }
+                              if (isCustomTTS) return { ...prev, custom: { ...prev.custom, dialogueVoiceType: v } }
+                              return { ...prev, volc: { ...prev.volc, dialogueVoiceType: v } }
+                            })
+                          }}
+                          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                          placeholder={isFishTTS ? 'reference_id' : isVolcTTS ? 'voice_type' : 'voice'}
                         />
                       </div>
                     </div>
