@@ -1,3 +1,7 @@
+/**
+ * 功能模块：前端 API 服务模块，封装后端接口调用、鉴权注入与数据类型声明
+ */
+
 import axios from 'axios'
 import type { ModelConfig } from '../store/settingsStore'
 
@@ -343,12 +347,26 @@ export interface UploadResult {
   }
 }
 
-export async function uploadFile(file: File): Promise<UploadResult> {
+export async function uploadFile(
+  file: File,
+  options?: {
+    onProgress?: (progress: { loaded: number; total: number; percent: number }) => void
+  },
+): Promise<UploadResult> {
   const formData = new FormData()
   formData.append('file', file)
   const response = await api.post('/api/upload', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
-    timeout: 300000 // 5分钟超时，用于大文件
+    timeout: 300000, // 5分钟超时，用于大文件
+    onUploadProgress: (event) => {
+      if (!options?.onProgress) return
+      const loaded = Number(event.loaded || 0)
+      const total = Number(event.total || file.size || 0)
+      const percent = total > 0
+        ? Math.max(0, Math.min(100, (loaded / total) * 100))
+        : 0
+      options.onProgress({ loaded, total, percent })
+    },
   })
   return response.data
 }
@@ -2187,6 +2205,120 @@ export async function workspaceRedo(
   return response.data as WorkspaceUndoRedoResult
 }
 
+// ========== 操作日志列表（撤销历史可视化） ==========
+
+export interface OperationJournalItem {
+  id: string
+  workspace_id: string
+  project_scope: string
+  seq: number
+  action: string
+  payload: Record<string, unknown>
+  created_by: string
+  created_at: string
+}
+
+export interface OperationJournalResult {
+  items: OperationJournalItem[]
+  head_index: number
+  total: number
+}
+
+export async function listOperations(
+  workspaceId: string,
+  projectScope: string,
+  params?: { limit?: number; offset?: number },
+): Promise<OperationJournalResult> {
+  const response = await api.get(`/api/workspaces/${workspaceId}/operations`, {
+    params: { project_scope: projectScope, ...params },
+  })
+  return response.data as OperationJournalResult
+}
+
+// ========== 在线成员 ==========
+
+export interface OnlineMember {
+  user_id: string
+  user_name: string
+}
+
+export async function listOnlineMembers(workspaceId: string): Promise<OnlineMember[]> {
+  const response = await api.get(`/api/workspaces/${workspaceId}/online-members`)
+  return (response.data?.members || []) as OnlineMember[]
+}
+
+// ========== 协作 Episode 分配 ==========
+
+export interface EpisodeAssignment {
+  episode_id: string
+  workspace_id: string
+  series_id: string
+  assigned_to: string
+  assigned_to_name?: string
+  assigned_to_email?: string
+  status: 'draft' | 'submitted' | 'approved' | 'rejected'
+  locked_at: string
+  submitted_at: string
+  reviewed_at: string
+  reviewed_by: string
+  note: string
+  created_at: string
+  updated_at: string
+}
+
+export async function listEpisodeAssignments(
+  workspaceId: string,
+  params?: { series_id?: string; assigned_to?: string; status?: string }
+): Promise<EpisodeAssignment[]> {
+  const response = await api.get(`/api/workspaces/${workspaceId}/episode-assignments`, { params })
+  return (response.data?.assignments || []) as EpisodeAssignment[]
+}
+
+export async function assignEpisode(
+  workspaceId: string,
+  episodeId: string,
+  assignedTo: string,
+  note?: string,
+): Promise<EpisodeAssignment> {
+  const response = await api.put(
+    `/api/workspaces/${workspaceId}/episodes/${episodeId}/assignment`,
+    { assigned_to: assignedTo, note: note || '' },
+  )
+  return response.data as EpisodeAssignment
+}
+
+export async function submitEpisodeAssignment(
+  workspaceId: string,
+  episodeId: string,
+): Promise<EpisodeAssignment> {
+  const response = await api.post(`/api/workspaces/${workspaceId}/episodes/${episodeId}/submit`)
+  return response.data as EpisodeAssignment
+}
+
+export async function approveEpisodeAssignment(
+  workspaceId: string,
+  episodeId: string,
+  note?: string,
+): Promise<EpisodeAssignment> {
+  const response = await api.post(
+    `/api/workspaces/${workspaceId}/episodes/${episodeId}/approve`,
+    { note: note || '' },
+  )
+  return response.data as EpisodeAssignment
+}
+
+export async function rejectEpisodeAssignment(
+  workspaceId: string,
+  episodeId: string,
+  note?: string,
+): Promise<EpisodeAssignment> {
+  const response = await api.post(
+    `/api/workspaces/${workspaceId}/episodes/${episodeId}/reject`,
+    { note: note || '' },
+  )
+  return response.data as EpisodeAssignment
+}
+
 // ========== Agent Video Task Polling ==========
 
 // Poll pending video tasks for a project (updates backend project YAML)
@@ -2221,15 +2353,32 @@ export interface StudioSeries {
   created_at: string
   updated_at: string
   episode_count?: number
+  volume_count?: number
   element_count?: number
   digital_human_profiles?: StudioDigitalHumanProfile[]
+  volumes?: StudioVolume[]
   episodes?: StudioEpisode[]
   shared_elements?: StudioElement[]
+}
+
+export interface StudioVolume {
+  id: string
+  series_id: string
+  volume_number: number
+  name: string
+  description: string
+  source_text: string
+  style_anchor: Record<string, unknown>
+  status: string
+  episode_count?: number
+  created_at: string
+  updated_at: string
 }
 
 export interface StudioEpisode {
   id: string
   series_id: string
+  volume_id: string
   act_number: number
   title: string
   summary: string
@@ -2239,6 +2388,8 @@ export interface StudioEpisode {
   status: string
   created_at: string
   updated_at: string
+  volume_name?: string
+  volume_number?: number
   shots?: StudioShot[]
   episode_elements?: StudioEpisodeElement[]
 }
@@ -2354,6 +2505,13 @@ export interface StudioShot {
   video_history: string[]
   audio_url: string
   visual_action: Record<string, unknown>
+  shot_size: string
+  camera_angle: string
+  camera_movement: string
+  emotion: string
+  emotion_intensity: number
+  key_frame_prompt: string
+  key_frame_url: string
   status: string
   created_at: string
   updated_at: string
@@ -2507,8 +2665,10 @@ export async function studioDeleteSeries(seriesId: string): Promise<void> {
 
 // --- 分集 ---
 
-export async function studioListEpisodes(seriesId: string): Promise<StudioEpisode[]> {
-  const response = await api.get(`/api/studio/series/${seriesId}/episodes`)
+export async function studioListEpisodes(seriesId: string, volumeId?: string): Promise<StudioEpisode[]> {
+  const response = await api.get(`/api/studio/series/${seriesId}/episodes`, {
+    params: volumeId ? { volume_id: volumeId } : undefined,
+  })
   return response.data
 }
 
@@ -2519,10 +2679,101 @@ export async function studioGetEpisode(episodeId: string): Promise<StudioEpisode
 
 export async function studioUpdateEpisode(
   episodeId: string,
-  updates: Partial<Pick<StudioEpisode, 'title' | 'summary' | 'script_excerpt' | 'target_duration_seconds' | 'status'>>
+  updates: Partial<Pick<StudioEpisode, 'title' | 'summary' | 'script_excerpt' | 'target_duration_seconds' | 'status' | 'volume_id'>>
 ): Promise<StudioEpisode> {
   const response = await api.put(`/api/studio/episodes/${episodeId}`, updates)
   return response.data
+}
+
+// --- 卷（Volume） ---
+
+export async function studioListVolumes(seriesId: string): Promise<StudioVolume[]> {
+  const response = await api.get(`/api/studio/series/${seriesId}/volumes`)
+  return response.data as StudioVolume[]
+}
+
+export async function studioCreateVolume(
+  seriesId: string,
+  payload?: {
+    volume_number?: number
+    name?: string
+    description?: string
+    source_text?: string
+    inherit_previous_anchor?: boolean
+  },
+): Promise<StudioVolume> {
+  const response = await api.post(`/api/studio/series/${seriesId}/volumes`, payload || {})
+  return response.data as StudioVolume
+}
+
+export async function studioUpdateVolume(
+  volumeId: string,
+  payload: {
+    volume_number?: number
+    name?: string
+    description?: string
+    source_text?: string
+    style_anchor?: Record<string, unknown>
+    status?: string
+  },
+): Promise<StudioVolume> {
+  const response = await api.put(`/api/studio/volumes/${volumeId}`, payload)
+  return response.data as StudioVolume
+}
+
+export async function studioDeleteVolume(volumeId: string): Promise<void> {
+  await api.delete(`/api/studio/volumes/${volumeId}`)
+}
+
+export async function studioCreateEpisodeInVolume(
+  volumeId: string,
+  payload?: {
+    act_number?: number
+    title?: string
+    summary?: string
+    script_excerpt?: string
+    target_duration_seconds?: number
+    status?: string
+  },
+): Promise<StudioEpisode> {
+  const response = await api.post(`/api/studio/volumes/${volumeId}/episodes`, payload || {})
+  return response.data as StudioEpisode
+}
+
+export async function studioExtractVolumeStyleAnchor(
+  volumeId: string,
+  payload?: { preferred_episode_id?: string },
+): Promise<{ ok: boolean; volume: StudioVolume; style_anchor: Record<string, unknown> }> {
+  const response = await api.post(`/api/studio/volumes/${volumeId}/extract-style-anchor`, payload || {})
+  return response.data as { ok: boolean; volume: StudioVolume; style_anchor: Record<string, unknown> }
+}
+
+export async function studioMigrateSeriesStyle(
+  seriesId: string,
+  payload: {
+    source_volume_id: string
+    target_volume_ids?: string[]
+    overwrite?: boolean
+  },
+): Promise<{
+  ok: boolean
+  series_id: string
+  source_volume_id: string
+  source_style_anchor: Record<string, unknown>
+  updated_volume_ids: string[]
+  skipped_volume_ids: string[]
+  missing_target_ids: string[]
+}> {
+  const response = await api.post(`/api/studio/series/${seriesId}/migrate-style`, payload)
+  return response.data as {
+    ok: boolean
+    series_id: string
+    source_volume_id: string
+    source_style_anchor: Record<string, unknown>
+    updated_volume_ids: string[]
+    skipped_volume_ids: string[]
+    missing_target_ids: string[]
+  }
 }
 
 export async function studioDeleteEpisode(episodeId: string): Promise<void> {
@@ -2679,7 +2930,7 @@ export async function studioReorderShots(
 
 export async function studioUpdateShot(
   shotId: string,
-  updates: Partial<Pick<StudioShot, 'name' | 'type' | 'duration' | 'description' | 'prompt' | 'end_prompt' | 'video_prompt' | 'narration' | 'dialogue_script' | 'sound_effects' | 'segment_name' | 'start_image_url' | 'end_image_url' | 'frame_history' | 'video_history' | 'visual_action'>>
+  updates: Partial<Pick<StudioShot, 'name' | 'type' | 'duration' | 'description' | 'prompt' | 'end_prompt' | 'video_prompt' | 'narration' | 'dialogue_script' | 'sound_effects' | 'segment_name' | 'start_image_url' | 'end_image_url' | 'frame_history' | 'video_history' | 'visual_action' | 'shot_size' | 'camera_angle' | 'camera_movement' | 'emotion' | 'emotion_intensity' | 'key_frame_prompt' | 'key_frame_url'>>
 ): Promise<StudioShot> {
   const response = await api.put(`/api/studio/shots/${shotId}`, updates)
   return response.data
@@ -2692,7 +2943,7 @@ export async function studioDeleteShot(shotId: string): Promise<void> {
 export async function studioGenerateShotAsset(
   shotId: string,
   params: {
-    stage: 'frame' | 'end_frame' | 'video' | 'audio'
+    stage: 'frame' | 'key_frame' | 'end_frame' | 'video' | 'audio'
     width?: number
     height?: number
     voice_type?: string
@@ -2719,7 +2970,7 @@ export interface StudioBatchGenerateStreamEvent {
   episode_id?: string
   stages?: string[]
   video_generate_audio?: boolean
-  stage?: 'elements' | 'frames' | 'end_frames' | 'videos' | 'audio'
+  stage?: 'elements' | 'frames' | 'key_frames' | 'end_frames' | 'videos' | 'audio'
   stage_total?: number
   item_id?: string
   item_name?: string
@@ -2760,7 +3011,7 @@ export async function studioBatchGenerate(
   options?: StudioBatchGenerateOptions,
 ): Promise<Record<string, unknown>> {
   const response = await studioApi.post(`/api/studio/episodes/${episodeId}/batch-generate`, {
-    stages: stages || ['elements', 'frames', 'end_frames', 'videos', 'audio'],
+    stages: stages || ['elements', 'frames', 'key_frames', 'end_frames', 'videos', 'audio'],
     parallel: parallel || undefined,
     video_generate_audio: options?.video_generate_audio,
   })
@@ -2775,7 +3026,7 @@ export function studioBatchGenerateStream(
   onEvent: (event: StudioBatchGenerateStreamEvent) => void,
   onError?: (error: Error) => void
 ): () => void {
-  const stageList = (stages || ['elements', 'frames', 'end_frames', 'videos', 'audio'])
+  const stageList = (stages || ['elements', 'frames', 'key_frames', 'end_frames', 'videos', 'audio'])
     .map((stage) => stage?.trim())
     .filter((stage): stage is string => Boolean(stage))
   const query = new URLSearchParams()

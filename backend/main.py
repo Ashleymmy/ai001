@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, Header
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
@@ -22,6 +22,7 @@ from services.studio_storage import StudioStorage
 from services.studio_service import StudioService, StudioServiceError
 from services.studio_export_service import StudioExportService
 from services.studio.prompt_sentinel import analyze_prompt_text, apply_prompt_suggestions
+from services.ws_manager import ws_manager
 from services.studio.prompts import build_default_custom_prompts, normalize_custom_prompts
 from services.collab_service import CollabService
 from services.fish_audio_service import FishAudioConfig, FishAudioService
@@ -5838,6 +5839,15 @@ class WorkspaceUndoRedoRequest(BaseModel):
     project_scope: str = "studio:global"
 
 
+class WorkspaceEpisodeAssignRequest(BaseModel):
+    assigned_to: str
+    note: str = ""
+
+
+class WorkspaceEpisodeReviewRequest(BaseModel):
+    note: str = ""
+
+
 @app.get("/api/auth/config")
 async def collab_auth_config():
     return {"auth_required": AUTH_REQUIRED}
@@ -6060,6 +6070,254 @@ async def collab_workspace_redo(
     }
 
 
+@app.get("/api/workspaces/{workspace_id}/operations")
+async def collab_list_operations(
+    workspace_id: str,
+    request: Request,
+    project_scope: str = "studio:global",
+    limit: int = 50,
+    offset: int = 0,
+    authorization: Optional[str] = Header(None),
+):
+    """Return the operation journal for a workspace+scope with head position."""
+    _collab_require_workspace_role(request, workspace_id, "viewer", authorization)
+    service = _collab_ensure_service_ready()
+    result = service.list_operations(workspace_id, project_scope, limit=limit, offset=offset)
+    return result
+
+
+@app.websocket("/ws/workspace/{workspace_id}")
+async def workspace_ws(websocket: WebSocket, workspace_id: str):
+    """WebSocket endpoint for real-time workspace collaboration.
+
+    Authentication: pass access_token as query parameter.
+    Messages from client:
+      - {"type": "heartbeat"}
+      - {"type": "episode_focus", "episode_id": "..."}
+    Server broadcasts:
+      - member_online / member_offline (with online_members list)
+      - episode_locked / episode_unlocked
+      - episode_submitted / episode_approved / episode_rejected
+      - element_updated / shot_updated
+    """
+    import json as _json
+
+    # Authenticate via query param
+    token = websocket.query_params.get("access_token", "")
+    if not token:
+        await websocket.close(code=4001, reason="missing access_token")
+        return
+
+    try:
+        service = _collab_ensure_service_ready()
+        user = service.verify_access_token(token)
+    except Exception:
+        await websocket.close(code=4003, reason="invalid or expired token")
+        return
+
+    user_id = user.get("id", "")
+    user_name = user.get("name", user.get("email", "unknown"))
+
+    # Verify workspace membership
+    try:
+        service.require_workspace_role(workspace_id, user_id, "viewer")
+    except Exception:
+        await websocket.close(code=4003, reason="not a workspace member")
+        return
+
+    client = await ws_manager.connect(websocket, workspace_id, user_id, user_name)
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = _json.loads(raw)
+            except Exception:
+                continue
+
+            msg_type = msg.get("type", "")
+
+            if msg_type == "heartbeat":
+                ws_manager.update_heartbeat(client)
+                await websocket.send_text(_json.dumps({"type": "heartbeat_ack"}))
+
+            elif msg_type == "episode_focus":
+                # Broadcast that this user is focusing on an episode
+                await ws_manager.broadcast(
+                    workspace_id,
+                    {
+                        "type": "episode_focus",
+                        "user_id": user_id,
+                        "user_name": user_name,
+                        "episode_id": msg.get("episode_id", ""),
+                    },
+                    exclude_user=user_id,
+                )
+
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        ws_manager.disconnect(client)
+        await ws_manager.broadcast_disconnect(client)
+
+
+@app.get("/api/workspaces/{workspace_id}/online-members")
+async def collab_get_online_members(
+    workspace_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    """Return currently online members for a workspace (via WebSocket)."""
+    _collab_require_workspace_role(request, workspace_id, "viewer", authorization)
+    return {"members": ws_manager.get_online_members(workspace_id)}
+
+
+@app.get("/api/workspaces/{workspace_id}/episode-assignments")
+async def collab_list_episode_assignments(
+    workspace_id: str,
+    request: Request,
+    series_id: Optional[str] = Query(None),
+    assigned_to: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    _collab_require_workspace_role(request, workspace_id, "viewer", authorization)
+    return _collab_ensure_service_ready().list_episode_assignments(
+        workspace_id=workspace_id,
+        series_id=str(series_id or "").strip(),
+        assigned_to=str(assigned_to or "").strip(),
+        status=str(status or "").strip(),
+    )
+
+
+@app.put("/api/workspaces/{workspace_id}/episodes/{episode_id}/assignment")
+async def collab_assign_episode(
+    workspace_id: str,
+    episode_id: str,
+    req: WorkspaceEpisodeAssignRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    actor = _collab_require_workspace_role(request, workspace_id, "owner", authorization)
+    studio = _studio_ensure_service_ready()
+    episode = studio.storage.get_episode(episode_id)
+    if not episode:
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+    series = studio.storage.get_series(str(episode.get("series_id") or ""))
+    series_workspace_id = str((series or {}).get("workspace_id") or "").strip()
+    if series_workspace_id and series_workspace_id != workspace_id:
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+
+    collab = _collab_ensure_service_ready()
+    try:
+        assignment = collab.upsert_episode_assignment(
+            workspace_id=workspace_id,
+            episode_id=episode_id,
+            assigned_to=req.assigned_to,
+            actor_user_id=str(actor.get("id") or ""),
+            note=req.note,
+        )
+        await ws_manager.broadcast(workspace_id, {
+            "type": "episode_locked",
+            "episode_id": episode_id,
+            "assigned_to": req.assigned_to,
+            "assignment": assignment,
+        })
+        return assignment
+    except ValueError as e:
+        _studio_raise(400, str(e), "episode_assignment_invalid", {"episode_id": episode_id})
+
+
+@app.post("/api/workspaces/{workspace_id}/episodes/{episode_id}/submit")
+async def collab_submit_episode_assignment(
+    workspace_id: str,
+    episode_id: str,
+    req: WorkspaceEpisodeReviewRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    user = _collab_require_workspace_role(request, workspace_id, "editor", authorization)
+    collab = _collab_ensure_service_ready()
+    try:
+        assignment = collab.submit_episode_assignment(
+            workspace_id=workspace_id,
+            episode_id=episode_id,
+            actor_user_id=str(user.get("id") or ""),
+            note=req.note,
+        )
+    except ValueError as e:
+        _studio_raise(400, str(e), "episode_assignment_invalid", {"episode_id": episode_id})
+    if not assignment:
+        _studio_raise(404, "分配记录不存在", "episode_assignment_not_found", {"episode_id": episode_id})
+    await ws_manager.broadcast(workspace_id, {
+        "type": "episode_submitted",
+        "episode_id": episode_id,
+        "assignment": assignment,
+    })
+    return assignment
+
+
+@app.post("/api/workspaces/{workspace_id}/episodes/{episode_id}/approve")
+async def collab_approve_episode_assignment(
+    workspace_id: str,
+    episode_id: str,
+    req: WorkspaceEpisodeReviewRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    owner = _collab_require_workspace_role(request, workspace_id, "owner", authorization)
+    collab = _collab_ensure_service_ready()
+    try:
+        assignment = collab.review_episode_assignment(
+            workspace_id=workspace_id,
+            episode_id=episode_id,
+            reviewer_user_id=str(owner.get("id") or ""),
+            approve=True,
+            note=req.note,
+        )
+    except ValueError as e:
+        _studio_raise(400, str(e), "episode_assignment_invalid", {"episode_id": episode_id})
+    if not assignment:
+        _studio_raise(404, "分配记录不存在", "episode_assignment_not_found", {"episode_id": episode_id})
+    await ws_manager.broadcast(workspace_id, {
+        "type": "episode_approved",
+        "episode_id": episode_id,
+        "assignment": assignment,
+    })
+    return assignment
+
+
+@app.post("/api/workspaces/{workspace_id}/episodes/{episode_id}/reject")
+async def collab_reject_episode_assignment(
+    workspace_id: str,
+    episode_id: str,
+    req: WorkspaceEpisodeReviewRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    owner = _collab_require_workspace_role(request, workspace_id, "owner", authorization)
+    collab = _collab_ensure_service_ready()
+    try:
+        assignment = collab.review_episode_assignment(
+            workspace_id=workspace_id,
+            episode_id=episode_id,
+            reviewer_user_id=str(owner.get("id") or ""),
+            approve=False,
+            note=req.note,
+        )
+    except ValueError as e:
+        _studio_raise(400, str(e), "episode_assignment_invalid", {"episode_id": episode_id})
+    if not assignment:
+        _studio_raise(404, "分配记录不存在", "episode_assignment_not_found", {"episode_id": episode_id})
+    await ws_manager.broadcast(workspace_id, {
+        "type": "episode_rejected",
+        "episode_id": episode_id,
+        "assignment": assignment,
+    })
+    return assignment
+
+
 # ==========================================================================
 # Studio 长篇制作工作台路由
 # ==========================================================================
@@ -6092,6 +6350,43 @@ class StudioEpisodeUpdateRequest(BaseModel):
     script_excerpt: Optional[str] = None
     target_duration_seconds: Optional[float] = None
     status: Optional[str] = None
+    volume_id: Optional[str] = None
+
+
+class StudioVolumeCreateRequest(BaseModel):
+    volume_number: Optional[int] = None
+    name: str = ""
+    description: str = ""
+    source_text: str = ""
+    inherit_previous_anchor: bool = True
+
+
+class StudioVolumeUpdateRequest(BaseModel):
+    volume_number: Optional[int] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+    source_text: Optional[str] = None
+    style_anchor: Optional[Dict[str, Any]] = None
+    status: Optional[str] = None
+
+
+class StudioVolumeEpisodeCreateRequest(BaseModel):
+    act_number: Optional[int] = None
+    title: str = ""
+    summary: str = ""
+    script_excerpt: str = ""
+    target_duration_seconds: float = 90.0
+    status: str = "draft"
+
+
+class StudioVolumeStyleAnchorExtractRequest(BaseModel):
+    preferred_episode_id: Optional[str] = None
+
+
+class StudioStyleMigrateRequest(BaseModel):
+    source_volume_id: str
+    target_volume_ids: Optional[List[str]] = None
+    overwrite: bool = False
 
 
 class StudioElementCreateRequest(BaseModel):
@@ -6129,10 +6424,17 @@ class StudioShotUpdateRequest(BaseModel):
     frame_history: Optional[List[str]] = None
     video_history: Optional[List[str]] = None
     visual_action: Optional[Dict[str, Any]] = None
+    shot_size: Optional[str] = None
+    camera_angle: Optional[str] = None
+    camera_movement: Optional[str] = None
+    emotion: Optional[str] = None
+    emotion_intensity: Optional[int] = None
+    key_frame_prompt: Optional[str] = None
+    key_frame_url: Optional[str] = None
 
 
 class StudioGenerateRequest(BaseModel):
-    stage: str = "frame"  # frame / end_frame / video / audio
+    stage: str = "frame"  # frame / key_frame / end_frame / video / audio
     width: int = 1280
     height: int = 720
     voice_type: Optional[str] = None
@@ -6147,7 +6449,7 @@ class StudioInpaintRequest(BaseModel):
 
 
 class StudioBatchGenerateRequest(BaseModel):
-    stages: List[str] = ["elements", "frames", "end_frames", "videos", "audio"]
+    stages: List[str] = ["elements", "frames", "key_frames", "end_frames", "videos", "audio"]
     parallel: Optional[Dict[str, Any]] = None
     video_generate_audio: Optional[bool] = None
 
@@ -6296,6 +6598,49 @@ def _studio_parse_float(value: Any, fallback: float = 0.0) -> float:
         return fallback
 
 
+def _studio_build_volume_style_anchor(
+    service: StudioService,
+    series: Dict[str, Any],
+    volume_id: str,
+    preferred_episode_id: str = "",
+) -> Dict[str, Any]:
+    episodes = service.storage.list_episodes(str(series.get("id") or ""), volume_id=volume_id)
+    target_episode: Optional[Dict[str, Any]] = None
+    preferred = str(preferred_episode_id or "").strip()
+    if preferred:
+        target_episode = next((ep for ep in episodes if str(ep.get("id") or "") == preferred), None)
+    if not target_episode and episodes:
+        target_episode = episodes[0]
+
+    target_shot: Optional[Dict[str, Any]] = None
+    if target_episode:
+        shots = service.storage.get_shots(str(target_episode.get("id") or ""))
+        if shots:
+            target_shot = shots[0]
+
+    visual_style = str(series.get("visual_style") or "").strip()
+    source = "auto_extract" if target_episode else "series_fallback"
+    return {
+        "visual_style": visual_style,
+        "reference_episode_id": str((target_episode or {}).get("id") or ""),
+        "reference_shot_id": str((target_shot or {}).get("id") or ""),
+        "reference_prompt": str(
+            (target_shot or {}).get("prompt")
+            or (target_shot or {}).get("video_prompt")
+            or (target_shot or {}).get("description")
+            or ""
+        ),
+        "reference_frame_url": str(
+            (target_shot or {}).get("start_image_url")
+            or (target_shot or {}).get("key_frame_url")
+            or (target_shot or {}).get("end_image_url")
+            or ""
+        ),
+        "source": source,
+        "updated_at": datetime.now().isoformat(),
+    }
+
+
 def _studio_normalize_agent_element_id(raw_id: str, fallback: str) -> str:
     source = str(raw_id or "").strip()
     if not source:
@@ -6434,6 +6779,38 @@ def _collab_require_workspace_role(
     return user
 
 
+def _collab_require_episode_write_access(
+    request: Request,
+    workspace_id: str,
+    episode_id: str,
+    authorization: Optional[str] = None,
+) -> Dict[str, Any]:
+    if not workspace_id:
+        return _collab_get_current_user(request, authorization, required=False)
+
+    user = _collab_require_workspace_role(request, workspace_id, "editor", authorization)
+    service = _collab_ensure_service_ready()
+    role = str(service.get_member_role(workspace_id, str(user.get("id") or "")) or "")
+    allowed, reason, assignment = service.can_edit_episode(
+        workspace_id=workspace_id,
+        episode_id=episode_id,
+        user_id=str(user.get("id") or ""),
+        role=role,
+    )
+    if not allowed:
+        _studio_raise(
+            403,
+            reason or "当前分幕处于锁定状态，无法编辑",
+            "episode_assignment_locked",
+            {
+                "workspace_id": workspace_id,
+                "episode_id": episode_id,
+                "assignment": assignment or {},
+            },
+        )
+    return user
+
+
 def _studio_append_collab_operation(
     *,
     workspace_id: str,
@@ -6459,6 +6836,25 @@ def _studio_append_collab_operation(
         )
     except Exception as e:
         print(f"[Collab] 记录操作日志失败: {e}")
+
+    # Broadcast via WebSocket to connected workspace members
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(ws_manager.broadcast(
+                workspace_id,
+                {
+                    "type": action.replace(".", "_"),
+                    "action": action,
+                    "project_scope": project_scope,
+                    "created_by": created_by,
+                    "after": after,
+                },
+                exclude_user=created_by,
+            ))
+    except Exception:
+        pass
 
 
 def _studio_apply_collab_operation(op: Dict[str, Any], direction: str) -> Dict[str, Any]:
@@ -6642,10 +7038,10 @@ async def studio_delete_series(
     return {"ok": True}
 
 
-# --- 分集 ---
+# --- 卷（Volume） ---
 
-@app.get("/api/studio/series/{series_id}/episodes")
-async def studio_list_episodes(
+@app.get("/api/studio/series/{series_id}/volumes")
+async def studio_list_volumes(
     series_id: str,
     request: Request,
     workspace_id: Optional[str] = Query(None),
@@ -6662,7 +7058,267 @@ async def studio_list_episodes(
         _collab_require_workspace_role(request, effective_workspace_id, "viewer", authorization)
     if resolved_workspace_id and series_workspace and resolved_workspace_id != series_workspace:
         _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
-    return service.storage.list_episodes(series_id)
+    return service.storage.list_volumes(series_id)
+
+
+@app.post("/api/studio/series/{series_id}/volumes")
+async def studio_create_volume(
+    series_id: str,
+    req: StudioVolumeCreateRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    service = _studio_ensure_service_ready()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    resolved_workspace_id = str(series.get("workspace_id") or "").strip() or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+
+    style_anchor: Dict[str, Any] = {}
+    if req.inherit_previous_anchor:
+        volumes = service.storage.list_volumes(series_id)
+        if volumes:
+            last_anchor = volumes[-1].get("style_anchor")
+            if isinstance(last_anchor, dict):
+                style_anchor = dict(last_anchor)
+    if not style_anchor:
+        base_style = str(series.get("visual_style") or "").strip()
+        if base_style:
+            style_anchor = {
+                "visual_style": base_style,
+                "source": "series_visual_style",
+                "updated_at": datetime.now().isoformat(),
+            }
+
+    try:
+        created = service.storage.create_volume(
+            series_id=series_id,
+            volume_number=req.volume_number,
+            name=req.name,
+            description=req.description,
+            source_text=req.source_text,
+            style_anchor=style_anchor,
+        )
+        return created
+    except ValueError as e:
+        _studio_raise(400, str(e), "volume_invalid_payload", {"series_id": series_id})
+
+
+@app.put("/api/studio/volumes/{volume_id}")
+async def studio_update_volume(
+    volume_id: str,
+    req: StudioVolumeUpdateRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    service = _studio_ensure_service_ready()
+    before = service.storage.get_volume(volume_id)
+    if not before:
+        _studio_raise(404, "卷不存在", "volume_not_found", {"volume_id": volume_id})
+    series = service.storage.get_series(str(before.get("series_id") or ""))
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": before.get("series_id")})
+    resolved_workspace_id = str(series.get("workspace_id") or "").strip() or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    try:
+        updated = service.storage.update_volume(volume_id, updates)
+    except ValueError as e:
+        _studio_raise(400, str(e), "volume_invalid_payload", {"volume_id": volume_id})
+    if not updated:
+        _studio_raise(404, "卷不存在", "volume_not_found", {"volume_id": volume_id})
+    return updated
+
+
+@app.delete("/api/studio/volumes/{volume_id}")
+async def studio_delete_volume(
+    volume_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    service = _studio_ensure_service_ready()
+    volume = service.storage.get_volume(volume_id)
+    if not volume:
+        _studio_raise(404, "卷不存在", "volume_not_found", {"volume_id": volume_id})
+    series = service.storage.get_series(str(volume.get("series_id") or ""))
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": volume.get("series_id")})
+    resolved_workspace_id = str(series.get("workspace_id") or "").strip() or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+    ok = service.storage.delete_volume(volume_id, detach_episodes=True)
+    if not ok:
+        _studio_raise(404, "卷不存在", "volume_not_found", {"volume_id": volume_id})
+    return {"ok": True}
+
+
+@app.post("/api/studio/volumes/{volume_id}/episodes")
+async def studio_create_episode_in_volume(
+    volume_id: str,
+    req: StudioVolumeEpisodeCreateRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    service = _studio_ensure_service_ready()
+    volume = service.storage.get_volume(volume_id)
+    if not volume:
+        _studio_raise(404, "卷不存在", "volume_not_found", {"volume_id": volume_id})
+    series_id = str(volume.get("series_id") or "").strip()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    resolved_workspace_id = str(series.get("workspace_id") or "").strip() or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+
+    act_number = int(req.act_number or 0)
+    if act_number <= 0:
+        act_number = service.storage.get_next_episode_act_number(series_id)
+
+    try:
+        created = service.storage.create_episode(
+            series_id=series_id,
+            volume_id=volume_id,
+            act_number=act_number,
+            title=req.title,
+            summary=req.summary,
+            script_excerpt=req.script_excerpt,
+            target_duration_seconds=req.target_duration_seconds,
+        )
+    except ValueError as e:
+        _studio_raise(400, str(e), "volume_invalid_payload", {"volume_id": volume_id})
+
+    if req.status and req.status != "draft":
+        try:
+            created = service.storage.update_episode(str(created.get("id") or ""), {"status": req.status}) or created
+        except ValueError as e:
+            _studio_raise(400, str(e), "episode_invalid_payload", {"volume_id": volume_id})
+    return created
+
+
+@app.post("/api/studio/volumes/{volume_id}/extract-style-anchor")
+async def studio_extract_volume_style_anchor(
+    volume_id: str,
+    req: StudioVolumeStyleAnchorExtractRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    service = _studio_ensure_service_ready()
+    volume = service.storage.get_volume(volume_id)
+    if not volume:
+        _studio_raise(404, "卷不存在", "volume_not_found", {"volume_id": volume_id})
+    series = service.storage.get_series(str(volume.get("series_id") or ""))
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": volume.get("series_id")})
+    resolved_workspace_id = str(series.get("workspace_id") or "").strip() or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+
+    style_anchor = _studio_build_volume_style_anchor(
+        service=service,
+        series=series,
+        volume_id=volume_id,
+        preferred_episode_id=req.preferred_episode_id or "",
+    )
+    updated = service.storage.update_volume(volume_id, {"style_anchor": style_anchor})
+    if not updated:
+        _studio_raise(404, "卷不存在", "volume_not_found", {"volume_id": volume_id})
+    return {"ok": True, "volume": updated, "style_anchor": style_anchor}
+
+
+@app.post("/api/studio/series/{series_id}/migrate-style")
+async def studio_migrate_style_between_volumes(
+    series_id: str,
+    req: StudioStyleMigrateRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    service = _studio_ensure_service_ready()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    resolved_workspace_id = str(series.get("workspace_id") or "").strip() or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+
+    all_volumes = service.storage.list_volumes(series_id)
+    source_volume_id = str(req.source_volume_id or "").strip()
+    source_volume = next((item for item in all_volumes if str(item.get("id") or "") == source_volume_id), None)
+    if not source_volume:
+        _studio_raise(404, "来源卷不存在", "volume_not_found", {"volume_id": source_volume_id})
+
+    source_anchor_raw = source_volume.get("style_anchor")
+    source_anchor = dict(source_anchor_raw) if isinstance(source_anchor_raw, dict) else {}
+    if not source_anchor:
+        source_anchor = _studio_build_volume_style_anchor(service, series, source_volume_id)
+        service.storage.update_volume(source_volume_id, {"style_anchor": source_anchor})
+
+    requested_targets = [str(item or "").strip() for item in (req.target_volume_ids or []) if str(item or "").strip()]
+    candidate_volumes = [item for item in all_volumes if str(item.get("id") or "") != source_volume_id]
+    if requested_targets:
+        requested_set = set(requested_targets)
+        target_volumes = [item for item in candidate_volumes if str(item.get("id") or "") in requested_set]
+        missing_target_ids = sorted(requested_set - {str(item.get("id") or "") for item in target_volumes})
+    else:
+        target_volumes = candidate_volumes
+        missing_target_ids = []
+
+    updated_ids: List[str] = []
+    skipped_ids: List[str] = []
+    for volume in target_volumes:
+        target_id = str(volume.get("id") or "")
+        target_anchor = volume.get("style_anchor")
+        if isinstance(target_anchor, dict) and target_anchor and not req.overwrite:
+            skipped_ids.append(target_id)
+            continue
+        updated = service.storage.update_volume(target_id, {"style_anchor": dict(source_anchor)})
+        if updated:
+            updated_ids.append(target_id)
+        else:
+            skipped_ids.append(target_id)
+
+    return {
+        "ok": True,
+        "series_id": series_id,
+        "source_volume_id": source_volume_id,
+        "source_style_anchor": source_anchor,
+        "updated_volume_ids": updated_ids,
+        "skipped_volume_ids": skipped_ids,
+        "missing_target_ids": missing_target_ids,
+    }
+
+
+# --- 分集 ---
+
+@app.get("/api/studio/series/{series_id}/episodes")
+async def studio_list_episodes(
+    series_id: str,
+    request: Request,
+    volume_id: Optional[str] = Query(None),
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    service = _studio_ensure_service_ready()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    series_workspace = str(series.get("workspace_id") or "").strip()
+    resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+    effective_workspace_id = series_workspace or resolved_workspace_id
+    if effective_workspace_id and (AUTH_REQUIRED or resolved_workspace_id):
+        _collab_require_workspace_role(request, effective_workspace_id, "viewer", authorization)
+    if resolved_workspace_id and series_workspace and resolved_workspace_id != series_workspace:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    return service.storage.list_episodes(series_id, volume_id=volume_id)
 
 
 @app.get("/api/studio/episodes/{episode_id}")
@@ -6702,20 +7358,28 @@ async def studio_update_episode(
     series = service.storage.get_series(str(before.get("series_id") or ""))
     series_workspace = str((series or {}).get("workspace_id") or "").strip()
     resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    actor_user = _collab_get_current_user(request, authorization, required=False)
     if resolved_workspace_id:
-        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+        actor_user = _collab_require_episode_write_access(
+            request=request,
+            workspace_id=resolved_workspace_id,
+            episode_id=episode_id,
+            authorization=authorization,
+        )
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
-    result = service.storage.update_episode(episode_id, updates)
+    try:
+        result = service.storage.update_episode(episode_id, updates)
+    except ValueError as e:
+        _studio_raise(400, str(e), "episode_invalid_payload", {"episode_id": episode_id})
     if not result:
         _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
-    actor = _collab_get_current_user(request, authorization, required=False)
     _studio_append_collab_operation(
         workspace_id=resolved_workspace_id,
         project_scope=f"episode:{episode_id}",
         action="studio.episode.update",
         before=before,
         after=result,
-        created_by=str(actor.get("id") or ""),
+        created_by=str(actor_user.get("id") or ""),
     )
     try:
         service.storage.record_episode_history(episode_id, "edit_episode")
@@ -6739,7 +7403,12 @@ async def studio_delete_episode(
     series_workspace = str((series or {}).get("workspace_id") or "").strip()
     resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
     if resolved_workspace_id:
-        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+        _collab_require_episode_write_access(
+            request=request,
+            workspace_id=resolved_workspace_id,
+            episode_id=episode_id,
+            authorization=authorization,
+        )
     ok = service.storage.delete_episode(episode_id)
     if not ok:
         _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
@@ -6761,7 +7430,12 @@ async def studio_plan_episode(
     series_workspace = str((series or {}).get("workspace_id") or "").strip()
     resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
     if resolved_workspace_id:
-        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+        _collab_require_episode_write_access(
+            request=request,
+            workspace_id=resolved_workspace_id,
+            episode_id=episode_id,
+            authorization=authorization,
+        )
     try:
         result = await service.plan_episode(episode_id)
         return result
@@ -6785,7 +7459,12 @@ async def studio_enhance_episode(
     series_workspace = str((series or {}).get("workspace_id") or "").strip()
     resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
     if resolved_workspace_id:
-        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+        _collab_require_episode_write_access(
+            request=request,
+            workspace_id=resolved_workspace_id,
+            episode_id=episode_id,
+            authorization=authorization,
+        )
     try:
         result = await service.enhance_episode(episode_id, mode=mode)
         return result
@@ -7084,8 +7763,14 @@ async def studio_reorder_shots(
     series = service.storage.get_series(str(episode.get("series_id") or ""))
     series_workspace = str((series or {}).get("workspace_id") or "").strip()
     resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    actor = _collab_get_current_user(request, authorization, required=False)
     if resolved_workspace_id:
-        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+        actor = _collab_require_episode_write_access(
+            request=request,
+            workspace_id=resolved_workspace_id,
+            episode_id=episode_id,
+            authorization=authorization,
+        )
 
     existing = service.storage.get_shots(episode_id)
     existing_ids = [shot["id"] for shot in existing]
@@ -7098,7 +7783,6 @@ async def studio_reorder_shots(
         )
 
     service.storage.reorder_shots(episode_id, ids)
-    actor = _collab_get_current_user(request, authorization, required=False)
     _studio_append_collab_operation(
         workspace_id=resolved_workspace_id,
         project_scope=f"episode:{episode_id}",
@@ -7126,13 +7810,18 @@ async def studio_update_shot(
     series = service.storage.get_series(str((episode or {}).get("series_id") or ""))
     series_workspace = str((series or {}).get("workspace_id") or "").strip()
     resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
-    if resolved_workspace_id:
-        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+    actor = _collab_get_current_user(request, authorization, required=False)
+    if resolved_workspace_id and episode:
+        actor = _collab_require_episode_write_access(
+            request=request,
+            workspace_id=resolved_workspace_id,
+            episode_id=str(episode.get("id") or ""),
+            authorization=authorization,
+        )
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
     result = service.storage.update_shot(shot_id, updates)
     if not result:
         _studio_raise(404, "镜头不存在", "shot_not_found", {"shot_id": shot_id})
-    actor = _collab_get_current_user(request, authorization, required=False)
     _studio_append_collab_operation(
         workspace_id=resolved_workspace_id,
         project_scope=f"episode:{result['episode_id']}",
@@ -7164,8 +7853,13 @@ async def studio_delete_shot(
     series = service.storage.get_series(str((episode or {}).get("series_id") or ""))
     series_workspace = str((series or {}).get("workspace_id") or "").strip()
     resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
-    if resolved_workspace_id:
-        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+    if resolved_workspace_id and episode:
+        _collab_require_episode_write_access(
+            request=request,
+            workspace_id=resolved_workspace_id,
+            episode_id=str(episode.get("id") or ""),
+            authorization=authorization,
+        )
     ok = service.storage.delete_shot(shot_id)
     if not ok:
         _studio_raise(404, "镜头不存在", "shot_not_found", {"shot_id": shot_id})
@@ -7188,11 +7882,20 @@ async def studio_generate_shot_asset(
     series = service.storage.get_series(str((episode or {}).get("series_id") or ""))
     series_workspace = str((series or {}).get("workspace_id") or "").strip()
     resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
-    if resolved_workspace_id:
-        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+    if resolved_workspace_id and episode:
+        _collab_require_episode_write_access(
+            request=request,
+            workspace_id=resolved_workspace_id,
+            episode_id=str(episode.get("id") or ""),
+            authorization=authorization,
+        )
     try:
         if req.stage == "frame":
             return await service.generate_shot_frame(
+                shot_id, width=req.width, height=req.height
+            )
+        elif req.stage == "key_frame":
+            return await service.generate_shot_key_frame(
                 shot_id, width=req.width, height=req.height
             )
         elif req.stage == "end_frame":
@@ -7230,8 +7933,13 @@ async def studio_inpaint_shot_frame(
     series = service.storage.get_series(str((episode or {}).get("series_id") or ""))
     series_workspace = str((series or {}).get("workspace_id") or "").strip()
     resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
-    if resolved_workspace_id:
-        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+    if resolved_workspace_id and episode:
+        _collab_require_episode_write_access(
+            request=request,
+            workspace_id=resolved_workspace_id,
+            episode_id=str(episode.get("id") or ""),
+            authorization=authorization,
+        )
     try:
         return await service.inpaint_shot_frame(
             shot_id=shot_id,
@@ -7299,9 +8007,14 @@ async def studio_batch_generate_stream(
     series_workspace = str((series or {}).get("workspace_id") or "").strip()
     resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
     if resolved_workspace_id:
-        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+        _collab_require_episode_write_access(
+            request=request,
+            workspace_id=resolved_workspace_id,
+            episode_id=episode_id,
+            authorization=authorization,
+        )
 
-    default_stages = ["elements", "frames", "end_frames", "videos", "audio"]
+    default_stages = ["elements", "frames", "key_frames", "end_frames", "videos", "audio"]
     stage_list = [s.strip() for s in (stages or "").split(",") if s.strip()] or default_stages
     allowed_stages = set(default_stages)
     invalid_stages = [s for s in stage_list if s not in allowed_stages]
@@ -7388,7 +8101,12 @@ async def studio_batch_generate(
     series_workspace = str((series or {}).get("workspace_id") or "").strip()
     resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
     if resolved_workspace_id:
-        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+        _collab_require_episode_write_access(
+            request=request,
+            workspace_id=resolved_workspace_id,
+            episode_id=episode_id,
+            authorization=authorization,
+        )
     try:
         return await service.batch_generate_episode(
             episode_id,
@@ -7447,7 +8165,12 @@ async def studio_restore_episode_history(
     series_workspace = str((series or {}).get("workspace_id") or "").strip()
     resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
     if resolved_workspace_id:
-        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+        _collab_require_episode_write_access(
+            request=request,
+            workspace_id=resolved_workspace_id,
+            episode_id=episode_id,
+            authorization=authorization,
+        )
     try:
         service.restore_episode_history(episode_id, history_id)
         detail = service.get_episode_detail(episode_id)

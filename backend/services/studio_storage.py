@@ -37,9 +37,24 @@ CREATE TABLE IF NOT EXISTS series (
     updated_at      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS volumes (
+    id              TEXT PRIMARY KEY,
+    series_id       TEXT NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+    volume_number   INTEGER NOT NULL,
+    name            TEXT NOT NULL,
+    description     TEXT DEFAULT '',
+    source_text     TEXT DEFAULT '',
+    style_anchor    TEXT DEFAULT '{}',
+    status          TEXT DEFAULT 'draft',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    UNIQUE(series_id, volume_number)
+);
+
 CREATE TABLE IF NOT EXISTS episodes (
     id                      TEXT PRIMARY KEY,
     series_id               TEXT NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+    volume_id               TEXT DEFAULT '',
     act_number              INTEGER NOT NULL,
     title                   TEXT DEFAULT '',
     summary                 TEXT DEFAULT '',
@@ -131,6 +146,7 @@ CREATE TABLE IF NOT EXISTS digital_human_profiles (
     updated_at      TEXT NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_volumes_series ON volumes(series_id, volume_number);
 CREATE INDEX IF NOT EXISTS idx_episodes_series ON episodes(series_id);
 CREATE INDEX IF NOT EXISTS idx_shared_elements_series ON shared_elements(series_id);
 CREATE INDEX IF NOT EXISTS idx_shots_episode ON shots(episode_id);
@@ -184,7 +200,25 @@ class StudioStorage:
 
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
         """为历史数据库补齐新列。"""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS volumes (
+                id              TEXT PRIMARY KEY,
+                series_id       TEXT NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+                volume_number   INTEGER NOT NULL,
+                name            TEXT NOT NULL,
+                description     TEXT DEFAULT '',
+                source_text     TEXT DEFAULT '',
+                style_anchor    TEXT DEFAULT '{}',
+                status          TEXT DEFAULT 'draft',
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL,
+                UNIQUE(series_id, volume_number)
+            )
+            """
+        )
         self._ensure_column(conn, "series", "workspace_id", "TEXT DEFAULT ''")
+        self._ensure_column(conn, "episodes", "volume_id", "TEXT DEFAULT ''")
         self._ensure_column(conn, "shared_elements", "is_favorite", "INTEGER DEFAULT 0")
         self._ensure_column(conn, "shots", "end_prompt", "TEXT DEFAULT ''")
         self._ensure_column(conn, "shots", "end_image_url", "TEXT DEFAULT ''")
@@ -192,11 +226,21 @@ class StudioStorage:
         self._ensure_column(conn, "shots", "frame_history", "TEXT DEFAULT '[]'")
         self._ensure_column(conn, "shots", "video_history", "TEXT DEFAULT '[]'")
         self._ensure_column(conn, "shots", "visual_action", "TEXT DEFAULT '{}'")
+        # 精细化影视参数（对标 prompt_i18n.go 专业景别/运镜/情绪体系）
+        self._ensure_column(conn, "shots", "shot_size", "TEXT DEFAULT ''")
+        self._ensure_column(conn, "shots", "camera_angle", "TEXT DEFAULT ''")
+        self._ensure_column(conn, "shots", "camera_movement", "TEXT DEFAULT ''")
+        self._ensure_column(conn, "shots", "emotion", "TEXT DEFAULT ''")
+        self._ensure_column(conn, "shots", "emotion_intensity", "INTEGER DEFAULT 0")
+        self._ensure_column(conn, "shots", "key_frame_prompt", "TEXT DEFAULT ''")
+        self._ensure_column(conn, "shots", "key_frame_url", "TEXT DEFAULT ''")
         self._ensure_column(conn, "digital_human_profiles", "display_name", "TEXT DEFAULT ''")
         self._ensure_column(conn, "digital_human_profiles", "scene_template", "TEXT DEFAULT ''")
         self._ensure_column(conn, "digital_human_profiles", "lip_sync_style", "TEXT DEFAULT ''")
         self._ensure_column(conn, "digital_human_profiles", "sort_order", "INTEGER DEFAULT 0")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_series_workspace ON series(workspace_id, updated_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_volumes_series ON volumes(series_id, volume_number)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_episodes_volume ON episodes(volume_id, act_number)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_dh_profiles_series ON digital_human_profiles(series_id, sort_order, updated_at DESC)")
 
     @staticmethod
@@ -207,7 +251,8 @@ class StudioStorage:
         # 自动反序列化 JSON 字段
         for key in ("settings", "creative_brief", "image_history",
                      "reference_images", "appears_in_episodes",
-                     "frame_history", "video_history", "visual_action", "snapshot_json"):
+                     "frame_history", "video_history", "visual_action",
+                     "snapshot_json", "style_anchor"):
             if key in d and isinstance(d[key], str):
                 try:
                     d[key] = json.loads(d[key])
@@ -270,6 +315,7 @@ class StudioStorage:
         try:
             sql = """SELECT s.*,
                             (SELECT COUNT(*) FROM episodes e WHERE e.series_id=s.id) AS episode_count,
+                            (SELECT COUNT(*) FROM volumes v WHERE v.series_id=s.id) AS volume_count,
                             (SELECT COUNT(*) FROM shared_elements se WHERE se.series_id=s.id) AS element_count
                      FROM series s"""
             params: List[Any] = []
@@ -323,6 +369,200 @@ class StudioStorage:
             return cur.rowcount > 0
         finally:
             conn.close()
+
+    # ==================================================================
+    # 卷（Volume）CRUD
+    # ==================================================================
+
+    def get_next_volume_number(
+        self,
+        series_id: str,
+        *,
+        _conn: Optional[sqlite3.Connection] = None,
+    ) -> int:
+        conn = _conn or self._connect()
+        try:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(volume_number), 0) + 1 AS next_number FROM volumes WHERE series_id=?",
+                (series_id,),
+            ).fetchone()
+            return max(1, int((row["next_number"] if row else 1) or 1))
+        finally:
+            if _conn is None:
+                conn.close()
+
+    def create_volume(
+        self,
+        series_id: str,
+        volume_number: Optional[int] = None,
+        name: str = "",
+        description: str = "",
+        source_text: str = "",
+        style_anchor: Optional[Dict[str, Any]] = None,
+        status: str = "draft",
+    ) -> Dict[str, Any]:
+        vid = _gen_id("vol_")
+        now = _now()
+        conn = self._connect()
+        try:
+            number = int(volume_number or 0)
+            if number <= 0:
+                number = self.get_next_volume_number(series_id, _conn=conn)
+            if not name.strip():
+                name = f"第{number}卷"
+            conn.execute(
+                """
+                INSERT INTO volumes
+                (id, series_id, volume_number, name, description, source_text, style_anchor, status, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    vid,
+                    series_id,
+                    number,
+                    name.strip(),
+                    description,
+                    source_text,
+                    self._json_field(style_anchor or {}),
+                    status or "draft",
+                    now,
+                    now,
+                ),
+            )
+            conn.execute("UPDATE series SET updated_at=? WHERE id=?", (now, series_id))
+            conn.commit()
+            return self.get_volume(vid, _conn=conn)  # type: ignore[return-value]
+        except sqlite3.IntegrityError as e:
+            if "UNIQUE constraint failed: volumes.series_id, volumes.volume_number" in str(e):
+                raise ValueError("volume_number already exists in series")
+            raise
+        finally:
+            conn.close()
+
+    def get_volume(
+        self,
+        volume_id: str,
+        *,
+        _conn: Optional[sqlite3.Connection] = None,
+    ) -> Optional[Dict[str, Any]]:
+        conn = _conn or self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM volumes WHERE id=?",
+                (volume_id,),
+            ).fetchone()
+            return self._row_to_dict(row)
+        finally:
+            if _conn is None:
+                conn.close()
+
+    def list_volumes(self, series_id: str) -> List[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT v.*,
+                       (SELECT COUNT(*) FROM episodes e WHERE e.volume_id=v.id) AS episode_count
+                FROM volumes v
+                WHERE v.series_id=?
+                ORDER BY v.volume_number ASC, v.created_at ASC
+                """,
+                (series_id,),
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]  # type: ignore[misc]
+        finally:
+            conn.close()
+
+    def update_volume(
+        self,
+        volume_id: str,
+        updates: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        allowed = {
+            "volume_number",
+            "name",
+            "description",
+            "source_text",
+            "style_anchor",
+            "status",
+        }
+        clauses: List[str] = []
+        values: List[Any] = []
+        for key, value in updates.items():
+            if key not in allowed:
+                continue
+            if key == "style_anchor":
+                value = self._json_field(value or {})
+            elif key == "volume_number":
+                value = int(value or 0)
+                if value <= 0:
+                    raise ValueError("volume_number must be positive")
+            clauses.append(f"{key}=?")
+            values.append(value)
+        if not clauses:
+            return self.get_volume(volume_id)
+        now = _now()
+        clauses.append("updated_at=?")
+        values.append(now)
+        values.append(volume_id)
+        conn = self._connect()
+        try:
+            conn.execute(
+                f"UPDATE volumes SET {', '.join(clauses)} WHERE id=?",
+                tuple(values),
+            )
+            conn.execute(
+                "UPDATE series SET updated_at=? WHERE id=(SELECT series_id FROM volumes WHERE id=?)",
+                (now, volume_id),
+            )
+            conn.commit()
+            return self.get_volume(volume_id, _conn=conn)
+        except sqlite3.IntegrityError as e:
+            if "UNIQUE constraint failed: volumes.series_id, volumes.volume_number" in str(e):
+                raise ValueError("volume_number already exists in series")
+            raise
+        finally:
+            conn.close()
+
+    def delete_volume(self, volume_id: str, detach_episodes: bool = True) -> bool:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT series_id FROM volumes WHERE id=?",
+                (volume_id,),
+            ).fetchone()
+            if not row:
+                return False
+            now = _now()
+            if detach_episodes:
+                conn.execute(
+                    "UPDATE episodes SET volume_id='', updated_at=? WHERE volume_id=?",
+                    (now, volume_id),
+                )
+            cur = conn.execute("DELETE FROM volumes WHERE id=?", (volume_id,))
+            if cur.rowcount > 0:
+                conn.execute("UPDATE series SET updated_at=? WHERE id=?", (now, row["series_id"]))
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    def get_next_episode_act_number(
+        self,
+        series_id: str,
+        *,
+        _conn: Optional[sqlite3.Connection] = None,
+    ) -> int:
+        conn = _conn or self._connect()
+        try:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(act_number), 0) + 1 AS next_act FROM episodes WHERE series_id=?",
+                (series_id,),
+            ).fetchone()
+            return max(1, int((row["next_act"] if row else 1) or 1))
+        finally:
+            if _conn is None:
+                conn.close()
 
     # ==================================================================
     # 数字人角色配置
@@ -507,6 +747,7 @@ class StudioStorage:
         self,
         series_id: str,
         act_number: int,
+        volume_id: str = "",
         title: str = "",
         summary: str = "",
         script_excerpt: str = "",
@@ -517,12 +758,20 @@ class StudioStorage:
         now = _now()
         conn = self._connect()
         try:
+            normalized_volume_id = str(volume_id or "").strip()
+            if normalized_volume_id:
+                volume_row = conn.execute(
+                    "SELECT id FROM volumes WHERE id=? AND series_id=?",
+                    (normalized_volume_id, series_id),
+                ).fetchone()
+                if not volume_row:
+                    raise ValueError("volume does not belong to series")
             conn.execute(
                 """INSERT INTO episodes
-                   (id, series_id, act_number, title, summary, script_excerpt,
+                   (id, series_id, volume_id, act_number, title, summary, script_excerpt,
                     creative_brief, target_duration_seconds, status, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (eid, series_id, act_number, title, summary, script_excerpt,
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (eid, series_id, normalized_volume_id, act_number, title, summary, script_excerpt,
                  self._json_field(creative_brief or {}),
                  target_duration_seconds, "draft", now, now),
             )
@@ -544,15 +793,28 @@ class StudioStorage:
             if _conn is None:
                 conn.close()
 
-    def list_episodes(self, series_id: str) -> List[Dict[str, Any]]:
+    def list_episodes(self, series_id: str, volume_id: Optional[str] = None) -> List[Dict[str, Any]]:
         conn = self._connect()
         try:
-            rows = conn.execute(
-                """SELECT e.*,
-                          (SELECT COUNT(*) FROM shots s WHERE s.episode_id=e.id) AS shot_count
-                   FROM episodes e WHERE e.series_id=? ORDER BY e.act_number""",
-                (series_id,),
-            ).fetchall()
+            sql = """
+                SELECT e.*,
+                       v.name AS volume_name,
+                       v.volume_number AS volume_number,
+                       (SELECT COUNT(*) FROM shots s WHERE s.episode_id=e.id) AS shot_count
+                FROM episodes e
+                LEFT JOIN volumes v ON v.id = e.volume_id
+                WHERE e.series_id=?
+            """
+            params: List[Any] = [series_id]
+            normalized_volume_id = str(volume_id or "").strip()
+            if normalized_volume_id:
+                if normalized_volume_id == "__none__":
+                    sql += " AND (e.volume_id='' OR e.volume_id IS NULL)"
+                else:
+                    sql += " AND e.volume_id=?"
+                    params.append(normalized_volume_id)
+            sql += " ORDER BY e.act_number"
+            rows = conn.execute(sql, tuple(params)).fetchall()
             return [self._row_to_dict(r) for r in rows]  # type: ignore[misc]
         finally:
             conn.close()
@@ -562,14 +824,31 @@ class StudioStorage:
     ) -> Optional[Dict[str, Any]]:
         allowed = {
             "title", "summary", "script_excerpt", "creative_brief",
-            "target_duration_seconds", "status",
+            "target_duration_seconds", "status", "volume_id",
         }
+        current_episode = self.get_episode(episode_id)
+        if not current_episode:
+            return None
+        series_id = str(current_episode.get("series_id") or "")
         fields = []
         values: list = []
         for k, v in updates.items():
             if k in allowed:
                 if k == "creative_brief":
                     v = self._json_field(v)
+                elif k == "volume_id":
+                    v = str(v or "").strip()
+                    if v:
+                        conn_check = self._connect()
+                        try:
+                            volume_row = conn_check.execute(
+                                "SELECT id FROM volumes WHERE id=? AND series_id=?",
+                                (v, series_id),
+                            ).fetchone()
+                        finally:
+                            conn_check.close()
+                        if not volume_row:
+                            raise ValueError("volume does not belong to series")
                 fields.append(f"{k}=?")
                 values.append(v)
         if not fields:
@@ -728,6 +1007,12 @@ class StudioStorage:
         dialogue_script: str = "",
         sound_effects: str = "",
         segment_name: str = "",
+        shot_size: str = "",
+        camera_angle: str = "",
+        camera_movement: str = "",
+        emotion: str = "",
+        emotion_intensity: int = 0,
+        key_frame_prompt: str = "",
     ) -> Dict[str, Any]:
         sid = _gen_id("shot_")
         now = _now()
@@ -739,13 +1024,17 @@ class StudioStorage:
                     duration, description, prompt, end_prompt, video_prompt,
                     narration, dialogue_script, sound_effects,
                     start_image_url, end_image_url, frame_history, video_url, video_history, audio_url, visual_action,
+                    shot_size, camera_angle, camera_movement, emotion, emotion_intensity,
+                    key_frame_prompt, key_frame_url,
                     status, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     sid, episode_id, segment_name, sort_order, name, shot_type,
                     duration, description, prompt, end_prompt, video_prompt,
                     narration, dialogue_script, sound_effects,
                     "", "", "[]", "", "[]", "", "{}",
+                    shot_size, camera_angle, camera_movement, emotion, emotion_intensity,
+                    key_frame_prompt, "",
                     "pending", now, now,
                 ),
             )
@@ -786,6 +1075,9 @@ class StudioStorage:
             "description", "prompt", "end_prompt", "video_prompt", "narration",
             "dialogue_script", "sound_effects", "start_image_url", "end_image_url", "frame_history",
             "video_url", "video_history", "audio_url", "visual_action", "status",
+            "shot_size", "camera_angle", "camera_movement",
+            "emotion", "emotion_intensity",
+            "key_frame_prompt", "key_frame_url",
         }
         fields = []
         values: list = []
@@ -855,8 +1147,10 @@ class StudioStorage:
                         duration, description, prompt, end_prompt, video_prompt,
                         narration, dialogue_script, sound_effects,
                         start_image_url, end_image_url, frame_history, video_url, video_history, audio_url, visual_action,
+                        shot_size, camera_angle, camera_movement, emotion, emotion_intensity,
+                        key_frame_prompt, key_frame_url,
                         status, created_at, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         sid, episode_id, s.get("segment_name", ""),
                         idx, s.get("name", ""), s.get("type", "standard"),
@@ -865,6 +1159,9 @@ class StudioStorage:
                         s.get("narration", ""), s.get("dialogue_script", ""), s.get("sound_effects", ""),
                         s.get("start_image_url", ""), s.get("end_image_url", ""), frame_history,
                         s.get("video_url", ""), video_history, s.get("audio_url", ""), visual_action,
+                        s.get("shot_size", ""), s.get("camera_angle", ""), s.get("camera_movement", ""),
+                        s.get("emotion", ""), int(s.get("emotion_intensity", 0) or 0),
+                        s.get("key_frame_prompt", ""), s.get("key_frame_url", ""),
                         s.get("status", "pending"), now, now,
                     ),
                 )
@@ -1164,6 +1461,7 @@ class StudioStorage:
         series = self.get_series(series_id)
         if not series:
             return None
+        series["volumes"] = self.list_volumes(series_id)
         series["episodes"] = self.list_episodes(series_id)
         series["shared_elements"] = self.get_shared_elements(series_id)
         for ep in series["episodes"]:

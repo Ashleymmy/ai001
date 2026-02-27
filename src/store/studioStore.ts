@@ -1,3 +1,7 @@
+/**
+ * 功能模块：状态管理模块，负责 studioStore 相关业务状态与动作编排
+ */
+
 import { create } from 'zustand'
 import axios from 'axios'
 import * as api from '../services/api'
@@ -24,6 +28,7 @@ export type StudioGenerationStage =
   | 'idle'
   | 'generating_elements'
   | 'generating_frames'
+  | 'generating_key_frames'
   | 'generating_end_frames'
   | 'generating_videos'
   | 'generating_audio'
@@ -82,6 +87,7 @@ function createInitialGenerationProgress(): StudioGenerationProgress {
 function mapBatchStage(stage: StudioBatchGenerateStreamEvent['stage']): StudioGenerationStage {
   if (stage === 'elements') return 'generating_elements'
   if (stage === 'frames') return 'generating_frames'
+  if (stage === 'key_frames') return 'generating_key_frames'
   if (stage === 'end_frames') return 'generating_end_frames'
   if (stage === 'videos') return 'generating_videos'
   if (stage === 'audio') return 'generating_audio'
@@ -195,6 +201,19 @@ interface StudioState {
   historyLoading: boolean
   historyRestoring: boolean
 
+  // 协作 Episode 分配
+  episodeAssignments: api.EpisodeAssignment[]
+  episodeAssignmentsLoading: boolean
+
+  // 操作日志（撤销历史可视化）
+  operationJournal: api.OperationJournalItem[]
+  operationJournalHeadIndex: number
+  operationJournalTotal: number
+  operationJournalLoading: boolean
+
+  // 在线成员（WebSocket）
+  onlineMembers: api.OnlineMember[]
+
   // 操作状态
   creating: boolean
   planning: boolean
@@ -250,7 +269,7 @@ interface StudioState {
   deleteShot: (shotId: string) => Promise<void>
   generateShotAsset: (
     shotId: string,
-    stage: 'frame' | 'end_frame' | 'video' | 'audio',
+    stage: 'frame' | 'key_frame' | 'end_frame' | 'video' | 'audio',
     options?: { video_generate_audio?: boolean }
   ) => Promise<void>
   inpaintShotFrame: (shotId: string, params: { edit_prompt: string; mask_data?: string; width?: number; height?: number }) => Promise<void>
@@ -259,6 +278,13 @@ interface StudioState {
   restoreEpisodeHistory: (episodeId: string, historyId: string) => Promise<void>
   undoWorkspaceOperation: (workspaceId: string, projectScope: string) => Promise<void>
   redoWorkspaceOperation: (workspaceId: string, projectScope: string) => Promise<void>
+  loadOperationJournal: (workspaceId: string, projectScope: string, limit?: number) => Promise<void>
+  setOnlineMembers: (members: api.OnlineMember[]) => void
+
+  loadEpisodeAssignments: (workspaceId: string, seriesId?: string) => Promise<void>
+  assignEpisode: (workspaceId: string, episodeId: string, assignedTo: string, note?: string) => Promise<void>
+  submitEpisodeForReview: (workspaceId: string, episodeId: string) => Promise<void>
+  reviewEpisodeAssignment: (workspaceId: string, episodeId: string, action: 'approve' | 'reject', note?: string) => Promise<void>
 
   batchGenerate: (
     episodeId: string,
@@ -393,6 +419,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   episodeHistory: [],
   historyLoading: false,
   historyRestoring: false,
+  episodeAssignments: [],
+  episodeAssignmentsLoading: false,
+  operationJournal: [],
+  operationJournalHeadIndex: 0,
+  operationJournalTotal: 0,
+  operationJournalLoading: false,
+  onlineMembers: [],
   creating: false,
   planning: false,
   generating: false,
@@ -1001,7 +1034,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         ? '正在生成镜头音频'
         : stage === 'end_frame'
           ? '正在生成镜头尾帧'
-          : '正在生成镜头起始帧'
+          : stage === 'key_frame'
+            ? '正在生成镜头关键帧'
+            : '正在生成镜头起始帧'
     set({
       generating: true,
       generationScope: 'single',
@@ -1020,9 +1055,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             video_generate_audio: options?.video_generate_audio,
           }),
         )
-      } else if (stage === 'frame' || stage === 'end_frame') {
+      } else if (stage === 'frame' || stage === 'end_frame' || stage === 'key_frame') {
         await enqueueImageGeneration(
-          stage === 'end_frame' ? `镜头尾帧: ${shotId}` : `镜头首帧: ${shotId}`,
+          stage === 'end_frame' ? `镜头尾帧: ${shotId}` : stage === 'key_frame' ? `镜头关键帧: ${shotId}` : `镜头首帧: ${shotId}`,
           () => api.studioGenerateShotAsset(shotId, { stage }),
         )
       } else {
@@ -1171,6 +1206,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       } else {
         await get().loadSeriesList()
       }
+      // Refresh operation journal to update head position
+      get().loadOperationJournal(workspaceId, projectScope)
     } catch (e: unknown) {
       const parsed = queueOperationFailure(set, e, {
         key: `workspace_undo:${workspaceId}:${projectScope}`,
@@ -1195,12 +1232,83 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       } else {
         await get().loadSeriesList()
       }
+      // Refresh operation journal to update head position
+      get().loadOperationJournal(workspaceId, projectScope)
     } catch (e: unknown) {
       const parsed = queueOperationFailure(set, e, {
         key: `workspace_redo:${workspaceId}:${projectScope}`,
         title: '重做修改',
         retryTask: () => get().redoWorkspaceOperation(workspaceId, projectScope),
       })
+      set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
+    }
+  },
+
+  // -- 操作日志（撤销历史可视化） --
+  loadOperationJournal: async (workspaceId, projectScope, limit = 50) => {
+    if (!workspaceId || !projectScope) return
+    set({ operationJournalLoading: true })
+    try {
+      const result = await api.listOperations(workspaceId, projectScope, { limit })
+      set({
+        operationJournal: result.items,
+        operationJournalHeadIndex: result.head_index,
+        operationJournalTotal: result.total,
+        operationJournalLoading: false,
+      })
+    } catch {
+      set({ operationJournalLoading: false })
+    }
+  },
+
+  setOnlineMembers: (members) => {
+    set({ onlineMembers: members })
+  },
+
+  // -- 协作 Episode 分配 --
+  loadEpisodeAssignments: async (workspaceId, seriesId) => {
+    set({ episodeAssignmentsLoading: true })
+    try {
+      const assignments = await api.listEpisodeAssignments(workspaceId, seriesId ? { series_id: seriesId } : undefined)
+      set({ episodeAssignments: assignments, episodeAssignmentsLoading: false })
+    } catch {
+      set({ episodeAssignmentsLoading: false })
+    }
+  },
+
+  assignEpisode: async (workspaceId, episodeId, assignedTo, note) => {
+    try {
+      await api.assignEpisode(workspaceId, episodeId, assignedTo, note)
+      const seriesId = get().currentSeriesId
+      await get().loadEpisodeAssignments(workspaceId, seriesId || undefined)
+    } catch (e: unknown) {
+      const parsed = parseStudioError(e)
+      set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
+    }
+  },
+
+  submitEpisodeForReview: async (workspaceId, episodeId) => {
+    try {
+      await api.submitEpisodeAssignment(workspaceId, episodeId)
+      const seriesId = get().currentSeriesId
+      await get().loadEpisodeAssignments(workspaceId, seriesId || undefined)
+    } catch (e: unknown) {
+      const parsed = parseStudioError(e)
+      set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
+    }
+  },
+
+  reviewEpisodeAssignment: async (workspaceId, episodeId, action, note) => {
+    try {
+      if (action === 'approve') {
+        await api.approveEpisodeAssignment(workspaceId, episodeId, note)
+      } else {
+        await api.rejectEpisodeAssignment(workspaceId, episodeId, note)
+      }
+      const seriesId = get().currentSeriesId
+      await get().loadEpisodeAssignments(workspaceId, seriesId || undefined)
+    } catch (e: unknown) {
+      const parsed = parseStudioError(e)
       set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
     }
   },

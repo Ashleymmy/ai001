@@ -199,10 +199,27 @@ class CollabService:
                     PRIMARY KEY (workspace_id, project_scope)
                 );
 
+                CREATE TABLE IF NOT EXISTS episode_assignments (
+                    episode_id    TEXT PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+                    workspace_id  TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                    series_id     TEXT NOT NULL,
+                    assigned_to   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    status        TEXT NOT NULL DEFAULT 'draft',
+                    locked_at     TEXT DEFAULT '',
+                    submitted_at  TEXT DEFAULT '',
+                    reviewed_at   TEXT DEFAULT '',
+                    reviewed_by   TEXT DEFAULT '',
+                    note          TEXT DEFAULT '',
+                    created_at    TEXT NOT NULL,
+                    updated_at    TEXT NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_workspace_members_workspace ON workspace_members(workspace_id);
                 CREATE INDEX IF NOT EXISTS idx_okr_workspace ON okr_objectives(workspace_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_okr_links_objective ON okr_links(objective_id, key_result_id);
                 CREATE INDEX IF NOT EXISTS idx_journal_scope ON operation_journal(workspace_id, project_scope, seq);
+                CREATE INDEX IF NOT EXISTS idx_episode_assignments_workspace ON episode_assignments(workspace_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_episode_assignments_assignee ON episode_assignments(workspace_id, assigned_to, status);
                 """
             )
             self._migrate_schema(conn)
@@ -230,6 +247,26 @@ class CollabService:
         self._ensure_column(conn, "okr_key_results", "auto_metric", "TEXT DEFAULT ''")
         self._ensure_column(conn, "okr_key_results", "auto_enabled", "INTEGER DEFAULT 0")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_okr_links_objective ON okr_links(objective_id, key_result_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS episode_assignments (
+                episode_id    TEXT PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+                workspace_id  TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                series_id     TEXT NOT NULL,
+                assigned_to   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                status        TEXT NOT NULL DEFAULT 'draft',
+                locked_at     TEXT DEFAULT '',
+                submitted_at  TEXT DEFAULT '',
+                reviewed_at   TEXT DEFAULT '',
+                reviewed_by   TEXT DEFAULT '',
+                note          TEXT DEFAULT '',
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_episode_assignments_workspace ON episode_assignments(workspace_id, updated_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_episode_assignments_assignee ON episode_assignments(workspace_id, assigned_to, status)")
 
     @staticmethod
     def _row_to_dict(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
@@ -1143,3 +1180,305 @@ class CollabService:
 
     def get_head(self, workspace_id: str, project_scope: str) -> int:
         return self._read_head(workspace_id, project_scope)
+
+    def list_operations(
+        self,
+        workspace_id: str,
+        project_scope: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """Return operation journal entries with the current head position.
+
+        Returns ``{"items": [...], "head_index": int, "total": int}``.
+        Items are ordered by *seq DESC* (newest first).
+        """
+        conn = self._connect()
+        try:
+            head = self._read_head(workspace_id, project_scope)
+            count_row = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM operation_journal WHERE workspace_id=? AND project_scope=?",
+                (workspace_id, project_scope),
+            ).fetchone()
+            total = int(count_row["cnt"]) if count_row else 0
+
+            rows = conn.execute(
+                """
+                SELECT * FROM operation_journal
+                WHERE workspace_id=? AND project_scope=?
+                ORDER BY seq DESC
+                LIMIT ? OFFSET ?
+                """,
+                (workspace_id, project_scope, limit, offset),
+            ).fetchall()
+
+            items: list = []
+            for r in rows:
+                item = dict(r)
+                payload_raw = item.pop("payload_json", None)
+                try:
+                    item["payload"] = json.loads(payload_raw) if isinstance(payload_raw, str) else {}
+                except Exception:
+                    item["payload"] = {}
+                items.append(item)
+
+            return {"items": items, "head_index": head, "total": total}
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _normalize_assignment_status(value: Any) -> str:
+        status = str(value or "").strip().lower()
+        return status if status in {"draft", "submitted", "approved", "rejected"} else "draft"
+
+    def get_episode_assignment(self, workspace_id: str, episode_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT ea.*,
+                       u.name AS assigned_to_name,
+                       u.email AS assigned_to_email
+                FROM episode_assignments ea
+                LEFT JOIN users u ON u.id = ea.assigned_to
+                WHERE ea.workspace_id=? AND ea.episode_id=?
+                """,
+                (workspace_id, episode_id),
+            ).fetchone()
+            return self._row_to_dict(row)
+        finally:
+            conn.close()
+
+    def list_episode_assignments(
+        self,
+        workspace_id: str,
+        series_id: str = "",
+        assigned_to: str = "",
+        status: str = "",
+    ) -> List[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            sql = """
+                SELECT ea.*,
+                       u.name AS assigned_to_name,
+                       u.email AS assigned_to_email
+                FROM episode_assignments ea
+                LEFT JOIN users u ON u.id = ea.assigned_to
+                WHERE ea.workspace_id=?
+            """
+            params: List[Any] = [workspace_id]
+            if str(series_id or "").strip():
+                sql += " AND ea.series_id=?"
+                params.append(str(series_id).strip())
+            if str(assigned_to or "").strip():
+                sql += " AND ea.assigned_to=?"
+                params.append(str(assigned_to).strip())
+            normalized_status = self._normalize_assignment_status(status) if str(status or "").strip() else ""
+            if normalized_status:
+                sql += " AND ea.status=?"
+                params.append(normalized_status)
+            sql += " ORDER BY ea.updated_at DESC"
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    def upsert_episode_assignment(
+        self,
+        workspace_id: str,
+        episode_id: str,
+        assigned_to: str,
+        actor_user_id: str = "",
+        note: str = "",
+    ) -> Dict[str, Any]:
+        assignee = str(assigned_to or "").strip()
+        if not assignee:
+            raise ValueError("assigned_to required")
+        user = self.get_user_by_id(assignee)
+        if not user:
+            raise ValueError("assigned user not found")
+        if not self.get_member_role(workspace_id, assignee):
+            raise ValueError("assigned user is not a workspace member")
+
+        now = _now_iso()
+        conn = self._connect()
+        try:
+            episode_row = conn.execute(
+                """
+                SELECT e.id AS episode_id, e.series_id, s.workspace_id
+                FROM episodes e
+                JOIN series s ON s.id = e.series_id
+                WHERE e.id=?
+                """,
+                (episode_id,),
+            ).fetchone()
+            if not episode_row:
+                raise ValueError("episode not found")
+            episode_info = dict(episode_row)
+            episode_workspace_id = str(episode_info.get("workspace_id") or "").strip()
+            if episode_workspace_id and episode_workspace_id != workspace_id:
+                raise ValueError("episode does not belong to workspace")
+            series_id = str(episode_info.get("series_id") or "").strip()
+
+            conn.execute(
+                """
+                INSERT INTO episode_assignments
+                (episode_id, workspace_id, series_id, assigned_to, status, locked_at, submitted_at, reviewed_at, reviewed_by, note, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(episode_id) DO UPDATE SET
+                    workspace_id=excluded.workspace_id,
+                    series_id=excluded.series_id,
+                    assigned_to=excluded.assigned_to,
+                    status='draft',
+                    locked_at=excluded.locked_at,
+                    submitted_at='',
+                    reviewed_at='',
+                    reviewed_by='',
+                    note=excluded.note,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    episode_id,
+                    workspace_id,
+                    series_id,
+                    assignee,
+                    "draft",
+                    now,
+                    "",
+                    "",
+                    "",
+                    str(note or "").strip(),
+                    now,
+                    now,
+                ),
+            )
+            conn.execute("UPDATE series SET updated_at=? WHERE id=?", (now, series_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+        assignment = self.get_episode_assignment(workspace_id, episode_id)
+        if not assignment:
+            raise ValueError("assignment create failed")
+        assignment["assigned_by"] = str(actor_user_id or "")
+        return assignment
+
+    def submit_episode_assignment(
+        self,
+        workspace_id: str,
+        episode_id: str,
+        actor_user_id: str,
+        note: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        assignment = self.get_episode_assignment(workspace_id, episode_id)
+        if not assignment:
+            return None
+
+        role = self.get_member_role(workspace_id, actor_user_id) or ""
+        assigned_to = str(assignment.get("assigned_to") or "")
+        if role != "owner" and actor_user_id != assigned_to:
+            raise ValueError("only assignee can submit for review")
+
+        current_status = self._normalize_assignment_status(assignment.get("status"))
+        if current_status in {"submitted", "approved"} and role != "owner":
+            raise ValueError("episode has already been submitted")
+
+        now = _now_iso()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                UPDATE episode_assignments
+                SET status='submitted',
+                    submitted_at=?,
+                    reviewed_at='',
+                    reviewed_by='',
+                    note=?,
+                    updated_at=?
+                WHERE workspace_id=? AND episode_id=?
+                """,
+                (now, str(note or "").strip(), now, workspace_id, episode_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_episode_assignment(workspace_id, episode_id)
+
+    def review_episode_assignment(
+        self,
+        workspace_id: str,
+        episode_id: str,
+        reviewer_user_id: str,
+        approve: bool,
+        note: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        reviewer_role = self.get_member_role(workspace_id, reviewer_user_id) or ""
+        if reviewer_role != "owner":
+            raise ValueError("only workspace owner can review assignment")
+
+        assignment = self.get_episode_assignment(workspace_id, episode_id)
+        if not assignment:
+            return None
+
+        now = _now_iso()
+        next_status = "approved" if approve else "rejected"
+        locked_at = str(assignment.get("locked_at") or "").strip()
+        if not locked_at:
+            locked_at = now
+
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                UPDATE episode_assignments
+                SET status=?,
+                    locked_at=?,
+                    reviewed_at=?,
+                    reviewed_by=?,
+                    note=?,
+                    updated_at=?
+                WHERE workspace_id=? AND episode_id=?
+                """,
+                (
+                    next_status,
+                    locked_at,
+                    now,
+                    reviewer_user_id,
+                    str(note or "").strip(),
+                    now,
+                    workspace_id,
+                    episode_id,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_episode_assignment(workspace_id, episode_id)
+
+    def can_edit_episode(
+        self,
+        workspace_id: str,
+        episode_id: str,
+        user_id: str,
+        role: str,
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        assignment = self.get_episode_assignment(workspace_id, episode_id)
+        if not assignment:
+            return True, "", None
+
+        user_role = str(role or "").strip().lower()
+        if user_role == "owner":
+            return True, "", assignment
+
+        assigned_to = str(assignment.get("assigned_to") or "").strip()
+        assigned_to_name = str(assignment.get("assigned_to_name") or "").strip()
+        status = self._normalize_assignment_status(assignment.get("status"))
+
+        if assigned_to and assigned_to != user_id:
+            assignee = assigned_to_name or assigned_to
+            return False, f"该分幕已分配给 {assignee}，当前为只读模式", assignment
+
+        if status in {"submitted", "approved"}:
+            return False, "该分幕已提交审核，当前不可继续编辑", assignment
+
+        return True, "", assignment

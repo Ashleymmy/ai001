@@ -13,6 +13,14 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from .studio_storage import StudioStorage
 from .studio.prompts import DEFAULT_CUSTOM_PROMPTS, normalize_custom_prompts
 from .studio.prompt_sentinel import build_prompt_optimize_llm_payload
+from .studio.constants import (
+    CAMERA_MOVEMENTS,
+    DEFAULT_NEGATIVE_PROMPT,
+    get_shot_size_zh,
+    get_camera_angle_zh,
+    get_camera_movement_desc,
+    get_emotion_intensity_zh,
+)
 from .llm_service import LLMService
 from .image_service import ImageService
 from .video_service import VideoService
@@ -582,6 +590,16 @@ class StudioService:
         episode = self.storage.get_episode(episode_id)
         if not episode:
             return ""
+        volume_id = str(episode.get("volume_id") or "").strip()
+        if volume_id:
+            volume = self.storage.get_volume(volume_id)
+            if volume:
+                raw_anchor = volume.get("style_anchor")
+                anchor = raw_anchor if isinstance(raw_anchor, dict) else {}
+                for key in ("visual_style", "style", "anchor_text"):
+                    value = str(anchor.get(key) or "").strip()
+                    if value:
+                        return value
         series_id = str(episode.get("series_id") or "").strip()
         if not series_id:
             return ""
@@ -724,19 +742,52 @@ class StudioService:
             "禁止写实照片风、3D渲染实拍质感、文字水印和字幕。"
         )
         digital_constraints = self._build_digital_human_constraints_for_episode(episode_id, resolved_prompt)
-        if stage == "inpaint":
-            stage_clause = "在保持主体身份与场景连续性的前提下，只修改用户要求的局部区域。"
-        elif stage == "end_frame":
-            stage_clause = "该画面用于镜头尾帧，请保持与起始帧的叙事连续性。"
-        else:
-            stage_clause = "该画面用于镜头起始帧，请聚焦单一时刻的核心视觉信息。"
+
+        # 阶段描述（4 个 stage）
+        stage_clauses = {
+            "start_frame": "该画面用于镜头起始帧，展示动作发生前的初始静态状态。"
+                           "聚焦角色初始姿态和场景氛围，不含任何运动。",
+            "key_frame":   "该画面用于镜头关键帧，捕捉动作最激烈的高潮瞬间。"
+                           "强调动态张力、情绪表达顶点，可含动作模糊效果。",
+            "end_frame":   "该画面用于镜头尾帧，展示动作结束后的最终状态。"
+                           "保持与起始帧的叙事连续性，聚焦动作结果。",
+            "inpaint":     "在保持主体身份与场景连续性的前提下，只修改用户要求的局部区域。",
+        }
+        stage_clause = stage_clauses.get(stage, stage_clauses["start_frame"])
+
+        # 注入景别/机位/情绪信息到帧提示词
+        cinematography_parts = []
+        shot_size = str(shot.get("shot_size") or "").strip()
+        camera_angle = str(shot.get("camera_angle") or "").strip()
+        emotion = str(shot.get("emotion") or "").strip()
+        emotion_intensity = shot.get("emotion_intensity", 0)
+        if not isinstance(emotion_intensity, (int, float)):
+            try:
+                emotion_intensity = int(emotion_intensity)
+            except (ValueError, TypeError):
+                emotion_intensity = 0
+
+        if shot_size:
+            cinematography_parts.append(f"景别：{get_shot_size_zh(shot_size)}")
+        if camera_angle:
+            cinematography_parts.append(f"机位：{get_camera_angle_zh(camera_angle)}")
+        if emotion:
+            intensity_label = get_emotion_intensity_zh(emotion_intensity)
+            cinematography_parts.append(f"情绪：{emotion}（{intensity_label}）")
+
+        cinematography_text = "；".join(cinematography_parts)
 
         if digital_constraints:
             base_rules = f"{base_rules}\n{digital_constraints}"
 
+        parts = []
         if resolved_prompt:
-            return f"{resolved_prompt}\n{base_rules}{stage_clause}".strip()
-        return f"{base_rules}{stage_clause}".strip()
+            parts.append(resolved_prompt)
+        if cinematography_text:
+            parts.append(cinematography_text)
+        parts.append(f"{base_rules}{stage_clause}")
+
+        return "\n".join(parts).strip()
 
     def _collect_shot_ref_images(
         self,
@@ -1984,6 +2035,11 @@ class StudioService:
                     "video_prompt": shot.get("video_prompt", ""),
                     "narration": shot.get("narration", ""),
                     "dialogue_script": shot.get("dialogue_script", ""),
+                    "shot_size": shot.get("shot_size", ""),
+                    "camera_angle": shot.get("camera_angle", ""),
+                    "camera_movement": shot.get("camera_movement", ""),
+                    "emotion": shot.get("emotion", ""),
+                    "emotion_intensity": shot.get("emotion_intensity", 0),
                 })
 
         # 清空已有镜头再写入
@@ -2083,7 +2139,8 @@ class StudioService:
             if not shot_id:
                 continue
             updates = {}
-            for field in ("description", "prompt", "end_prompt", "video_prompt", "narration", "dialogue_script", "duration"):
+            for field in ("description", "prompt", "end_prompt", "video_prompt", "narration", "dialogue_script", "duration",
+                          "shot_size", "camera_angle", "camera_movement", "emotion", "emotion_intensity"):
                 if field in sp:
                     updates[field] = sp[field]
             if updates:
@@ -2115,6 +2172,11 @@ class StudioService:
                     video_prompt=shot_data.get("video_prompt", ""),
                     narration=shot_data.get("narration", ""),
                     dialogue_script=shot_data.get("dialogue_script", ""),
+                    shot_size=shot_data.get("shot_size", ""),
+                    camera_angle=shot_data.get("camera_angle", ""),
+                    camera_movement=shot_data.get("camera_movement", ""),
+                    emotion=shot_data.get("emotion", ""),
+                    emotion_intensity=int(shot_data.get("emotion_intensity", 0) or 0),
                 )
                 ordered_ids.insert(insert_at, created["id"])
                 added_count += 1
@@ -2279,6 +2341,7 @@ class StudioService:
 
         result = await self.image.generate(
             prompt=prompt,
+            negative_prompt=DEFAULT_NEGATIVE_PROMPT,
             reference_images=ref_images if ref_images else None,
             width=width,
             height=height,
@@ -2344,6 +2407,7 @@ class StudioService:
 
         result = await self.image.generate(
             prompt=prompt,
+            negative_prompt=DEFAULT_NEGATIVE_PROMPT,
             reference_images=ref_images if ref_images else None,
             width=width,
             height=height,
@@ -2358,6 +2422,68 @@ class StudioService:
         self.storage.update_shot(shot_id, {"end_image_url": url})
 
         return {"shot_id": shot_id, "end_image_url": url, "result": result}
+
+    async def generate_shot_key_frame(
+        self,
+        shot_id: str,
+        width: int = 1280,
+        height: int = 720,
+    ) -> Dict[str, Any]:
+        """为镜头生成关键帧（动作高潮瞬间）"""
+        if not self.image:
+            raise StudioServiceError(
+                "Studio 图像服务未配置",
+                error_code="config_missing_image",
+            )
+
+        shot = self.storage.get_shot(shot_id)
+        if not shot:
+            raise StudioServiceError(
+                f"镜头 {shot_id} 不存在",
+                error_code="shot_not_found",
+                context={"shot_id": shot_id},
+            )
+
+        default_w, default_h = self._default_frame_size()
+        width = int(width or default_w)
+        height = int(height or default_h)
+
+        # 优先使用专用关键帧提示词，回退到首帧提示词
+        prompt_text = str(
+            shot.get("key_frame_prompt") or shot.get("prompt") or shot.get("description") or ""
+        ).strip()
+        if not prompt_text:
+            raise StudioServiceError(
+                f"镜头 {shot_id} 缺少关键帧提示词",
+                error_code="shot_missing_key_frame_prompt",
+                context={"shot_id": shot_id},
+            )
+
+        prompt = self._build_shot_image_prompt(shot, prompt_text, stage="key_frame")
+        ref_images = self._collect_shot_ref_images(
+            shot=shot,
+            prompt_text=prompt_text,
+            include_start_frame=True,
+            limit=6,
+        )
+
+        result = await self.image.generate(
+            prompt=prompt,
+            negative_prompt=DEFAULT_NEGATIVE_PROMPT,
+            reference_images=ref_images if ref_images else None,
+            width=width,
+            height=height,
+        )
+
+        url = self._normalize_image_result_url(result)
+        url = self._validate_generated_image_url(
+            url,
+            error_code_empty="shot_key_frame_empty_result",
+            context={"shot_id": shot_id, "stage": "key_frame"},
+        )
+        self.storage.update_shot(shot_id, {"key_frame_url": url})
+
+        return {"shot_id": shot_id, "key_frame_url": url, "result": result}
 
     async def inpaint_shot_frame(
         self,
@@ -2522,6 +2648,33 @@ class StudioService:
                 raw_video_prompt = f"{raw_video_prompt}\n导演运镜要求：{director_text}"
             else:
                 raw_video_prompt = f"导演运镜要求：{director_text}"
+        elif shot.get("camera_movement"):
+            # 回退到扁平化运镜字段
+            movement_desc = get_camera_movement_desc(str(shot["camera_movement"]))
+            if movement_desc and raw_video_prompt:
+                raw_video_prompt = f"{raw_video_prompt}\n运镜：{movement_desc}"
+            elif movement_desc:
+                raw_video_prompt = f"运镜：{movement_desc}"
+
+        # 注入情绪氛围
+        emotion = str(shot.get("emotion") or "").strip()
+        emotion_intensity = shot.get("emotion_intensity", 0)
+        if not isinstance(emotion_intensity, (int, float)):
+            try:
+                emotion_intensity = int(emotion_intensity)
+            except (ValueError, TypeError):
+                emotion_intensity = 0
+        if emotion:
+            intensity_label = get_emotion_intensity_zh(emotion_intensity)
+            raw_video_prompt = f"{raw_video_prompt}\n情绪氛围：{emotion}（{intensity_label}）"
+
+        # 注入时长约束
+        duration = shot.get("duration", self._default_video_duration())
+        raw_video_prompt = f"{raw_video_prompt}\n镜头时长严格为 {duration} 秒"
+
+        # 禁止文字规则
+        raw_video_prompt = f"{raw_video_prompt}\n画面中禁止出现任何字幕、水印、文字标识"
+
         digital_human_constraints = self._build_digital_human_constraints_for_episode(
             str(shot.get("episode_id") or ""),
             raw_video_prompt,
@@ -2830,7 +2983,7 @@ class StudioService:
         默认全部执行。
         """
         if stages is None:
-            stages = ["elements", "frames", "end_frames", "videos", "audio"]
+            stages = ["elements", "frames", "key_frames", "end_frames", "videos", "audio"]
 
         parallel_cfg = parallel if isinstance(parallel, dict) else {}
         resolved_video_generate_audio = self._resolve_video_generate_audio(video_generate_audio)
@@ -2873,6 +3026,8 @@ class StudioService:
             precomputed_totals["elements"] = len([el for el in self.storage.get_shared_elements(series_id) if not el.get("image_url")])
         if "frames" in stages:
             precomputed_totals["frames"] = len([shot for shot in initial_shots if not shot.get("start_image_url")])
+        if "key_frames" in stages:
+            precomputed_totals["key_frames"] = len([shot for shot in initial_shots if shot.get("key_frame_prompt") and not shot.get("key_frame_url")])
         if "end_frames" in stages:
             precomputed_totals["end_frames"] = len([shot for shot in initial_shots if shot.get("end_prompt") and not shot.get("end_image_url")])
         if "videos" in stages:
@@ -3040,6 +3195,20 @@ class StudioService:
                 worker=lambda shot_item: self.generate_shot_frame(str(shot_item.get("id") or "")),
             )
             result["stages"]["frames"] = frame_results
+
+        # 2.3) 生成关键帧
+        if "key_frames" in stages:
+            shots = self.storage.get_shots(episode_id)
+            key_frame_targets = [shot for shot in shots if shot.get("key_frame_prompt") and not shot.get("key_frame_url")]
+            key_frame_results = await run_stage_concurrent(
+                stage="key_frames",
+                items=key_frame_targets,
+                stage_limit=image_max_concurrency,
+                get_item_id=lambda shot_item: str(shot_item.get("id") or ""),
+                get_item_name=lambda shot_item: str(shot_item.get("name") or shot_item.get("id") or "未命名镜头"),
+                worker=lambda shot_item: self.generate_shot_key_frame(str(shot_item.get("id") or "")),
+            )
+            result["stages"]["key_frames"] = key_frame_results
 
         # 2.5) 生成尾帧
         if "end_frames" in stages:
@@ -3230,11 +3399,13 @@ class StudioService:
         series = self.storage.get_series(series_id)
         if not series:
             return None
+        volumes = self.storage.list_volumes(series_id)
         episodes = self.storage.list_episodes(series_id)
         elements = self.storage.get_shared_elements(series_id)
         digital_human_profiles = self.storage.list_digital_human_profiles(series_id)
         return {
             **series,
+            "volumes": volumes,
             "episodes": episodes,
             "shared_elements": elements,
             "digital_human_profiles": digital_human_profiles,
