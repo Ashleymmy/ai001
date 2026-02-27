@@ -1,3 +1,7 @@
+/**
+ * 功能模块：前端应用总路由模块，负责页面路由装配与导航分发
+ */
+
 import { useEffect, useState } from 'react'
 import { HashRouter, Routes, Route, useLocation, Navigate } from 'react-router-dom'
 import Layout from './components/Layout'
@@ -13,6 +17,7 @@ import StudioPage from './pages/StudioPage'
 import ShortVideoWorkbenchPage from './pages/ShortVideoWorkbenchPage'
 import DigitalHumanWorkbenchPage from './pages/DigitalHumanWorkbenchPage'
 import WorkspaceOkrPage from './pages/WorkspaceOkrPage'
+import WorkspaceDashboardPage from './pages/WorkspaceDashboardPage'
 import AuthPage from './pages/AuthPage'
 import ProjectPage from './pages/ProjectPage'
 import ApiMonitorPage from './pages/ApiMonitorPage'
@@ -139,6 +144,7 @@ function App() {
         <Route path="agent/:projectId" element={<RequireVisited><AgentPage /></RequireVisited>} />
         <Route path="auth" element={<RequireVisited><AuthPage /></RequireVisited>} />
         <Route path="workspace/okr" element={<RequireVisited><WorkspaceOkrPage /></RequireVisited>} />
+        <Route path="workspace/dashboard" element={<RequireVisited><WorkspaceDashboardPage /></RequireVisited>} />
         {/* Studio 长篇制作工作台 - 独立布局 */}
         <Route path="studio" element={<RequireVisited><StudioPage /></RequireVisited>} />
         <Route path="studio/:seriesId" element={<RequireVisited><StudioPage /></RequireVisited>} />

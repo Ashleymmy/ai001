@@ -1,3 +1,7 @@
+/**
+ * 功能模块：Studio 组件模块，负责 Timeline 的局部交互与可视化呈现
+ */
+
 import { useMemo, useState } from 'react'
 import { GripVertical, Music2, Video } from 'lucide-react'
 import type { StudioShot } from '../../services/api'
