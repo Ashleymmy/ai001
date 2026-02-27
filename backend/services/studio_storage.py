@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS shots (
     video_prompt    TEXT DEFAULT '',
     narration       TEXT DEFAULT '',
     dialogue_script TEXT DEFAULT '',
+    sound_effects   TEXT DEFAULT '',
     start_image_url TEXT DEFAULT '',
     end_image_url   TEXT DEFAULT '',
     frame_history   TEXT DEFAULT '[]',
@@ -131,12 +132,10 @@ CREATE TABLE IF NOT EXISTS digital_human_profiles (
 );
 
 CREATE INDEX IF NOT EXISTS idx_episodes_series ON episodes(series_id);
-CREATE INDEX IF NOT EXISTS idx_series_workspace ON series(workspace_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_shared_elements_series ON shared_elements(series_id);
 CREATE INDEX IF NOT EXISTS idx_shots_episode ON shots(episode_id);
 CREATE INDEX IF NOT EXISTS idx_episode_elements_episode ON episode_elements(episode_id);
 CREATE INDEX IF NOT EXISTS idx_studio_history_episode ON studio_history(episode_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_dh_profiles_series ON digital_human_profiles(series_id, sort_order, updated_at DESC);
 """
 
 
@@ -189,6 +188,7 @@ class StudioStorage:
         self._ensure_column(conn, "shared_elements", "is_favorite", "INTEGER DEFAULT 0")
         self._ensure_column(conn, "shots", "end_prompt", "TEXT DEFAULT ''")
         self._ensure_column(conn, "shots", "end_image_url", "TEXT DEFAULT ''")
+        self._ensure_column(conn, "shots", "sound_effects", "TEXT DEFAULT ''")
         self._ensure_column(conn, "shots", "frame_history", "TEXT DEFAULT '[]'")
         self._ensure_column(conn, "shots", "video_history", "TEXT DEFAULT '[]'")
         self._ensure_column(conn, "shots", "visual_action", "TEXT DEFAULT '{}'")
@@ -726,6 +726,7 @@ class StudioStorage:
         video_prompt: str = "",
         narration: str = "",
         dialogue_script: str = "",
+        sound_effects: str = "",
         segment_name: str = "",
     ) -> Dict[str, Any]:
         sid = _gen_id("shot_")
@@ -736,14 +737,14 @@ class StudioStorage:
                 """INSERT INTO shots
                    (id, episode_id, segment_name, sort_order, name, type,
                     duration, description, prompt, end_prompt, video_prompt,
-                    narration, dialogue_script,
+                    narration, dialogue_script, sound_effects,
                     start_image_url, end_image_url, frame_history, video_url, video_history, audio_url, visual_action,
                     status, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     sid, episode_id, segment_name, sort_order, name, shot_type,
                     duration, description, prompt, end_prompt, video_prompt,
-                    narration, dialogue_script,
+                    narration, dialogue_script, sound_effects,
                     "", "", "[]", "", "[]", "", "{}",
                     "pending", now, now,
                 ),
@@ -783,7 +784,7 @@ class StudioStorage:
         allowed = {
             "segment_name", "sort_order", "name", "type", "duration",
             "description", "prompt", "end_prompt", "video_prompt", "narration",
-            "dialogue_script", "start_image_url", "end_image_url", "frame_history",
+            "dialogue_script", "sound_effects", "start_image_url", "end_image_url", "frame_history",
             "video_url", "video_history", "audio_url", "visual_action", "status",
         }
         fields = []
@@ -852,16 +853,16 @@ class StudioStorage:
                     """INSERT INTO shots
                        (id, episode_id, segment_name, sort_order, name, type,
                         duration, description, prompt, end_prompt, video_prompt,
-                        narration, dialogue_script,
+                        narration, dialogue_script, sound_effects,
                         start_image_url, end_image_url, frame_history, video_url, video_history, audio_url, visual_action,
                         status, created_at, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         sid, episode_id, s.get("segment_name", ""),
                         idx, s.get("name", ""), s.get("type", "standard"),
                         s.get("duration", 5.0), s.get("description", ""),
                         s.get("prompt", ""), s.get("end_prompt", ""), s.get("video_prompt", ""),
-                        s.get("narration", ""), s.get("dialogue_script", ""),
+                        s.get("narration", ""), s.get("dialogue_script", ""), s.get("sound_effects", ""),
                         s.get("start_image_url", ""), s.get("end_image_url", ""), frame_history,
                         s.get("video_url", ""), video_history, s.get("audio_url", ""), visual_action,
                         s.get("status", "pending"), now, now,
@@ -1369,10 +1370,10 @@ class StudioStorage:
                     """INSERT INTO shots
                        (id, episode_id, segment_name, sort_order, name, type,
                         duration, description, prompt, end_prompt, video_prompt,
-                        narration, dialogue_script,
+                        narration, dialogue_script, sound_effects,
                         start_image_url, end_image_url, frame_history, video_url, video_history, audio_url, visual_action,
                         status, created_at, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         shot_id,
                         episode_id,
@@ -1387,6 +1388,7 @@ class StudioStorage:
                         str(shot.get("video_prompt") or ""),
                         str(shot.get("narration") or ""),
                         str(shot.get("dialogue_script") or ""),
+                        str(shot.get("sound_effects") or ""),
                         str(shot.get("start_image_url") or ""),
                         str(shot.get("end_image_url") or ""),
                         self._json_field(shot.get("frame_history") or []),

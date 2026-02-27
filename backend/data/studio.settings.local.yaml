@@ -32,11 +32,11 @@ tts:
     apiKey: e523a52e21184d6ebba903585c67418d
     baseUrl: https://openspeech.bytedance.com/api/v1/tts
     dialogueFemaleVoiceType: ''
-    dialogueMaleVoiceType: ''
+    dialogueMaleVoiceType: zh_female_sajiaonvyou_moon_bigtts
     dialogueVoiceType: ''
     encoding: mp3
     model: cosyvoice-v1
-    narratorVoiceType: ''
+    narratorVoiceType: zh_female_yuanqinvyou_moon_bigtts
     rate: 24000
     speedRatio: 1
     workspace: ''
@@ -81,4 +81,4 @@ video:
   apiKey: 67577c84-5f7a-467f-aa59-909b8ede888a
   baseUrl: https://ark.cn-beijing.volces.com/api/v3
   model: doubao-seedance-1-5-pro-251215
-  provider: kling
+  provider: custom

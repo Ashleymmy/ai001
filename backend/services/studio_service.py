@@ -1592,6 +1592,23 @@ class StudioService:
         except Exception:
             return 6.0
 
+    def _resolve_video_generate_audio(self, override: Optional[bool] = None) -> bool:
+        if isinstance(override, bool):
+            return override
+
+        raw = self.generation_defaults.get("video_generate_audio")
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, (int, float)):
+            return bool(raw)
+        if isinstance(raw, str):
+            lowered = raw.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+        return True
+
     def _record_episode_history_safe(self, episode_id: str, action: str) -> None:
         try:
             self.storage.record_episode_history(episode_id, action)
@@ -2475,6 +2492,7 @@ class StudioService:
     async def generate_shot_video(
         self,
         shot_id: str,
+        video_generate_audio: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """为镜头生成视频"""
         if not self.video:
@@ -2519,6 +2537,7 @@ class StudioService:
 
         try:
             duration = shot.get("duration", self._default_video_duration())
+            resolved_video_generate_audio = self._resolve_video_generate_audio(video_generate_audio)
             existing_video = shot.get("video_url") or ""
             video_history = shot.get("video_history") or []
             if not isinstance(video_history, list):
@@ -2527,6 +2546,7 @@ class StudioService:
                 image_url=shot["start_image_url"],
                 prompt=video_prompt,
                 duration=duration,
+                generate_audio=resolved_video_generate_audio,
                 reference_mode="first_last" if shot.get("end_image_url") else "single",
                 first_frame_url=shot.get("start_image_url"),
                 last_frame_url=shot.get("end_image_url"),
@@ -2548,6 +2568,8 @@ class StudioService:
                 "video_url": video_url,
                 "task_id": final_result.get("task_id"),
                 "poll_elapsed": final_result.get("poll_elapsed", 0),
+                "video_generate_audio": resolved_video_generate_audio,
+                "audio_disabled": bool(submit_result.get("audio_disabled")) if isinstance(submit_result, dict) and "audio_disabled" in submit_result else None,
                 "result": final_result.get("raw") or submit_result,
             }
 
@@ -2799,6 +2821,7 @@ class StudioService:
         episode_id: str,
         stages: Optional[List[str]] = None,
         parallel: Optional[Dict[str, Any]] = None,
+        video_generate_audio: Optional[bool] = None,
         progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None] | None]] = None,
     ) -> Dict[str, Any]:
         """批量生成单集资产
@@ -2810,6 +2833,7 @@ class StudioService:
             stages = ["elements", "frames", "end_frames", "videos", "audio"]
 
         parallel_cfg = parallel if isinstance(parallel, dict) else {}
+        resolved_video_generate_audio = self._resolve_video_generate_audio(video_generate_audio)
 
         def _to_limit(value: Any, fallback: int) -> int:
             try:
@@ -2872,6 +2896,7 @@ class StudioService:
             "episode_id": episode_id,
             "stages": stages,
             "total": total_assets,
+            "video_generate_audio": resolved_video_generate_audio,
             "parallel": {
                 "image_max_concurrency": image_max_concurrency,
                 "video_max_concurrency": video_max_concurrency,
@@ -3072,7 +3097,10 @@ class StudioService:
                 stage_limit=video_max_concurrency,
                 get_item_id=lambda shot_item: str(shot_item.get("id") or ""),
                 get_item_name=lambda shot_item: str(shot_item.get("name") or shot_item.get("id") or "未命名镜头"),
-                worker=lambda shot_item: self.generate_shot_video(str(shot_item.get("id") or "")),
+                worker=lambda shot_item: self.generate_shot_video(
+                    str(shot_item.get("id") or ""),
+                    video_generate_audio=resolved_video_generate_audio,
+                ),
             )
             result["stages"]["videos"] = video_results
 

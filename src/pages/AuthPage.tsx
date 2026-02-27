@@ -13,6 +13,7 @@ export default function AuthPage() {
     init,
     login,
     register,
+    logout,
     clearError,
   } = useWorkspaceStore((state) => ({
     initialized: state.initialized,
@@ -23,6 +24,7 @@ export default function AuthPage() {
     init: state.init,
     login: state.login,
     register: state.register,
+    logout: state.logout,
     clearError: state.clearError,
   }))
 
@@ -37,12 +39,6 @@ export default function AuthPage() {
       void init()
     }
   }, [init, initialized])
-
-  useEffect(() => {
-    if (user) {
-      navigate('/studio', { replace: true })
-    }
-  }, [navigate, user])
 
   const handleSubmit = async () => {
     if (!email.trim() || !password.trim()) return
@@ -68,10 +64,62 @@ export default function AuthPage() {
     )
   }
 
-  if (!authRequired && user) {
+  if (user) {
+    const handleLogout = async () => {
+      setSubmitting(true)
+      clearError()
+      try {
+        await logout()
+      } finally {
+        setSubmitting(false)
+      }
+    }
+
     return (
-      <div className="h-screen flex items-center justify-center bg-gray-950 text-gray-200 text-sm">
-        本地协作模式已启用，正在进入工作台...
+      <div className="h-screen bg-gray-950 flex items-center justify-center p-4 text-gray-100">
+        <div className="w-full max-w-md border border-gray-800 bg-gray-900/80 rounded-xl p-5 space-y-4">
+          <div className="space-y-1">
+            <h1 className="text-lg font-semibold">账号信息</h1>
+            <p className="text-xs text-gray-400">你已登录协作空间账号，可继续进入工作台或退出登录</p>
+          </div>
+
+          <div className="rounded border border-gray-800 bg-gray-900/70 p-3 space-y-2 text-sm">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-gray-400">昵称</span>
+              <span className="text-gray-100">{user.name || '-'}</span>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-gray-400">邮箱</span>
+              <span className="text-gray-100">{user.email || '-'}</span>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-gray-400">模式</span>
+              <span className="text-gray-100">{authRequired ? '账号认证模式' : '本地协作模式'}</span>
+            </div>
+          </div>
+
+          {error && (
+            <div className="text-xs text-red-300 border border-red-800/70 bg-red-900/20 rounded px-2 py-1.5">
+              {error}
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => navigate('/studio')}
+              className="rounded bg-purple-600 hover:bg-purple-500 px-3 py-2 text-sm font-medium transition-colors"
+            >
+              返回工作台
+            </button>
+            <button
+              onClick={() => void handleLogout()}
+              disabled={submitting}
+              className="rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-50 px-3 py-2 text-sm font-medium transition-colors"
+            >
+              {submitting ? '退出中...' : '退出登录'}
+            </button>
+          </div>
+        </div>
       </div>
     )
   }

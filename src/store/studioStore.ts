@@ -248,7 +248,11 @@ interface StudioState {
 
   updateShot: (shotId: string, updates: Record<string, unknown>) => Promise<void>
   deleteShot: (shotId: string) => Promise<void>
-  generateShotAsset: (shotId: string, stage: 'frame' | 'end_frame' | 'video' | 'audio') => Promise<void>
+  generateShotAsset: (
+    shotId: string,
+    stage: 'frame' | 'end_frame' | 'video' | 'audio',
+    options?: { video_generate_audio?: boolean }
+  ) => Promise<void>
   inpaintShotFrame: (shotId: string, params: { edit_prompt: string; mask_data?: string; width?: number; height?: number }) => Promise<void>
   reorderShots: (episodeId: string, shotIds: string[]) => Promise<void>
   loadEpisodeHistory: (episodeId: string, limit?: number, includeSnapshot?: boolean) => Promise<void>
@@ -256,7 +260,11 @@ interface StudioState {
   undoWorkspaceOperation: (workspaceId: string, projectScope: string) => Promise<void>
   redoWorkspaceOperation: (workspaceId: string, projectScope: string) => Promise<void>
 
-  batchGenerate: (episodeId: string, stages?: string[]) => Promise<void>
+  batchGenerate: (
+    episodeId: string,
+    stages?: string[],
+    options?: { video_generate_audio?: boolean }
+  ) => Promise<void>
   retryFailedOperation: (operationId: string) => Promise<void>
   dismissFailedOperation: (operationId: string) => void
   clearResolvedFailedOperations: () => void
@@ -986,7 +994,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }
   },
 
-  generateShotAsset: async (shotId, stage) => {
+  generateShotAsset: async (shotId, stage, options) => {
     const stageMessage = stage === 'video'
       ? '正在生成镜头视频'
       : stage === 'audio'
@@ -1007,7 +1015,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       if (stage === 'video') {
         await enqueueVideoGeneration(
           `镜头视频: ${shotId}`,
-          () => api.studioGenerateShotAsset(shotId, { stage }),
+          () => api.studioGenerateShotAsset(shotId, {
+            stage,
+            video_generate_audio: options?.video_generate_audio,
+          }),
         )
       } else if (stage === 'frame' || stage === 'end_frame') {
         await enqueueImageGeneration(
@@ -1027,7 +1038,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const parsed = queueOperationFailure(set, e, {
         key: `generate_shot_asset:${shotId}:${stage}`,
         title: stage === 'audio' ? '生成镜头音频' : stage === 'video' ? '生成镜头视频' : '生成镜头画面',
-        retryTask: () => get().generateShotAsset(shotId, stage),
+        retryTask: () => get().generateShotAsset(shotId, stage, options),
       })
       set({
         generating: false,
@@ -1194,7 +1205,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }
   },
 
-  batchGenerate: async (episodeId, stages) => {
+  batchGenerate: async (episodeId, stages, options) => {
     if (generationProgressResetTimer) {
       clearTimeout(generationProgressResetTimer)
       generationProgressResetTimer = null
@@ -1211,7 +1222,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const parallel = getGenerationQueueParallelConfig()
 
     const runFallbackBatch = async () => {
-      await api.studioBatchGenerate(episodeId, stages, parallel)
+      await api.studioBatchGenerate(episodeId, stages, parallel, options)
       set((state) => ({
         generationProgress: {
           ...state.generationProgress,
@@ -1257,6 +1268,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             episodeId,
             stages,
             parallel,
+            options,
             (event) => {
               hasProgressEvent = true
 
@@ -1401,7 +1413,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const parsed = queueOperationFailure(set, e, {
         key: `batch_generate:${episodeId}:${(stages || []).join(',')}`,
         title: '批量生成',
-        retryTask: () => get().batchGenerate(episodeId, stages),
+        retryTask: () => get().batchGenerate(episodeId, stages, options),
       })
       set((state) => ({
         generating: false,

@@ -6122,6 +6122,7 @@ class StudioShotUpdateRequest(BaseModel):
     video_prompt: Optional[str] = None
     narration: Optional[str] = None
     dialogue_script: Optional[str] = None
+    sound_effects: Optional[str] = None
     segment_name: Optional[str] = None
     start_image_url: Optional[str] = None
     end_image_url: Optional[str] = None
@@ -6135,6 +6136,7 @@ class StudioGenerateRequest(BaseModel):
     width: int = 1280
     height: int = 720
     voice_type: Optional[str] = None
+    video_generate_audio: Optional[bool] = None
 
 
 class StudioInpaintRequest(BaseModel):
@@ -6147,6 +6149,7 @@ class StudioInpaintRequest(BaseModel):
 class StudioBatchGenerateRequest(BaseModel):
     stages: List[str] = ["elements", "frames", "end_frames", "videos", "audio"]
     parallel: Optional[Dict[str, Any]] = None
+    video_generate_audio: Optional[bool] = None
 
 
 class StudioReorderShotsRequest(BaseModel):
@@ -7197,7 +7200,10 @@ async def studio_generate_shot_asset(
                 shot_id, width=req.width, height=req.height
             )
         elif req.stage == "video":
-            return await service.generate_shot_video(shot_id)
+            return await service.generate_shot_video(
+                shot_id,
+                video_generate_audio=req.video_generate_audio,
+            )
         elif req.stage == "audio":
             return await service.generate_shot_audio(
                 shot_id, voice_type=req.voice_type
@@ -7278,6 +7284,7 @@ async def studio_batch_generate_stream(
     request: Request,
     stages: Optional[str] = Query(None),
     workspace_id: Optional[str] = Query(None),
+    video_generate_audio: Optional[bool] = Query(None),
     image_max_concurrency: Optional[int] = Query(None, ge=1, le=12),
     video_max_concurrency: Optional[int] = Query(None, ge=1, le=8),
     global_max_concurrency: Optional[int] = Query(None, ge=1, le=16),
@@ -7325,6 +7332,7 @@ async def studio_batch_generate_stream(
                 episode_id=episode_id,
                 stages=stage_list,
                 parallel=parallel_cfg,
+                video_generate_audio=video_generate_audio,
                 progress_callback=on_progress,
             )
         )
@@ -7386,6 +7394,7 @@ async def studio_batch_generate(
             episode_id,
             stages=req.stages,
             parallel=req.parallel,
+            video_generate_audio=req.video_generate_audio,
         )
     except Exception as e:
         _studio_raise_from_exception(e)

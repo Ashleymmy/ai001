@@ -179,7 +179,6 @@ export default function PreviewPlayer({
             ref={videoRef}
             src={current.video_url}
             className="w-full h-full object-cover"
-            muted
             playsInline
             onTimeUpdate={(event) => {
               const time = event.currentTarget.currentTime

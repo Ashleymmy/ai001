@@ -107,6 +107,7 @@ const LAYOUT_SIDEBAR_WIDTH_KEY = 'studio.layout.sidebarWidth'
 const LAYOUT_SIDEBAR_COLLAPSED_KEY = 'studio.layout.sidebarCollapsed'
 const LAYOUT_DETAIL_PANEL_WIDTH_KEY = 'studio.layout.detailPanelWidth'
 const LAYOUT_DETAIL_PANEL_COLLAPSED_KEY = 'studio.layout.detailPanelCollapsed'
+const GENERATION_VIDEO_MODEL_AUDIO_KEY = 'studio.generation.videoModelAudio'
 type WorkbenchMode = 'longform' | 'short_video' | 'digital_human'
 
 type PromptFieldKey = 'prompt' | 'end_prompt' | 'video_prompt'
@@ -429,6 +430,7 @@ function summarizeShotDiff(currentShots: StudioShot[], previousShots: StudioShot
     if ((cur.video_prompt || '') !== (prev.video_prompt || '')) changedFields.push('视频提示词')
     if ((cur.narration || '') !== (prev.narration || '')) changedFields.push('旁白')
     if ((cur.dialogue_script || '') !== (prev.dialogue_script || '')) changedFields.push('对白')
+    if ((cur.sound_effects || '') !== (prev.sound_effects || '')) changedFields.push('音效信息')
 
     if (changedFields.length > 0) {
       changed += 1
@@ -721,6 +723,7 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => readStoredNumber(LAYOUT_SIDEBAR_WIDTH_KEY, 256, 220, 420))
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => readStoredBoolean(LAYOUT_SIDEBAR_COLLAPSED_KEY, false))
   const [compactLayout, setCompactLayout] = useState<boolean>(() => (typeof window !== 'undefined' ? window.innerWidth < 1100 : false))
+  const [videoModelAudioEnabled, setVideoModelAudioEnabled] = useState<boolean>(() => readStoredBoolean(GENERATION_VIDEO_MODEL_AUDIO_KEY, false))
   const sidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
   const actualSidebarCollapsed = compactLayout ? true : sidebarCollapsed
   const actualSidebarWidth = actualSidebarCollapsed ? 56 : sidebarWidth
@@ -1035,8 +1038,12 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
       stage === 'frame' || stage === 'end_frame' ? ['image'] : stage === 'video' ? ['video'] : ['tts']
     const ok = await ensureConfigReady(required)
     if (!ok) return
-    await store.generateShotAsset(shotId, stage)
-  }, [ensureConfigReady, store])
+    await store.generateShotAsset(
+      shotId,
+      stage,
+      stage === 'video' ? { video_generate_audio: videoModelAudioEnabled } : undefined,
+    )
+  }, [ensureConfigReady, store, videoModelAudioEnabled])
 
   const handleInpaintShot = useCallback(async (
     shotId: string,
@@ -1051,15 +1058,22 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
   }, [ensureConfigReady, store])
 
   const handleBatchGenerate = useCallback(async (episodeId: string, stages?: string[]) => {
-    const actualStages = stages && stages.length > 0 ? stages : ['elements', 'frames', 'end_frames', 'videos', 'audio']
+    const defaultStages = videoModelAudioEnabled
+      ? ['elements', 'frames', 'end_frames', 'videos']
+      : ['elements', 'frames', 'end_frames', 'videos', 'audio']
+    const actualStages = stages && stages.length > 0 ? stages : defaultStages
     const required = new Set<ServiceKey>()
     if (actualStages.includes('elements') || actualStages.includes('frames') || actualStages.includes('end_frames')) required.add('image')
     if (actualStages.includes('videos')) required.add('video')
     if (actualStages.includes('audio')) required.add('tts')
     const ok = await ensureConfigReady(Array.from(required))
     if (!ok) return
-    await store.batchGenerate(episodeId, stages)
-  }, [ensureConfigReady, store])
+    await store.batchGenerate(
+      episodeId,
+      actualStages,
+      { video_generate_audio: videoModelAudioEnabled },
+    )
+  }, [ensureConfigReady, store, videoModelAudioEnabled])
 
   const handleBatchGenerateElementsForSeries = useCallback(async () => {
     const targetEpisodeId = store.episodes[0]?.id
@@ -1108,14 +1122,20 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
   }, [ensureConfigReady, pushToast, store])
 
   const handleShortVideoQuickPipeline = useCallback(async (episodeId: string) => {
-    const ok = await ensureConfigReady(['llm', 'image', 'video', 'tts'])
+    const required: ServiceKey[] = ['llm', 'image', 'video']
+    if (!videoModelAudioEnabled) required.push('tts')
+    const ok = await ensureConfigReady(required)
     if (!ok) return
     const currentHasShots = store.currentEpisodeId === episodeId && store.shots.length > 0
     if (!currentHasShots) {
       await store.planEpisode(episodeId)
     }
-    await store.batchGenerate(episodeId, ['frames', 'videos', 'audio'])
-  }, [ensureConfigReady, store])
+    await store.batchGenerate(
+      episodeId,
+      videoModelAudioEnabled ? ['frames', 'videos'] : ['frames', 'videos', 'audio'],
+      { video_generate_audio: videoModelAudioEnabled },
+    )
+  }, [ensureConfigReady, store, videoModelAudioEnabled])
 
   const handleSaveDigitalHumanProfiles = useCallback(async (profiles: DigitalHumanProfileDraft[]) => {
     if (!store.currentSeriesId || !store.currentSeries) return
@@ -1510,6 +1530,15 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
       // ignore layout persistence errors
     }
   }, [sidebarCollapsed])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(GENERATION_VIDEO_MODEL_AUDIO_KEY, videoModelAudioEnabled ? '1' : '0')
+    } catch {
+      // ignore layout persistence errors
+    }
+  }, [videoModelAudioEnabled])
 
   useEffect(() => {
     const handlePointerMove = (event: MouseEvent) => {
@@ -1922,6 +1951,8 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
                 if (!store.currentEpisodeId) return
                 await handleBatchGenerate(store.currentEpisodeId, stages)
               }}
+              videoModelAudioEnabled={videoModelAudioEnabled}
+              onVideoModelAudioEnabledChange={setVideoModelAudioEnabled}
               onRunShortVideoQuickPipeline={async () => {
                 if (!store.currentEpisodeId) return
                 await handleShortVideoQuickPipeline(store.currentEpisodeId)
@@ -2796,6 +2827,8 @@ function EpisodeWorkbench({
   onReorderShots,
   onUpdateEpisode,
   onBatchGenerate,
+  videoModelAudioEnabled,
+  onVideoModelAudioEnabledChange,
   onRunShortVideoQuickPipeline,
   historyEntries,
   historyLoading,
@@ -2830,6 +2863,8 @@ function EpisodeWorkbench({
   onReorderShots: (shotIds: string[]) => void | Promise<void>
   onUpdateEpisode: (updates: Record<string, unknown>) => void | Promise<void>
   onBatchGenerate: (stages?: string[]) => void | Promise<void>
+  videoModelAudioEnabled: boolean
+  onVideoModelAudioEnabledChange: (enabled: boolean) => void
   onRunShortVideoQuickPipeline?: () => void | Promise<void>
   historyEntries: StudioEpisodeHistoryEntry[]
   historyLoading: boolean
@@ -3337,6 +3372,14 @@ function EpisodeWorkbench({
                 <Plus className="w-3 h-3" />
                 扩展
               </button>
+              <label className="flex items-center gap-1.5 px-2 py-1 rounded bg-gray-900/70 border border-gray-800 text-[11px] text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={videoModelAudioEnabled}
+                  onChange={(e) => onVideoModelAudioEnabledChange(e.target.checked)}
+                />
+                音画同出（视频模型音轨）
+              </label>
               <button
                 onClick={() => onBatchGenerate()}
                 disabled={generating}
@@ -3367,11 +3410,11 @@ function EpisodeWorkbench({
             </button>
           ))}
           <button
-            onClick={() => onBatchGenerate(['frames', 'videos', 'audio'])}
+            onClick={() => onBatchGenerate(videoModelAudioEnabled ? ['frames', 'videos'] : ['frames', 'videos', 'audio'])}
             disabled={planning || generating || shots.length <= 0}
             className="ml-auto text-[11px] px-2.5 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 disabled:opacity-40 transition-colors"
           >
-            快编生成（帧+视频+音频）
+            {videoModelAudioEnabled ? '快编生成（帧+视频音轨）' : '快编生成（帧+视频+音频）'}
           </button>
           <button
             onClick={() => onRunShortVideoQuickPipeline?.()}
@@ -4337,6 +4380,13 @@ function ShotDetailPanel({
           value={fieldValue('dialogue_script')}
           onChange={(v) => setEditing((p) => ({ ...p, dialogue_script: v }))}
           onBlur={() => handleSave('dialogue_script')}
+          multiline
+        />
+        <DetailField
+          label="音效信息"
+          value={fieldValue('sound_effects')}
+          onChange={(v) => setEditing((p) => ({ ...p, sound_effects: v }))}
+          onBlur={() => handleSave('sound_effects')}
           multiline
         />
       </div>

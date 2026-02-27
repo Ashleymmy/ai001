@@ -2346,6 +2346,7 @@ export interface StudioShot {
   video_prompt: string
   narration: string
   dialogue_script: string
+  sound_effects: string
   start_image_url: string
   end_image_url: string
   frame_history: string[]
@@ -2678,7 +2679,7 @@ export async function studioReorderShots(
 
 export async function studioUpdateShot(
   shotId: string,
-  updates: Partial<Pick<StudioShot, 'name' | 'type' | 'duration' | 'description' | 'prompt' | 'end_prompt' | 'video_prompt' | 'narration' | 'dialogue_script' | 'segment_name' | 'start_image_url' | 'end_image_url' | 'frame_history' | 'video_history' | 'visual_action'>>
+  updates: Partial<Pick<StudioShot, 'name' | 'type' | 'duration' | 'description' | 'prompt' | 'end_prompt' | 'video_prompt' | 'narration' | 'dialogue_script' | 'sound_effects' | 'segment_name' | 'start_image_url' | 'end_image_url' | 'frame_history' | 'video_history' | 'visual_action'>>
 ): Promise<StudioShot> {
   const response = await api.put(`/api/studio/shots/${shotId}`, updates)
   return response.data
@@ -2690,7 +2691,13 @@ export async function studioDeleteShot(shotId: string): Promise<void> {
 
 export async function studioGenerateShotAsset(
   shotId: string,
-  params: { stage: 'frame' | 'end_frame' | 'video' | 'audio'; width?: number; height?: number; voice_type?: string }
+  params: {
+    stage: 'frame' | 'end_frame' | 'video' | 'audio'
+    width?: number
+    height?: number
+    voice_type?: string
+    video_generate_audio?: boolean
+  }
 ): Promise<Record<string, unknown>> {
   const timeout = params.stage === 'video' ? 1800000 : 600000
   const response = await studioApi.post(`/api/studio/shots/${shotId}/generate`, params, { timeout })
@@ -2711,6 +2718,7 @@ export interface StudioBatchGenerateStreamEvent {
   type: 'start' | 'stage_start' | 'item_start' | 'item_complete' | 'done' | 'error'
   episode_id?: string
   stages?: string[]
+  video_generate_audio?: boolean
   stage?: 'elements' | 'frames' | 'end_frames' | 'videos' | 'audio'
   stage_total?: number
   item_id?: string
@@ -2741,14 +2749,20 @@ export interface StudioBatchParallelConfig {
   global_max_concurrency?: number
 }
 
+export interface StudioBatchGenerateOptions {
+  video_generate_audio?: boolean
+}
+
 export async function studioBatchGenerate(
   episodeId: string,
   stages?: string[],
   parallel?: StudioBatchParallelConfig,
+  options?: StudioBatchGenerateOptions,
 ): Promise<Record<string, unknown>> {
   const response = await studioApi.post(`/api/studio/episodes/${episodeId}/batch-generate`, {
     stages: stages || ['elements', 'frames', 'end_frames', 'videos', 'audio'],
     parallel: parallel || undefined,
+    video_generate_audio: options?.video_generate_audio,
   })
   return response.data
 }
@@ -2757,6 +2771,7 @@ export function studioBatchGenerateStream(
   episodeId: string,
   stages: string[] | undefined,
   parallel: StudioBatchParallelConfig | undefined,
+  options: StudioBatchGenerateOptions | undefined,
   onEvent: (event: StudioBatchGenerateStreamEvent) => void,
   onError?: (error: Error) => void
 ): () => void {
@@ -2774,6 +2789,7 @@ export function studioBatchGenerateStream(
   if (parallel?.image_max_concurrency) query.set('image_max_concurrency', String(parallel.image_max_concurrency))
   if (parallel?.video_max_concurrency) query.set('video_max_concurrency', String(parallel.video_max_concurrency))
   if (parallel?.global_max_concurrency) query.set('global_max_concurrency', String(parallel.global_max_concurrency))
+  if (typeof options?.video_generate_audio === 'boolean') query.set('video_generate_audio', options.video_generate_audio ? 'true' : 'false')
 
   const url = `${API_BASE}/api/studio/episodes/${episodeId}/batch-generate-stream${query.toString() ? `?${query.toString()}` : ''}`
   const eventSource = new EventSource(url)

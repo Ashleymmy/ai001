@@ -140,7 +140,9 @@ export default function Timeline({
                   const widthPercent = totalDuration > 0
                     ? (normalizeDuration(Number(shot.duration || 0)) / totalDuration) * 100
                     : 100 / Math.max(1, shots.length)
-                  const hasAudio = Boolean(shot.audio_url)
+                  const hasTtsAudio = Boolean(shot.audio_url)
+                  const hasVideoClip = Boolean(shot.video_url)
+                  const hasAudio = hasTtsAudio || hasVideoClip
                   return (
                     <div
                       key={`${shot.id}_audio`}
@@ -154,7 +156,7 @@ export default function Timeline({
                           : 'border-gray-800 bg-gray-900 text-gray-500'
                       }`}
                     >
-                      {hasAudio ? '音频可用' : '无音频'}
+                      {hasTtsAudio ? 'TTS音频可用' : hasVideoClip ? '视频音轨（模型）' : '无音频'}
                     </div>
                   )
                 })}
