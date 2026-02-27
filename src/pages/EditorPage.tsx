@@ -1,3 +1,7 @@
+/**
+ * 功能模块：页面模块，负责 EditorPage 场景的页面布局与交互编排
+ */
+
 import { useEffect, useState, useCallback } from 'react'
 import {
   Upload,

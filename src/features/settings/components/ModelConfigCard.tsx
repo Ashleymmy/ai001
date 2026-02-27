@@ -1,3 +1,7 @@
+/**
+ * 功能模块：功能组件模块，负责 ModelConfigCard 的业务组件化实现
+ */
+
 import type React from 'react'
 import { AlertCircle, CheckCircle, Server } from 'lucide-react'
 import type { ModelConfig } from '../../../store/settingsStore'

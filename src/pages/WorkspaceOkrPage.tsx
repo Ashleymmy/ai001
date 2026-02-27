@@ -1,8 +1,234 @@
-import { useEffect, useMemo, useState } from 'react'
+/**
+ * 功能模块：页面模块，负责 WorkspaceOkrPage 场景的页面布局与交互编排
+ */
+
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useWorkspaceStore } from '../store/workspaceStore'
 import { studioListSeries } from '../services/api'
-import type { StudioSeries } from '../services/api'
+import type { StudioSeries, OkrObjective } from '../services/api'
+
+/** CSV 导出：目标 + 关键结果 */
+function exportOkrToCsv(objectives: OkrObjective[]) {
+  const BOM = '\uFEFF'
+  const header = '目标名称,状态,进度%,关键结果,KR进度%,截止日期,风险状态'
+  const rows: string[] = []
+  for (const obj of objectives) {
+    const escTitle = `"${(obj.title || '').replace(/"/g, '""')}"`
+    const status = obj.status || 'active'
+    const progress = Number(obj.progress || 0).toFixed(1)
+    const dueDate = obj.due_date || ''
+    const risk = obj.risk || ''
+    const krs = obj.key_results || []
+    if (krs.length === 0) {
+      rows.push(`${escTitle},${status},${progress},,,,${risk}`)
+    } else {
+      for (const kr of krs) {
+        const escKr = `"${(kr.title || '').replace(/"/g, '""')}"`
+        const krTarget = kr.metric_target || 100
+        const krProgress = krTarget > 0
+          ? Number((kr.metric_current / krTarget) * 100).toFixed(1)
+          : '0.0'
+        rows.push(`${escTitle},${status},${progress},${escKr},${krProgress},${dueDate},${risk}`)
+      }
+    }
+  }
+  const csv = BOM + header + '\n' + rows.join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const today = new Date().toISOString().slice(0, 10)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `okr_report_${today}.csv`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+/** 甘特图状态颜色 */
+const GANTT_STATUS_COLORS: Record<string, { bar: string; fill: string; text: string }> = {
+  active:    { bar: 'rgba(59,130,246,0.25)',  fill: 'rgb(59,130,246)',   text: 'text-blue-300' },
+  at_risk:   { bar: 'rgba(245,158,11,0.25)',  fill: 'rgb(245,158,11)',   text: 'text-amber-300' },
+  'at-risk': { bar: 'rgba(245,158,11,0.25)',  fill: 'rgb(245,158,11)',   text: 'text-amber-300' },
+  completed: { bar: 'rgba(34,197,94,0.25)',   fill: 'rgb(34,197,94)',    text: 'text-green-300' },
+  archived:  { bar: 'rgba(156,163,175,0.2)',  fill: 'rgb(156,163,175)',  text: 'text-gray-400' },
+}
+const DEFAULT_GANTT_COLOR = GANTT_STATUS_COLORS.active
+
+/** 甘特图时间线内联组件 */
+function GanttTimeline({ objectives }: { objectives: OkrObjective[] }) {
+  if (objectives.length === 0) {
+    return <p className="text-xs text-gray-500 py-2">暂无 OKR 数据</p>
+  }
+
+  // 确定时间范围：取所有目标/KR 的日期范围，无日期时用 created_at/updated_at
+  const now = new Date()
+  let globalStart = Infinity
+  let globalEnd = -Infinity
+
+  const entries: {
+    id: string
+    title: string
+    status: string
+    progress: number
+    start: number
+    end: number
+    isKr: boolean
+  }[] = []
+
+  for (const obj of objectives) {
+    const objCreated = new Date(obj.created_at).getTime()
+    const objDue = obj.due_date ? new Date(obj.due_date).getTime() : now.getTime() + 30 * 86400000
+    const objStart = objCreated
+    const objEnd = objDue
+
+    entries.push({
+      id: obj.id,
+      title: obj.title,
+      status: obj.status || 'active',
+      progress: Number(obj.progress || 0),
+      start: objStart,
+      end: objEnd,
+      isKr: false,
+    })
+
+    if (objStart < globalStart) globalStart = objStart
+    if (objEnd > globalEnd) globalEnd = objEnd
+
+    for (const kr of obj.key_results || []) {
+      const krTarget = kr.metric_target || 100
+      const krProgress = krTarget > 0 ? (kr.metric_current / krTarget) * 100 : 0
+      entries.push({
+        id: `${obj.id}-kr-${kr.id || kr.title}`,
+        title: kr.title,
+        status: obj.status || 'active',
+        progress: krProgress,
+        start: objStart,
+        end: objEnd,
+        isKr: true,
+      })
+    }
+  }
+
+  // 安全范围保底
+  if (!isFinite(globalStart)) globalStart = now.getTime() - 30 * 86400000
+  if (!isFinite(globalEnd)) globalEnd = now.getTime() + 30 * 86400000
+  const totalSpan = Math.max(globalEnd - globalStart, 86400000) // 至少 1 天
+
+  // 月份刻度标记
+  const monthMarkers: { label: string; pct: number }[] = []
+  const cursor = new Date(globalStart)
+  cursor.setDate(1)
+  cursor.setHours(0, 0, 0, 0)
+  if (cursor.getTime() < globalStart) cursor.setMonth(cursor.getMonth() + 1)
+  while (cursor.getTime() <= globalEnd) {
+    const pct = ((cursor.getTime() - globalStart) / totalSpan) * 100
+    monthMarkers.push({ label: `${cursor.getMonth() + 1}月`, pct })
+    cursor.setMonth(cursor.getMonth() + 1)
+  }
+
+  // "今天"标记
+  const todayPct = ((now.getTime() - globalStart) / totalSpan) * 100
+  const showToday = todayPct >= 0 && todayPct <= 100
+
+  return (
+    <div className="border border-gray-800 bg-gray-900/70 rounded-lg p-3 space-y-1 overflow-x-auto">
+      <h3 className="text-xs font-medium text-gray-300 mb-2">甘特图时间线</h3>
+
+      {/* 月份刻度尺 */}
+      <div className="relative h-5 mb-1" style={{ minWidth: 600 }}>
+        {monthMarkers.map((m, i) => (
+          <span
+            key={i}
+            className="absolute text-[10px] text-gray-500 -translate-x-1/2"
+            style={{ left: `${m.pct}%`, top: 0 }}
+          >
+            {m.label}
+          </span>
+        ))}
+      </div>
+
+      {/* 条形区域 */}
+      <div className="relative" style={{ minWidth: 600 }}>
+        {showToday && (
+          <div
+            className="absolute top-0 bottom-0 w-px bg-red-500/60 z-10"
+            style={{ left: `${todayPct}%` }}
+            title="今天"
+          />
+        )}
+        {entries.map((entry) => {
+          const leftPct = ((entry.start - globalStart) / totalSpan) * 100
+          const widthPct = Math.max(((entry.end - entry.start) / totalSpan) * 100, 0.5)
+          const colors = GANTT_STATUS_COLORS[entry.status] || DEFAULT_GANTT_COLOR
+          const fillWidth = Math.min(entry.progress, 100)
+          return (
+            <div
+              key={entry.id}
+              className={`flex items-center gap-2 ${entry.isKr ? 'pl-4' : ''}`}
+              style={{ height: entry.isKr ? 22 : 28, marginBottom: 2 }}
+            >
+              {/* 标签 */}
+              <div
+                className={`shrink-0 truncate text-[11px] ${entry.isKr ? 'text-gray-400 w-28' : `font-medium ${colors.text} w-36`}`}
+                title={entry.title}
+              >
+                {entry.isKr ? '  ' : ''}{entry.title}
+              </div>
+              {/* 条 */}
+              <div className="relative flex-1" style={{ height: entry.isKr ? 14 : 18 }}>
+                <div
+                  className="absolute rounded"
+                  style={{
+                    left: `${leftPct}%`,
+                    width: `${widthPct}%`,
+                    height: '100%',
+                    background: colors.bar,
+                  }}
+                >
+                  <div
+                    className="h-full rounded"
+                    style={{
+                      width: `${fillWidth}%`,
+                      background: colors.fill,
+                      opacity: 0.85,
+                    }}
+                  />
+                </div>
+              </div>
+              {/* 百分比 */}
+              <span className="shrink-0 text-[10px] text-gray-500 w-10 text-right">
+                {entry.progress.toFixed(0)}%
+              </span>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* 图例 */}
+      <div className="flex gap-4 pt-2 border-t border-gray-800 mt-2">
+        {[
+          { label: '进行中', color: 'rgb(59,130,246)' },
+          { label: '有风险', color: 'rgb(245,158,11)' },
+          { label: '已完成', color: 'rgb(34,197,94)' },
+          { label: '已归档', color: 'rgb(156,163,175)' },
+        ].map((item) => (
+          <span key={item.label} className="flex items-center gap-1 text-[10px] text-gray-400">
+            <span className="inline-block w-3 h-2 rounded-sm" style={{ background: item.color }} />
+            {item.label}
+          </span>
+        ))}
+        {showToday && (
+          <span className="flex items-center gap-1 text-[10px] text-gray-400">
+            <span className="inline-block w-3 h-px bg-red-500" />
+            今天
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
 
 export default function WorkspaceOkrPage() {
   const navigate = useNavigate()
@@ -43,6 +269,11 @@ export default function WorkspaceOkrPage() {
   const [newKrLinkType, setNewKrLinkType] = useState<'workspace' | 'series'>('workspace')
   const [newKrSeriesId, setNewKrSeriesId] = useState('')
   const [workspaceSeries, setWorkspaceSeries] = useState<StudioSeries[]>([])
+  const [showGantt, setShowGantt] = useState(false)
+
+  const handleExportCsv = useCallback(() => {
+    exportOkrToCsv(okrs)
+  }, [okrs])
 
   useEffect(() => {
     if (!initialized) {
@@ -93,6 +324,18 @@ export default function WorkspaceOkrPage() {
           </div>
           <div className="flex gap-2">
             <button
+              onClick={handleExportCsv}
+              className="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 text-xs"
+            >
+              导出报表
+            </button>
+            <button
+              onClick={() => setShowGantt((v) => !v)}
+              className={`px-3 py-1.5 rounded text-xs ${showGantt ? 'bg-indigo-600 hover:bg-indigo-500' : 'bg-gray-800 hover:bg-gray-700'}`}
+            >
+              {showGantt ? '关闭甘特图' : '甘特图'}
+            </button>
+            <button
               onClick={() => navigate('/studio')}
               className="px-3 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-xs"
             >
@@ -106,6 +349,9 @@ export default function WorkspaceOkrPage() {
             </button>
           </div>
         </div>
+
+        {/* 甘特图时间线 */}
+        {showGantt && <GanttTimeline objectives={okrs} />}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
           <div className="lg:col-span-1 border border-gray-800 bg-gray-900/70 rounded-lg p-3 space-y-2">

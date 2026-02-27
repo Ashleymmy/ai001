@@ -1,3 +1,7 @@
+/**
+ * 功能模块：Agent 功能组件模块，负责 cards 的业务子面板与交互能力
+ */
+
 import { FileText, Layers } from 'lucide-react'
 
 

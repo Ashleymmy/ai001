@@ -1,3 +1,7 @@
+/**
+ * 功能模块：音频工作台组件模块，负责 PlaybackControls 的音频编辑与预览交互
+ */
+
 import { Pause, Play, SkipBack, SkipForward } from 'lucide-react'
 
 function formatTime(seconds: number) {

@@ -1,3 +1,7 @@
+/**
+ * 功能模块：项目领域模型模块，提供 utils 的类型与业务辅助函数
+ */
+
 export function formatTime(isoString: string): string {
   const date = new Date(isoString)
   return date.toLocaleString('zh-CN', {

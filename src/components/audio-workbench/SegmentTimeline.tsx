@@ -1,3 +1,7 @@
+/**
+ * 功能模块：音频工作台组件模块，负责 SegmentTimeline 的音频编辑与预览交互
+ */
+
 import { useMemo, useRef } from 'react'
 import type { AudioTimelineSegment } from '../../services/api'
 

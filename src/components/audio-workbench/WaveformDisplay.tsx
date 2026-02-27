@@ -1,3 +1,7 @@
+/**
+ * 功能模块：音频工作台组件模块，负责 WaveformDisplay 的音频编辑与预览交互
+ */
+
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import WaveSurfer from 'wavesurfer.js'
 import { AlertCircle } from 'lucide-react'

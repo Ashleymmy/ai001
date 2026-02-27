@@ -1,3 +1,7 @@
+/**
+ * 功能模块：通用 UI 组件模块，负责 ProjectBackButton 的复用界面与交互封装
+ */
+
 import { useNavigate, useLocation } from 'react-router-dom'
 import { ArrowLeft, FolderOpen } from 'lucide-react'
 

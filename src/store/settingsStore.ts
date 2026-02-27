@@ -1,3 +1,7 @@
+/**
+ * 功能模块：状态管理模块，负责 settingsStore 相关业务状态与动作编排
+ */
+
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { getSavedSettings, updateSettings as apiUpdateSettings } from '../services/api'

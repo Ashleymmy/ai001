@@ -1,3 +1,7 @@
+/**
+ * 功能模块：页面模块，负责 ScriptPage 场景的页面布局与交互编排
+ */
+
 import { useState, useRef, useEffect } from 'react'
 import { Save, Download, FileText, User, Loader2, Check, Clock, ChevronRight, Trash2, Feather } from 'lucide-react'
 import { useLocation } from 'react-router-dom'

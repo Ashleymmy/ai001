@@ -1,3 +1,5 @@
+/* 功能模块：全局样式模块，定义全局设计变量、基础样式与通用视觉规范 */
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

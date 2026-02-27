@@ -1,3 +1,7 @@
+/**
+ * 功能模块：设置领域模型模块，提供 types 的类型定义与配置工具
+ */
+
 export type ProviderPreset = {
   id: string
   name: string

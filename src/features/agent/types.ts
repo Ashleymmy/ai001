@@ -1,3 +1,7 @@
+/**
+ * 功能模块：Agent 领域模型模块，提供 types 的类型与工具能力
+ */
+
 export type ModuleType = 'elements' | 'storyboard' | 'timeline' | 'audio'
 export type GenerationStage = 'idle' | 'planning' | 'elements' | 'frames' | 'videos' | 'audio' | 'complete'
 export type TaskCardType = 'brief' | 'storyboard' | 'visual' | 'genPath' | 'narration' | 'music' | 'timeline'

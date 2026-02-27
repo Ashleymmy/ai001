@@ -1,3 +1,7 @@
+/**
+ * 功能模块：功能组件模块，负责 ProviderSelect 的业务组件化实现
+ */
+
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Edit2, FolderCog, Plus, Trash2 } from 'lucide-react'
 import type { ModelConfig } from '../../../store/settingsStore'

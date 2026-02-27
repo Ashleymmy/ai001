@@ -1,3 +1,7 @@
+/**
+ * 功能模块：通用 UI 组件模块，负责 ModuleChat 的复用界面与交互封装
+ */
+
 import { useState, useRef, useEffect, useCallback } from 'react'
 import {
   User,

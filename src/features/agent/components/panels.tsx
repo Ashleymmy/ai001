@@ -1,3 +1,7 @@
+/**
+ * 功能模块：Agent 功能组件模块，负责 panels 的业务子面板与交互能力
+ */
+
 import { useEffect, useState } from 'react'
 import {
   AlertCircle, Check, CheckCircle, ChevronDown, ChevronRight, Download, Edit3, Film, Image as ImageIcon, Loader2, Maximize2, Pause, Play, Plus, RotateCcw, Star, Trash2, Upload, Volume2, Wand2, X

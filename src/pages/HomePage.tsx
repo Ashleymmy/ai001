@@ -1,6 +1,10 @@
+/**
+ * 功能模块：页面模块，负责 HomePage 场景的页面布局与交互编排
+ */
+
 import { useEffect, useState, type MouseEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Clock, ArrowRight, Plus, Trash2, FolderOpen, Sparkles, X, Film } from 'lucide-react'
+import { Clock, ArrowRight, Plus, Trash2, FolderOpen, Sparkles, X, Film, Zap, Users, LayoutDashboard, Target } from 'lucide-react'
 import { useProjectStore } from '../store/projectStore'
 import { listAgentProjects, deleteAgentProject, type AgentProject } from '../services/api'
 import { MODULE_CARDS } from '../shared/moduleCards'
@@ -189,6 +193,74 @@ export default function HomePage() {
                 </div>
               </div>
               <ArrowRight size={24} className="text-gray-500 group-hover:text-white group-hover:translate-x-2 transition-apple" />
+            </div>
+          </button>
+        </div>
+
+        {/* 短视频 & 数字人工作台 */}
+        <div className="mb-12 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <button
+            onClick={() => navigate('/short-video')}
+            className="glass-card p-5 text-left group hover-lift animate-fadeInUp delay-400"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-orange-500 to-rose-500 flex items-center justify-center shadow-lg shadow-orange-500/25">
+                <Zap size={24} className="text-white drop-shadow-md" strokeWidth={2} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="font-semibold mb-0.5">短视频工作台</h3>
+                <p className="text-gray-400 text-xs">15-60 秒快速短视频一键生成</p>
+              </div>
+              <ArrowRight size={20} className="text-gray-500 group-hover:text-white group-hover:translate-x-1 transition-apple shrink-0" />
+            </div>
+          </button>
+          <button
+            onClick={() => navigate('/digital-human')}
+            className="glass-card p-5 text-left group hover-lift animate-fadeInUp delay-500"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-500 flex items-center justify-center shadow-lg shadow-cyan-500/25">
+                <Users size={24} className="text-white drop-shadow-md" strokeWidth={2} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="font-semibold mb-0.5">数字人短剧</h3>
+                <p className="text-gray-400 text-xs">数字人驱动的短剧内容制作</p>
+              </div>
+              <ArrowRight size={20} className="text-gray-500 group-hover:text-white group-hover:translate-x-1 transition-apple shrink-0" />
+            </div>
+          </button>
+        </div>
+
+        {/* 协作 & OKR 入口 */}
+        <div className="mb-12 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <button
+            onClick={() => navigate('/workspace/dashboard')}
+            className="glass-card p-5 text-left group hover-lift animate-fadeInUp delay-500"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-sky-500 to-indigo-500 flex items-center justify-center shadow-lg shadow-sky-500/25">
+                <LayoutDashboard size={24} className="text-white drop-shadow-md" strokeWidth={2} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="font-semibold mb-0.5">协作 Dashboard</h3>
+                <p className="text-gray-400 text-xs">成员在线状态、分幕分配与审核队列</p>
+              </div>
+              <ArrowRight size={20} className="text-gray-500 group-hover:text-white group-hover:translate-x-1 transition-apple shrink-0" />
+            </div>
+          </button>
+          <button
+            onClick={() => navigate('/workspace/okr')}
+            className="glass-card p-5 text-left group hover-lift animate-fadeInUp delay-500"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-500 flex items-center justify-center shadow-lg shadow-emerald-500/25">
+                <Target size={24} className="text-white drop-shadow-md" strokeWidth={2} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="font-semibold mb-0.5">OKR 目标管理</h3>
+                <p className="text-gray-400 text-xs">进度看板、甘特视图与 CSV 导出</p>
+              </div>
+              <ArrowRight size={20} className="text-gray-500 group-hover:text-white group-hover:translate-x-1 transition-apple shrink-0" />
             </div>
           </button>
         </div>

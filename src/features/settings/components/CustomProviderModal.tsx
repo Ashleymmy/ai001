@@ -1,3 +1,7 @@
+/**
+ * 功能模块：功能组件模块，负责 CustomProviderModal 的业务组件化实现
+ */
+
 import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import type { CustomProvider } from '../../../services/api'

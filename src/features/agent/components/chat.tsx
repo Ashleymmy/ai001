@@ -1,3 +1,7 @@
+/**
+ * 功能模块：Agent 功能组件模块，负责 chat 的业务子面板与交互能力
+ */
+
 import { CheckCircle, Zap } from 'lucide-react'
 import type { ChatMessage, ChatOption } from '../types'
 import { JsonDataCard } from './cards'

@@ -1,3 +1,7 @@
+/**
+ * 功能模块：Agent 功能组件模块，负责 timeline 的业务子面板与交互能力
+ */
+
 import { useEffect, useRef, useState } from 'react'
 import { Edit3, Maximize2, Pause, Play, SkipBack, SkipForward } from 'lucide-react'
 import { BACKEND_ORIGIN, type AgentSegment } from '../../../services/api'

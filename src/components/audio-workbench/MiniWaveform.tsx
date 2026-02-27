@@ -1,3 +1,7 @@
+/**
+ * 功能模块：音频工作台组件模块，负责 MiniWaveform 的音频编辑与预览交互
+ */
+
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 type PeaksData = { peaks: Float32Array; duration: number }

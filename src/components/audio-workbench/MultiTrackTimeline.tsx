@@ -1,3 +1,7 @@
+/**
+ * 功能模块：音频工作台组件模块，负责 MultiTrackTimeline 的音频编辑与预览交互
+ */
+
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { Film, Minus, Plus } from 'lucide-react'
 import MiniWaveform from './MiniWaveform'

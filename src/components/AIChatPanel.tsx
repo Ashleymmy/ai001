@@ -1,3 +1,7 @@
+/**
+ * 功能模块：通用 UI 组件模块，负责 AIChatPanel 的复用界面与交互封装
+ */
+
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { MessageCircle, X, User, Loader2, Minimize2 } from 'lucide-react'
 import { agentChat } from '../services/api'

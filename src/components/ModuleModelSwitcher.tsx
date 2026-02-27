@@ -1,3 +1,7 @@
+/**
+ * 功能模块：通用 UI 组件模块，负责 ModuleModelSwitcher 的复用界面与交互封装
+ */
+
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Cpu } from 'lucide-react'
 import type { ModelConfig } from '../store/settingsStore'

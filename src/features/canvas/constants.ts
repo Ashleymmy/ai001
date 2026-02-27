@@ -1,3 +1,7 @@
+/**
+ * 功能模块：画布领域模型模块，提供 constants 的常量与类型约束
+ */
+
 import { FileText, Image as ImageIcon, Music, Type, Video } from 'lucide-react'
 import type { CanvasTemplate, NodeTypeConfig } from './types'
 

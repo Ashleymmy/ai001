@@ -1,3 +1,7 @@
+/**
+ * 功能模块：Agent 领域模型模块，提供 utils 的类型与工具能力
+ */
+
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 KB'
   const mb = 1024 * 1024

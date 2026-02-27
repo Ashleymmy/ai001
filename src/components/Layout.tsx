@@ -1,3 +1,7 @@
+/**
+ * 功能模块：通用 UI 组件模块，负责 Layout 的复用界面与交互封装
+ */
+
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { Home, FileText, Image, Film, Video, Settings, ChevronLeft, Activity } from 'lucide-react'
 import AIChatPanel from './AIChatPanel'

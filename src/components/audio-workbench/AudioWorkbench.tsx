@@ -1,3 +1,7 @@
+/**
+ * 功能模块：音频工作台组件模块，负责 AudioWorkbench 的音频编辑与预览交互
+ */
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertCircle, CheckCircle, Loader2 } from 'lucide-react'
 import type { AudioTimeline, AudioTimelineShot } from '../../services/api'

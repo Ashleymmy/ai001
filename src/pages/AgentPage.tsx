@@ -1,3 +1,7 @@
+/**
+ * 功能模块：Agent 工作台页面模块，负责镜头编排、素材管理与生成流程编排
+ */
+
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { saveAs } from 'file-saver'

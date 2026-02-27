@@ -1,3 +1,7 @@
+/**
+ * 功能模块：画布领域模型模块，提供 types 的常量与类型约束
+ */
+
 import type { ElementType } from 'react'
 
 export type NodeType = 'text' | 'image' | 'video' | 'audio' | 'script'
