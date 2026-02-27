@@ -1,19 +1,20 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import type { ChangeEvent, MouseEvent as ReactMouseEvent, ReactNode } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Settings2, Plus, Film, Users, MapPin, Package,
   Loader2, Play, RefreshCw, Trash2, ChevronRight, ImageIcon,
   Video, Mic, Layers, Sparkles, Clock, CheckCircle, AlertCircle, X, Save, ChevronLeft, Wand2,
-  Star, Eye, Pencil, FileText, History, RotateCcw,
+  Star, Eye, Pencil, FileText, History, RotateCcw, Undo2, Redo2,
 } from 'lucide-react'
 import { useStudioStore } from '../store/studioStore'
+import { useWorkspaceStore } from '../store/workspaceStore'
 import axios from 'axios'
 import {
   studioCheckConfig, studioExportEpisode, studioExportSeries, studioGetSeriesStats, studioGetSettings, studioSaveSettings,
   studioGetPromptTemplateDefaults,
   listAgentProjects, studioExportEpisodeToAgent, studioImportEpisodeFromAgent,
-  studioPromptCheck, studioPromptBatchCheck, studioPromptOptimize,
+  studioPromptCheck, studioPromptBatchCheck, studioPromptOptimize, studioSaveDigitalHumanProfiles,
 } from '../services/api'
 import type {
   StudioSeriesStats,
@@ -35,6 +36,7 @@ import type {
 } from '../store/studioStore'
 import Timeline from '../components/studio/Timeline'
 import PreviewPlayer from '../components/studio/PreviewPlayer'
+import HoverMediaPreview from '../components/studio/HoverMediaPreview'
 
 type ServiceKey = 'llm' | 'image' | 'video' | 'tts'
 
@@ -105,8 +107,29 @@ const LAYOUT_SIDEBAR_WIDTH_KEY = 'studio.layout.sidebarWidth'
 const LAYOUT_SIDEBAR_COLLAPSED_KEY = 'studio.layout.sidebarCollapsed'
 const LAYOUT_DETAIL_PANEL_WIDTH_KEY = 'studio.layout.detailPanelWidth'
 const LAYOUT_DETAIL_PANEL_COLLAPSED_KEY = 'studio.layout.detailPanelCollapsed'
+type WorkbenchMode = 'longform' | 'short_video' | 'digital_human'
 
 type PromptFieldKey = 'prompt' | 'end_prompt' | 'video_prompt'
+
+type DigitalHumanProfileDraft = {
+  id: string
+  base_name: string
+  display_name: string
+  stage_label: string
+  appearance: string
+  voice_profile: string
+  scene_template: string
+  lip_sync_style: string
+}
+
+const SHORT_VIDEO_DURATION_PRESETS = [15, 30, 45, 60] as const
+const DIGITAL_HUMAN_LIP_SYNC_OPTIONS = [
+  '写实口型',
+  '轻拟合口型',
+  '夸张口型',
+  '对白优先',
+  '旁白优先',
+] as const
 
 const PROMPT_FIELD_META: Array<{ field: PromptFieldKey; label: string }> = [
   { field: 'prompt', label: '起始帧提示词' },
@@ -116,6 +139,85 @@ const PROMPT_FIELD_META: Array<{ field: PromptFieldKey; label: string }> = [
 
 function isPromptFieldKey(value: string): value is PromptFieldKey {
   return value === 'prompt' || value === 'end_prompt' || value === 'video_prompt'
+}
+
+function resolveRouteBase(pathname: string, fallback: string = '/studio'): string {
+  const path = (pathname || '').toLowerCase()
+  if (path.startsWith('/short-video')) return '/short-video'
+  if (path.startsWith('/digital-human')) return '/digital-human'
+  return fallback
+}
+
+function inferModeByRoute(routeBase: string): WorkbenchMode {
+  if (routeBase === '/short-video') return 'short_video'
+  if (routeBase === '/digital-human') return 'digital_human'
+  return 'longform'
+}
+
+function getWorkbenchLabel(mode: WorkbenchMode): string {
+  if (mode === 'short_video') return '短视频制作工作台'
+  if (mode === 'digital_human') return '数字人短剧工作台'
+  return '长篇制作工作台'
+}
+
+function getWorkbenchWelcomeText(mode: WorkbenchMode): string {
+  if (mode === 'short_video') {
+    return '面向 15-60 秒快节奏内容，支持脚本快速拆分、批量生成和时间线预览导出。'
+  }
+  if (mode === 'digital_human') {
+    return '聚焦数字人角色驱动创作，支持按阶段管理角色形象、音色与场景模板。'
+  }
+  return '在这里创建系列故事，进行分幕拆解、元素提取、逐集分镜规划和资产生成。适合多集、长篇精细化视频制作。'
+}
+
+function createDigitalHumanProfile(): DigitalHumanProfileDraft {
+  return {
+    id: `dh_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+    base_name: '',
+    display_name: '',
+    stage_label: '',
+    appearance: '',
+    voice_profile: '',
+    scene_template: '',
+    lip_sync_style: DIGITAL_HUMAN_LIP_SYNC_OPTIONS[0],
+  }
+}
+
+function normalizeDigitalHumanProfiles(value: unknown): DigitalHumanProfileDraft[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item): DigitalHumanProfileDraft | null => {
+      if (!item || typeof item !== 'object') return null
+      const row = item as Record<string, unknown>
+      const baseName = String(row.base_name || row.character_name || row.name || '').trim()
+      const displayName = String(row.display_name || row.name || baseName).trim()
+      if (!baseName && !displayName) return null
+      return {
+        id: String(row.id || row.profile_id || `${baseName}_${Date.now()}_${Math.random().toString(16).slice(2, 6)}`),
+        base_name: baseName || displayName,
+        display_name: displayName || baseName,
+        stage_label: String(row.stage_label || row.stage || '').trim(),
+        appearance: String(row.appearance || row.description || '').trim(),
+        voice_profile: String(row.voice_profile || '').trim(),
+        scene_template: String(row.scene_template || row.scene || '').trim(),
+        lip_sync_style: String(row.lip_sync_style || row.lip_sync || DIGITAL_HUMAN_LIP_SYNC_OPTIONS[0]).trim() || DIGITAL_HUMAN_LIP_SYNC_OPTIONS[0],
+      }
+    })
+    .filter((item): item is DigitalHumanProfileDraft => Boolean(item))
+}
+
+function getDigitalHumanProfileDisplayName(profile: DigitalHumanProfileDraft): string {
+  const name = profile.display_name.trim() || profile.base_name.trim() || '未命名角色'
+  const stage = profile.stage_label.trim()
+  return stage ? `${name}（${stage}）` : name
+}
+
+function buildDigitalHumanProfileElementDescription(profile: DigitalHumanProfileDraft): string {
+  const chunks: string[] = []
+  if (profile.appearance.trim()) chunks.push(profile.appearance.trim())
+  if (profile.scene_template.trim()) chunks.push(`场景模板：${profile.scene_template.trim()}`)
+  if (profile.lip_sync_style.trim()) chunks.push(`口型策略：${profile.lip_sync_style.trim()}`)
+  return chunks.join('；')
 }
 
 function readStoredNumber(key: string, fallback: number, min: number, max: number): number {
@@ -580,13 +682,28 @@ function RecoveryCenterPanel({
 // StudioPage - 长篇制作工作台
 // ============================================================
 
-export default function StudioPage() {
+interface StudioPageProps {
+  forcedWorkbenchMode?: WorkbenchMode
+  routeBase?: '/studio' | '/short-video' | '/digital-human'
+}
+
+export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPageProps = {}) {
+  const location = useLocation()
   const navigate = useNavigate()
   const { seriesId, episodeId } = useParams()
   const store = useStudioStore()
+  const workspaceInitialized = useWorkspaceStore((state) => state.initialized)
+  const initWorkspace = useWorkspaceStore((state) => state.init)
+  const currentWorkspaceId = useWorkspaceStore((state) => state.currentWorkspaceId)
+  const workspaces = useWorkspaceStore((state) => state.workspaces)
+  const setWorkspaceId = useWorkspaceStore((state) => state.setCurrentWorkspaceId)
+  const routePrefix = routeBase || resolveRouteBase(location.pathname, '/studio')
+  const workbenchMode: WorkbenchMode = forcedWorkbenchMode || inferModeByRoute(routePrefix)
+  const workbenchLabel = getWorkbenchLabel(workbenchMode)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showCharacterConsole, setShowCharacterConsole] = useState(false)
+  const [showDigitalHumanConsole, setShowDigitalHumanConsole] = useState(false)
   const [showAgentExportDialog, setShowAgentExportDialog] = useState(false)
   const [showAgentImportDialog, setShowAgentImportDialog] = useState(false)
   const [exporting, setExporting] = useState(false)
@@ -615,6 +732,19 @@ export default function StudioPage() {
     () => unresolvedFailedOps.filter((item) => item.status === 'retrying').length,
     [unresolvedFailedOps],
   )
+  const visibleSeriesList = useMemo(
+    () => store.seriesList.filter((series) => {
+      const mode = String(series.settings?.workbench_mode || 'longform')
+      if (!series.settings?.workbench_mode) return workbenchMode === 'longform'
+      return mode === workbenchMode
+    }),
+    [store.seriesList, workbenchMode],
+  )
+  const projectScope = useMemo(() => {
+    if (store.currentEpisodeId) return `episode:${store.currentEpisodeId}`
+    if (store.currentSeriesId) return `series:${store.currentSeriesId}`
+    return 'studio:global'
+  }, [store.currentEpisodeId, store.currentSeriesId])
   const activityIndicator = useMemo<StudioActivityIndicator>(() => {
     const generationProgress = store.generationProgress
     const isBatchGenerating = store.generating && store.generationScope === 'batch'
@@ -784,8 +914,12 @@ export default function StudioPage() {
 
   // 初始化加载
   useEffect(() => {
+    if (!workspaceInitialized) {
+      void initWorkspace()
+      return
+    }
     store.loadSeriesList()
-  }, [])
+  }, [workspaceInitialized, currentWorkspaceId, initWorkspace])
 
   // Store 错误统一转为 Toast
   useEffect(() => {
@@ -816,21 +950,56 @@ export default function StudioPage() {
     }
   }, [episodeId])
 
+  useEffect(() => {
+    const currentSeries = store.currentSeries
+    if (!currentSeries) return
+    const mode = String(currentSeries.settings?.workbench_mode || 'longform')
+    if (mode === workbenchMode) return
+    store.selectSeries(null)
+    navigate(routePrefix, { replace: true })
+  }, [store.currentSeries, workbenchMode, routePrefix, navigate])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const meta = event.metaKey || event.ctrlKey
+      if (!meta) return
+      const key = event.key.toLowerCase()
+      if (key !== 'z') return
+      const isRedo = event.shiftKey
+      event.preventDefault()
+      if (isRedo) {
+        if (!currentWorkspaceId) {
+          pushToast({ message: '请先选择工作区后再执行重做', code: 'workspace_required' })
+          return
+        }
+        void store.redoWorkspaceOperation(currentWorkspaceId, projectScope)
+      } else {
+        if (!currentWorkspaceId) {
+          pushToast({ message: '请先选择工作区后再执行撤销', code: 'workspace_required' })
+          return
+        }
+        void store.undoWorkspaceOperation(currentWorkspaceId, projectScope)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [currentWorkspaceId, projectScope, pushToast, store])
+
   const handleSelectSeries = useCallback((id: string) => {
-    navigate(`/studio/${id}`)
-  }, [navigate])
+    navigate(`${routePrefix}/${id}`)
+  }, [navigate, routePrefix])
 
   const handleSelectEpisode = useCallback((id: string) => {
     if (store.currentSeriesId) {
-      navigate(`/studio/${store.currentSeriesId}/${id}`)
+      navigate(`${routePrefix}/${store.currentSeriesId}/${id}`)
     }
-  }, [navigate, store.currentSeriesId])
+  }, [navigate, routePrefix, store.currentSeriesId])
 
   const handleBackToSeries = useCallback(() => {
     if (store.currentSeriesId) {
-      navigate(`/studio/${store.currentSeriesId}`)
+      navigate(`${routePrefix}/${store.currentSeriesId}`)
     }
-  }, [navigate, store.currentSeriesId])
+  }, [navigate, routePrefix, store.currentSeriesId])
 
   const handleCreateSeries = useCallback(async (params: {
     name: string
@@ -842,8 +1011,12 @@ export default function StudioPage() {
   }) => {
     const ok = await ensureConfigReady(['llm'])
     if (!ok) return null
-    return store.createSeries(params)
-  }, [ensureConfigReady, store])
+    return store.createSeries({
+      ...params,
+      workspace_id: currentWorkspaceId || undefined,
+      workbench_mode: workbenchMode,
+    })
+  }, [ensureConfigReady, store, currentWorkspaceId, workbenchMode])
 
   const handlePlanEpisode = useCallback(async (id: string) => {
     const ok = await ensureConfigReady(['llm'])
@@ -934,6 +1107,75 @@ export default function StudioPage() {
     return result
   }, [ensureConfigReady, pushToast, store])
 
+  const handleShortVideoQuickPipeline = useCallback(async (episodeId: string) => {
+    const ok = await ensureConfigReady(['llm', 'image', 'video', 'tts'])
+    if (!ok) return
+    const currentHasShots = store.currentEpisodeId === episodeId && store.shots.length > 0
+    if (!currentHasShots) {
+      await store.planEpisode(episodeId)
+    }
+    await store.batchGenerate(episodeId, ['frames', 'videos', 'audio'])
+  }, [ensureConfigReady, store])
+
+  const handleSaveDigitalHumanProfiles = useCallback(async (profiles: DigitalHumanProfileDraft[]) => {
+    if (!store.currentSeriesId || !store.currentSeries) return
+    const cleaned = profiles.map((profile) => ({
+      id: profile.id,
+      base_name: profile.base_name.trim(),
+      display_name: profile.display_name.trim() || profile.base_name.trim(),
+      stage_label: profile.stage_label.trim(),
+      appearance: profile.appearance.trim(),
+      voice_profile: profile.voice_profile.trim(),
+      scene_template: profile.scene_template.trim(),
+      lip_sync_style: profile.lip_sync_style.trim() || DIGITAL_HUMAN_LIP_SYNC_OPTIONS[0],
+    })).filter((profile) => profile.base_name || profile.display_name)
+    const currentMode = String(store.currentSeries.settings?.workbench_mode || 'longform')
+    if (currentMode !== 'digital_human') {
+      await store.updateSeries(store.currentSeriesId, {
+        settings: {
+          ...(store.currentSeries.settings || {}),
+          workbench_mode: 'digital_human',
+        },
+      })
+    }
+    await studioSaveDigitalHumanProfiles(store.currentSeriesId, cleaned)
+    await store.selectSeries(store.currentSeriesId)
+    pushToast({ message: `数字人角色配置已保存（${cleaned.length} 条）` })
+  }, [pushToast, store, store.currentSeries, store.currentSeriesId])
+
+  const handleSyncDigitalHumanProfilesToElements = useCallback(async (profiles: DigitalHumanProfileDraft[]) => {
+    if (!store.currentSeriesId) return
+    const characterElements = store.sharedElements.filter((item) => item.type === 'character')
+    let created = 0
+    let updated = 0
+    for (const profile of profiles) {
+      const name = getDigitalHumanProfileDisplayName(profile)
+      const description = buildDigitalHumanProfileElementDescription(profile)
+      const voiceProfile = profile.voice_profile.trim()
+      if (!name.trim()) continue
+
+      const existing = characterElements.find((item) => item.name.trim() === name.trim())
+      if (existing) {
+        // eslint-disable-next-line no-await-in-loop
+        await store.updateElement(existing.id, {
+          description: description || existing.description,
+          voice_profile: voiceProfile || existing.voice_profile,
+        })
+        updated += 1
+      } else {
+        // eslint-disable-next-line no-await-in-loop
+        await store.addElement(store.currentSeriesId, {
+          name,
+          type: 'character',
+          description,
+          voice_profile: voiceProfile,
+        })
+        created += 1
+      }
+    }
+    pushToast({ message: `已同步数字人角色到素材库：新增 ${created}，更新 ${updated}` })
+  }, [pushToast, store, store.currentSeriesId, store.sharedElements])
+
   const handleRetryNetworkIssue = useCallback(async () => {
     setRetryingNetwork(true)
     try {
@@ -966,6 +1208,22 @@ export default function StudioPage() {
   const handleClearRetryHistory = useCallback(() => {
     store.clearRetryHistory()
   }, [store])
+
+  const handleUndoOperation = useCallback(async () => {
+    if (!currentWorkspaceId) {
+      pushToast({ message: '请先选择工作区后再执行撤销', code: 'workspace_required' })
+      return
+    }
+    await store.undoWorkspaceOperation(currentWorkspaceId, projectScope)
+  }, [currentWorkspaceId, projectScope, pushToast, store])
+
+  const handleRedoOperation = useCallback(async () => {
+    if (!currentWorkspaceId) {
+      pushToast({ message: '请先选择工作区后再执行重做', code: 'workspace_required' })
+      return
+    }
+    await store.redoWorkspaceOperation(currentWorkspaceId, projectScope)
+  }, [currentWorkspaceId, projectScope, pushToast, store])
 
   const saveBlob = useCallback((blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob)
@@ -1303,7 +1561,7 @@ export default function StudioPage() {
           <span className="text-gray-600">|</span>
           <h1 className="text-sm font-semibold flex items-center gap-2">
             <Film className="w-4 h-4 text-purple-400" />
-            长篇制作工作台
+            {workbenchLabel}
             {store.currentSeries && (
               <>
                 <span className="text-gray-600">·</span>
@@ -1311,8 +1569,70 @@ export default function StudioPage() {
               </>
             )}
           </h1>
+          <div className="hidden md:flex items-center gap-1 ml-2">
+            <button
+              onClick={() => navigate('/studio')}
+              className={`px-2 py-1 rounded text-[11px] transition-colors ${routePrefix === '/studio' ? 'bg-purple-700/60 text-purple-100' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
+            >
+              长篇
+            </button>
+            <button
+              onClick={() => navigate('/short-video')}
+              className={`px-2 py-1 rounded text-[11px] transition-colors ${routePrefix === '/short-video' ? 'bg-purple-700/60 text-purple-100' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
+            >
+              短视频
+            </button>
+            <button
+              onClick={() => navigate('/digital-human')}
+              className={`px-2 py-1 rounded text-[11px] transition-colors ${routePrefix === '/digital-human' ? 'bg-purple-700/60 text-purple-100' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
+            >
+              数字人
+            </button>
+          </div>
         </div>
         <div className="flex items-center gap-2">
+          {workspaces.length > 0 && (
+            <select
+              value={currentWorkspaceId || ''}
+              onChange={(e) => setWorkspaceId(e.target.value)}
+              className="px-2 py-1 rounded border border-gray-700 bg-gray-800/80 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+              title="切换工作区"
+            >
+              {workspaces.map((ws) => (
+                <option key={ws.id} value={ws.id}>{ws.name}</option>
+              ))}
+            </select>
+          )}
+          <button
+            onClick={() => void handleUndoOperation()}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded border border-gray-700 bg-gray-800/70 text-xs text-gray-300 hover:bg-gray-800 transition-colors"
+            title={`撤销（${projectScope}）`}
+          >
+            <Undo2 className="w-3.5 h-3.5" />
+            撤销
+          </button>
+          <button
+            onClick={() => void handleRedoOperation()}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded border border-gray-700 bg-gray-800/70 text-xs text-gray-300 hover:bg-gray-800 transition-colors"
+            title={`重做（${projectScope}）`}
+          >
+            <Redo2 className="w-3.5 h-3.5" />
+            重做
+          </button>
+          <button
+            onClick={() => navigate('/workspace/okr')}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded border border-gray-700 bg-gray-800/70 text-xs text-gray-300 hover:bg-gray-800 transition-colors"
+            title="工作区 OKR 看板"
+          >
+            OKR
+          </button>
+          <button
+            onClick={() => navigate('/auth')}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded border border-gray-700 bg-gray-800/70 text-xs text-gray-300 hover:bg-gray-800 transition-colors"
+            title="账号管理"
+          >
+            账号
+          </button>
           <button
             onClick={() => setShowRecoveryCenter((prev) => !prev)}
             className={`inline-flex items-center gap-1.5 px-2 py-1 rounded border text-xs transition-colors ${
@@ -1338,6 +1658,16 @@ export default function StudioPage() {
             >
               <Users className="w-3.5 h-3.5" />
               角色台
+            </button>
+          )}
+          {workbenchMode === 'digital_human' && store.currentSeries && (
+            <button
+              onClick={() => setShowDigitalHumanConsole(true)}
+              className="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-indigo-700/70 bg-indigo-900/25 text-indigo-100 hover:bg-indigo-900/35 text-xs transition-colors"
+              title="数字人角色阶段控制台"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              数字人台
             </button>
           )}
           <button
@@ -1415,7 +1745,7 @@ export default function StudioPage() {
                 )}
               </div>
               <div className="flex-1 overflow-y-auto p-1.5 space-y-1">
-                {store.seriesList.map((s) => (
+                {visibleSeriesList.map((s) => (
                   <button
                     key={s.id}
                     onClick={() => handleSelectSeries(s.id)}
@@ -1454,7 +1784,7 @@ export default function StudioPage() {
 
               {/* 系列列表 */}
               <div className="flex-1 overflow-y-auto p-2">
-                {store.seriesList.map((s) => (
+                {visibleSeriesList.map((s) => (
                   <SeriesTreeItem
                     key={s.id}
                     series={s}
@@ -1465,7 +1795,7 @@ export default function StudioPage() {
                     onSelectEpisode={handleSelectEpisode}
                   />
                 ))}
-                {store.seriesList.length === 0 && !store.loading && (
+                {visibleSeriesList.length === 0 && !store.loading && (
                   <p className="text-xs text-gray-500 text-center py-8">暂无系列，点击上方创建</p>
                 )}
               </div>
@@ -1516,11 +1846,15 @@ export default function StudioPage() {
           )}
 
           {!store.loading && !store.currentSeries && (
-            <WelcomeView onCreateClick={() => setShowCreateDialog(true)} />
+            <WelcomeView
+              mode={workbenchMode}
+              onCreateClick={() => setShowCreateDialog(true)}
+            />
           )}
 
           {!store.loading && store.currentSeries && !store.currentEpisode && (
             <SeriesOverview
+              workbenchMode={workbenchMode}
               series={store.currentSeries}
               episodes={store.episodes}
               elements={store.sharedElements}
@@ -1529,7 +1863,7 @@ export default function StudioPage() {
               onDeleteSeries={() => {
                 if (store.currentSeriesId) {
                   store.deleteSeries(store.currentSeriesId)
-                  navigate('/studio')
+                  navigate(routePrefix)
                 }
               }}
               onUpdateSeries={async (updates) => {
@@ -1559,6 +1893,7 @@ export default function StudioPage() {
 
           {!store.loading && store.currentEpisode && (
             <EpisodeWorkbench
+              workbenchMode={workbenchMode}
               episode={store.currentEpisode}
               shots={store.shots}
               elements={store.sharedElements}
@@ -1586,6 +1921,10 @@ export default function StudioPage() {
               onBatchGenerate={async (stages) => {
                 if (!store.currentEpisodeId) return
                 await handleBatchGenerate(store.currentEpisodeId, stages)
+              }}
+              onRunShortVideoQuickPipeline={async () => {
+                if (!store.currentEpisodeId) return
+                await handleShortVideoQuickPipeline(store.currentEpisodeId)
               }}
               historyEntries={store.episodeHistory}
               historyLoading={store.historyLoading}
@@ -1673,12 +2012,13 @@ export default function StudioPage() {
       {/* 创建对话框 */}
       {showCreateDialog && (
         <CreateSeriesDialog
+          mode={workbenchMode}
           onClose={() => setShowCreateDialog(false)}
           onSubmit={async (params) => {
             const s = await handleCreateSeries(params)
             if (s) {
               setShowCreateDialog(false)
-              navigate(`/studio/${s.id}`)
+              navigate(`${routePrefix}/${s.id}`)
             }
           }}
           creating={store.creating}
@@ -1721,6 +2061,17 @@ export default function StudioPage() {
           onImportDocument={handleImportCharacterDocument}
           onSplitCharacterByAge={handleSplitCharacterByAge}
           onClose={() => setShowCharacterConsole(false)}
+        />
+      )}
+
+      {showDigitalHumanConsole && workbenchMode === 'digital_human' && store.currentSeries && (
+        <DigitalHumanProfileConsoleDialog
+          series={store.currentSeries}
+          elements={store.sharedElements}
+          busy={store.generating || store.planning}
+          onClose={() => setShowDigitalHumanConsole(false)}
+          onSaveProfiles={handleSaveDigitalHumanProfiles}
+          onSyncProfilesToElements={handleSyncDigitalHumanProfilesToElements}
         />
       )}
 
@@ -1844,16 +2195,21 @@ function StatusDot({ status }: { status: string }) {
 // 欢迎页
 // ============================================================
 
-function WelcomeView({ onCreateClick }: { onCreateClick: () => void }) {
+function WelcomeView({
+  mode,
+  onCreateClick,
+}: {
+  mode: WorkbenchMode
+  onCreateClick: () => void
+}) {
+  const title = getWorkbenchLabel(mode)
+  const description = getWorkbenchWelcomeText(mode)
   return (
     <div className="flex-1 flex items-center justify-center">
       <div className="text-center max-w-md">
         <Film className="w-16 h-16 text-purple-500 mx-auto mb-4 opacity-50" />
-        <h2 className="text-xl font-semibold text-gray-200 mb-2">长篇制作工作台</h2>
-        <p className="text-sm text-gray-400 mb-6">
-          在这里创建系列故事，进行分幕拆解、元素提取、逐集分镜规划和资产生成。
-          适合多集、长篇精细化视频制作。
-        </p>
+        <h2 className="text-xl font-semibold text-gray-200 mb-2">{title}</h2>
+        <p className="text-sm text-gray-400 mb-6">{description}</p>
         <button
           onClick={onCreateClick}
           className="px-6 py-2.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium transition-colors"
@@ -1870,6 +2226,7 @@ function WelcomeView({ onCreateClick }: { onCreateClick: () => void }) {
 // ============================================================
 
 function SeriesOverview({
+  workbenchMode,
   series,
   episodes,
   elements,
@@ -1889,6 +2246,7 @@ function SeriesOverview({
   generating,
   generationScope,
 }: {
+  workbenchMode: WorkbenchMode
   series: StudioSeries
   episodes: StudioEpisode[]
   elements: StudioElement[]
@@ -1955,6 +2313,23 @@ function SeriesOverview({
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <div className="max-w-5xl mx-auto space-y-6">
+        {workbenchMode === 'short_video' && (
+          <section className="rounded-lg border border-purple-700/40 bg-purple-900/12 p-3 text-xs text-purple-100">
+            <p className="font-medium">短视频快编模式</p>
+            <p className="text-purple-200/80 mt-1">
+              推荐每集时长 15-60 秒，优先保证节奏密度与转场连贯性。
+            </p>
+          </section>
+        )}
+        {workbenchMode === 'digital_human' && (
+          <section className="rounded-lg border border-indigo-700/40 bg-indigo-900/12 p-3 text-xs text-indigo-100">
+            <p className="font-medium">数字人创作模式</p>
+            <p className="text-indigo-200/80 mt-1">
+              先在“数字人台”维护角色阶段配置，再进行镜头规划和素材生成，可显著降低角色漂移。
+            </p>
+          </section>
+        )}
+
         {/* 系列信息 */}
         <div className="flex items-start justify-between">
           <div>
@@ -2407,6 +2782,7 @@ function SeriesOverview({
 // ============================================================
 
 function EpisodeWorkbench({
+  workbenchMode,
   episode,
   shots,
   elements,
@@ -2420,6 +2796,7 @@ function EpisodeWorkbench({
   onReorderShots,
   onUpdateEpisode,
   onBatchGenerate,
+  onRunShortVideoQuickPipeline,
   historyEntries,
   historyLoading,
   historyRestoring,
@@ -2439,6 +2816,7 @@ function EpisodeWorkbench({
   generating,
   generationScope,
 }: {
+  workbenchMode: WorkbenchMode
   episode: StudioEpisode
   shots: StudioShot[]
   elements: StudioElement[]
@@ -2452,6 +2830,7 @@ function EpisodeWorkbench({
   onReorderShots: (shotIds: string[]) => void | Promise<void>
   onUpdateEpisode: (updates: Record<string, unknown>) => void | Promise<void>
   onBatchGenerate: (stages?: string[]) => void | Promise<void>
+  onRunShortVideoQuickPipeline?: () => void | Promise<void>
   historyEntries: StudioEpisodeHistoryEntry[]
   historyLoading: boolean
   historyRestoring: boolean
@@ -2971,6 +3350,39 @@ function EpisodeWorkbench({
         </div>
       </div>
 
+      {workbenchMode === 'short_video' && (
+        <div className="px-4 py-2 border-b border-purple-900/35 bg-purple-950/15 flex flex-wrap items-center gap-2 shrink-0">
+          <span className="text-[11px] text-purple-200/85">短视频快编</span>
+          {SHORT_VIDEO_DURATION_PRESETS.map((preset) => (
+            <button
+              key={preset}
+              onClick={() => onUpdateEpisode({ target_duration_seconds: preset })}
+              className={`text-[11px] px-2 py-1 rounded transition-colors ${
+                Math.round(Number(episode.target_duration_seconds || 0)) === preset
+                  ? 'bg-purple-700/70 text-purple-100'
+                  : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+              }`}
+            >
+              {preset}s
+            </button>
+          ))}
+          <button
+            onClick={() => onBatchGenerate(['frames', 'videos', 'audio'])}
+            disabled={planning || generating || shots.length <= 0}
+            className="ml-auto text-[11px] px-2.5 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 disabled:opacity-40 transition-colors"
+          >
+            快编生成（帧+视频+音频）
+          </button>
+          <button
+            onClick={() => onRunShortVideoQuickPipeline?.()}
+            disabled={planning || generating}
+            className="text-[11px] px-2.5 py-1 rounded bg-purple-600 hover:bg-purple-500 text-white disabled:opacity-40 transition-colors"
+          >
+            一键快编
+          </button>
+        </div>
+      )}
+
       {showScriptEditor && (
         <div className="px-4 py-3 border-b border-gray-800 bg-gray-900/40 space-y-2 shrink-0">
           <div>
@@ -3476,9 +3888,15 @@ function ShotCard({
   onGenerateAudio: () => void
   generating: boolean
 }) {
+  const [hovered, setHovered] = useState(false)
+
   return (
     <div
       onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setHovered(true)}
+      onBlur={() => setHovered(false)}
       className={`group relative rounded-lg border cursor-pointer transition-all ${
         isSelected
           ? 'border-purple-500 bg-gray-900/80'
@@ -3583,67 +4001,14 @@ function ShotCard({
         </div>
       </div>
 
-      <HoverOverviewPanel maxWidthClass="max-w-5xl">
-        <div className="grid gap-4 lg:grid-cols-[1.45fr_1fr]">
-          <div className="space-y-2">
-            <div className="rounded-lg overflow-hidden border border-gray-800 bg-gray-900/70">
-              <div className="aspect-video w-full bg-gray-900/80">
-                {shot.start_image_url ? (
-                  <img src={shot.start_image_url} alt={shot.name} className="w-full h-full object-cover" />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center text-gray-600">
-                    <ImageIcon className="w-10 h-10" />
-                  </div>
-                )}
-              </div>
-            </div>
-            {shot.end_image_url && (
-              <div className="rounded-lg overflow-hidden border border-gray-800 bg-gray-900/70">
-                <div className="aspect-video w-full bg-gray-900/80">
-                  <img src={shot.end_image_url} alt={`${shot.name || '镜头'}-end`} className="w-full h-full object-cover" />
-                </div>
-              </div>
-            )}
-          </div>
-          <div className="space-y-3">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-base text-gray-100 font-semibold line-clamp-2">
-                {shot.name || `镜头${index + 1}`}
-              </p>
-              <span className="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-300">{shot.type || 'standard'}</span>
-            </div>
-            <p className="text-sm text-gray-200 leading-relaxed line-clamp-6">
-              {shot.narration || shot.description || '暂无描述'}
-            </p>
-            <div className="rounded-lg border border-gray-800 bg-gray-900/70 p-2.5 space-y-1.5 text-xs">
-              <div className="flex items-center justify-between text-gray-400">
-                <span>状态</span>
-                <span>{shot.status || 'pending'}</span>
-              </div>
-              <div className="flex items-center justify-between text-gray-400">
-                <span>时长</span>
-                <span>{shot.duration || 0}s</span>
-              </div>
-              <div className="flex items-center justify-between text-gray-400">
-                <span>首帧</span>
-                <span>{shot.start_image_url ? '已生成' : '未生成'}</span>
-              </div>
-              <div className="flex items-center justify-between text-gray-400">
-                <span>视频/音频</span>
-                <span>{shot.video_url ? '视频就绪' : '视频未生成'} · {shot.audio_url ? '音频就绪' : '音频未生成'}</span>
-              </div>
-            </div>
-            {(shot.dialogue_script || shot.prompt || shot.video_prompt) && (
-              <div className="rounded-lg border border-gray-800 bg-gray-900/70 p-2.5">
-                <p className="text-xs text-gray-500 mb-1">补充信息</p>
-                <p className="text-xs text-gray-300 leading-relaxed line-clamp-4">
-                  {shot.dialogue_script || shot.video_prompt || shot.prompt}
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
-      </HoverOverviewPanel>
+      <HoverMediaPreview
+        active={hovered}
+        shot={shot}
+        index={index}
+        maxWidthClass="max-w-5xl"
+        openDelayMs={800}
+        videoDelayMs={800}
+      />
     </div>
   )
 }
@@ -4389,6 +4754,93 @@ const GRID_POSITIONS = [
   'BL', 'BC', 'BR',
 ] as const
 
+type GridPosition = typeof GRID_POSITIONS[number]
+
+type DirectorActionState = {
+  subject: string
+  from: GridPosition
+  to: GridPosition
+  path: string
+  shotSize: string
+  angle: string
+  movement: string
+  lensMm: string
+  speed: string
+  beatsText: string
+}
+
+const CAMERA_SHOT_SIZE_OPTIONS = ['大全景', '全景', '中景', '中近景', '近景', '特写']
+const CAMERA_ANGLE_OPTIONS = ['平视', '低机位', '高机位', '俯拍', '仰拍']
+const CAMERA_MOVEMENT_OPTIONS = ['固定机位', '推镜', '拉镜', '摇镜', '移镜', '跟拍', '环绕']
+const BLOCKING_PATH_OPTIONS = ['直线', '弧线', '折线', '环绕', '不规则']
+const CAMERA_SPEED_OPTIONS = ['慢', '中', '快', '急促']
+
+function parseDirectorAction(value: Record<string, unknown>): DirectorActionState {
+  const blocking = value.blocking && typeof value.blocking === 'object'
+    ? value.blocking as Record<string, unknown>
+    : {}
+  const camera = value.camera && typeof value.camera === 'object'
+    ? value.camera as Record<string, unknown>
+    : {}
+  const beatsRaw = Array.isArray(value.beats) ? value.beats : []
+  const beatsText = beatsRaw
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean)
+    .join('\n')
+
+  const asGrid = (raw: unknown, fallback: GridPosition): GridPosition => {
+    const text = String(raw || '').trim().toUpperCase()
+    if ((GRID_POSITIONS as readonly string[]).includes(text)) return text as GridPosition
+    return fallback
+  }
+
+  return {
+    subject: String(value.subject || '主体').trim() || '主体',
+    from: asGrid(blocking.from ?? value.from, 'MC'),
+    to: asGrid(blocking.to ?? value.to, 'TR'),
+    path: String(blocking.path || '直线').trim() || '直线',
+    shotSize: String(camera.shot_size || '中景').trim() || '中景',
+    angle: String(camera.angle || '平视').trim() || '平视',
+    movement: String(camera.movement || value.motion || '推镜').trim() || '推镜',
+    lensMm: String(camera.lens_mm || '35').trim() || '35',
+    speed: String(camera.speed || '中').trim() || '中',
+    beatsText,
+  }
+}
+
+function buildDirectorGeneratedText(state: DirectorActionState): string {
+  const beats = state.beatsText
+    .split('\n')
+    .map((item) => item.trim())
+    .filter(Boolean)
+  const beatsPart = beats.length > 0 ? `关键节拍：${beats.join('；')}` : '关键节拍：无'
+  return `${state.subject} 从画面 ${state.from} 经 ${state.path} 走位至 ${state.to}；运镜采用${state.movement}，景别${state.shotSize}，机位${state.angle}，镜头约 ${state.lensMm}mm，节奏${state.speed}。${beatsPart}。`
+}
+
+function buildDirectorActionPayload(state: DirectorActionState): Record<string, unknown> {
+  const beats = state.beatsText
+    .split('\n')
+    .map((item) => item.trim())
+    .filter(Boolean)
+  return {
+    subject: state.subject,
+    blocking: {
+      from: state.from,
+      to: state.to,
+      path: state.path,
+    },
+    camera: {
+      shot_size: state.shotSize,
+      angle: state.angle,
+      movement: state.movement,
+      lens_mm: Number(state.lensMm) || 35,
+      speed: state.speed,
+    },
+    beats,
+    generated_text: buildDirectorGeneratedText(state),
+  }
+}
+
 function VisualActionDesigner({
   value,
   onChange,
@@ -4398,39 +4850,27 @@ function VisualActionDesigner({
   onChange: (next: Record<string, unknown>) => void
   onApplyToPrompt: (text: string) => void
 }) {
-  const [subject, setSubject] = useState((value.subject as string) || '主体')
-  const [fromPos, setFromPos] = useState((value.from as string) || 'MC')
-  const [toPos, setToPos] = useState((value.to as string) || 'TR')
-  const [motion, setMotion] = useState((value.motion as string) || '缓慢转身并移动')
+  const [designer, setDesigner] = useState<DirectorActionState>(() => parseDirectorAction(value))
   const [pickTarget, setPickTarget] = useState<'from' | 'to'>('from')
 
   useEffect(() => {
-    setSubject((value.subject as string) || '主体')
-    setFromPos((value.from as string) || 'MC')
-    setToPos((value.to as string) || 'TR')
-    setMotion((value.motion as string) || '缓慢转身并移动')
+    setDesigner(parseDirectorAction(value))
   }, [value])
 
-  const description = `${subject} 从画面 ${fromPos} 向 ${toPos} 运动，${motion}。`
-
-  const persist = () => {
-    onChange({
-      subject,
-      from: fromPos,
-      to: toPos,
-      motion,
-      generated_text: description,
-    })
+  const persist = (patch?: Partial<DirectorActionState>) => {
+    const next = patch ? { ...designer, ...patch } : designer
+    if (patch) setDesigner(next)
+    onChange(buildDirectorActionPayload(next))
   }
 
   return (
     <div className="p-3 rounded-lg border border-gray-800 bg-gray-900/70 space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-xs font-medium text-gray-300">视觉动作设计（3×3）</p>
+        <p className="text-xs font-medium text-gray-300">导演级视觉动作设计（3×3）</p>
         <button
           onClick={() => {
             persist()
-            onApplyToPrompt(`动作设计: ${description}`)
+            onApplyToPrompt(`导演运镜要求: ${buildDirectorGeneratedText(designer)}`)
           }}
           className="text-xs px-2 py-1 rounded bg-purple-600 hover:bg-purple-500 text-white"
         >
@@ -4439,30 +4879,16 @@ function VisualActionDesigner({
       </div>
       <div className="grid grid-cols-3 gap-1 w-36">
         {GRID_POSITIONS.map((pos) => {
-          const isFrom = pos === fromPos
-          const isTo = pos === toPos
+          const isFrom = pos === designer.from
+          const isTo = pos === designer.to
           return (
             <button
               key={pos}
               onClick={() => {
                 if (pickTarget === 'from') {
-                  setFromPos(pos)
-                  onChange({
-                    subject,
-                    from: pos,
-                    to: toPos,
-                    motion,
-                    generated_text: `${subject} 从画面 ${pos} 向 ${toPos} 运动，${motion}。`,
-                  })
+                  persist({ from: pos })
                 } else {
-                  setToPos(pos)
-                  onChange({
-                    subject,
-                    from: fromPos,
-                    to: pos,
-                    motion,
-                    generated_text: `${subject} 从画面 ${fromPos} 向 ${pos} 运动，${motion}。`,
-                  })
+                  persist({ to: pos })
                 }
               }}
               className={`h-8 text-[10px] rounded border ${
@@ -4493,43 +4919,92 @@ function VisualActionDesigner({
       </div>
       <div className="grid grid-cols-2 gap-2">
         <input
-          value={subject}
-          onChange={(e) => setSubject(e.target.value)}
-          onBlur={persist}
+          value={designer.subject}
+          onChange={(e) => setDesigner((prev) => ({ ...prev, subject: e.target.value }))}
+          onBlur={() => persist()}
           placeholder="主体"
           className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
         />
+        <select
+          value={designer.path}
+          onChange={(e) => persist({ path: e.target.value })}
+          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+        >
+          {BLOCKING_PATH_OPTIONS.map((option) => <option key={option} value={option}>走位路径 {option}</option>)}
+        </select>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <select
+          value={designer.shotSize}
+          onChange={(e) => persist({ shotSize: e.target.value })}
+          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+        >
+          {CAMERA_SHOT_SIZE_OPTIONS.map((option) => <option key={option} value={option}>景别 {option}</option>)}
+        </select>
+        <select
+          value={designer.angle}
+          onChange={(e) => persist({ angle: e.target.value })}
+          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+        >
+          {CAMERA_ANGLE_OPTIONS.map((option) => <option key={option} value={option}>机位 {option}</option>)}
+        </select>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <select
+          value={designer.movement}
+          onChange={(e) => persist({ movement: e.target.value })}
+          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+        >
+          {CAMERA_MOVEMENT_OPTIONS.map((option) => <option key={option} value={option}>运镜 {option}</option>)}
+        </select>
         <input
-          value={motion}
-          onChange={(e) => setMotion(e.target.value)}
-          onBlur={persist}
-          placeholder="动作描述"
+          value={designer.lensMm}
+          onChange={(e) => setDesigner((prev) => ({ ...prev, lensMm: e.target.value }))}
+          onBlur={() => persist()}
+          placeholder="镜头焦距 (mm)"
           className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
         />
       </div>
       <div className="grid grid-cols-2 gap-2">
         <select
-          value={fromPos}
+          value={designer.from}
           onChange={(e) => {
-            setFromPos(e.target.value)
-            onChange({ ...value, from: e.target.value, to: toPos, subject, motion })
+            const next = (e.target.value.toUpperCase() as GridPosition)
+            persist({ from: next })
           }}
           className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
         >
           {GRID_POSITIONS.map((p) => <option key={p} value={p}>起点 {p}</option>)}
         </select>
         <select
-          value={toPos}
+          value={designer.to}
           onChange={(e) => {
-            setToPos(e.target.value)
-            onChange({ ...value, from: fromPos, to: e.target.value, subject, motion })
+            const next = (e.target.value.toUpperCase() as GridPosition)
+            persist({ to: next })
           }}
           className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
         >
           {GRID_POSITIONS.map((p) => <option key={p} value={p}>终点 {p}</option>)}
         </select>
       </div>
-      <p className="text-xs text-gray-400">{description}</p>
+      <div className="grid grid-cols-2 gap-2">
+        <select
+          value={designer.speed}
+          onChange={(e) => persist({ speed: e.target.value })}
+          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+        >
+          {CAMERA_SPEED_OPTIONS.map((option) => <option key={option} value={option}>节奏 {option}</option>)}
+        </select>
+        <textarea
+          value={designer.beatsText}
+          onChange={(e) => setDesigner((prev) => ({ ...prev, beatsText: e.target.value }))}
+          onBlur={() => persist()}
+          placeholder="关键节拍（每行一条）"
+          rows={2}
+          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-purple-500 resize-none"
+        />
+      </div>
+      <p className="text-xs text-gray-400">{buildDirectorGeneratedText(designer)}</p>
     </div>
   )
 }
@@ -4822,6 +5297,282 @@ function CharacterDesignConsoleDialog({
               </div>
             </div>
           )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DigitalHumanProfileConsoleDialog({
+  series,
+  elements,
+  busy,
+  onClose,
+  onSaveProfiles,
+  onSyncProfilesToElements,
+}: {
+  series: StudioSeries
+  elements: StudioElement[]
+  busy: boolean
+  onClose: () => void
+  onSaveProfiles: (profiles: DigitalHumanProfileDraft[]) => Promise<void>
+  onSyncProfilesToElements: (profiles: DigitalHumanProfileDraft[]) => Promise<void>
+}) {
+  const [profiles, setProfiles] = useState<DigitalHumanProfileDraft[]>(
+    () => normalizeDigitalHumanProfiles(series.digital_human_profiles),
+  )
+  const [selectedId, setSelectedId] = useState<string | null>(profiles[0]?.id || null)
+  const [saving, setSaving] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [keyword, setKeyword] = useState('')
+
+  useEffect(() => {
+    const normalized = normalizeDigitalHumanProfiles(series.digital_human_profiles)
+    setProfiles(normalized)
+    setSelectedId(normalized[0]?.id || null)
+  }, [series.id, series.digital_human_profiles])
+
+  const selectedProfile = profiles.find((profile) => profile.id === selectedId) || null
+  const normalizedKeyword = keyword.trim().toLowerCase()
+  const filteredProfiles = profiles.filter((profile) => {
+    if (!normalizedKeyword) return true
+    return [
+      profile.base_name,
+      profile.display_name,
+      profile.stage_label,
+      profile.appearance,
+      profile.scene_template,
+    ].join(' ').toLowerCase().includes(normalizedKeyword)
+  })
+
+  const linkedCharacterNames = useMemo(() => {
+    const names = new Set<string>()
+    elements
+      .filter((item) => item.type === 'character')
+      .forEach((item) => {
+        const key = item.name.trim()
+        if (key) names.add(key)
+      })
+    return names
+  }, [elements])
+
+  const upsertProfile = (profileId: string, patch: Partial<DigitalHumanProfileDraft>) => {
+    setProfiles((prev) => prev.map((profile) => (
+      profile.id === profileId ? { ...profile, ...patch } : profile
+    )))
+  }
+
+  const addProfile = () => {
+    const profile = createDigitalHumanProfile()
+    setProfiles((prev) => [profile, ...prev])
+    setSelectedId(profile.id)
+  }
+
+  const removeProfile = (profileId: string) => {
+    setProfiles((prev) => {
+      const next = prev.filter((profile) => profile.id !== profileId)
+      if (!next.some((profile) => profile.id === selectedId)) {
+        setSelectedId(next[0]?.id || null)
+      }
+      return next
+    })
+  }
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      await onSaveProfiles(profiles)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleSaveAndSync = async () => {
+    setSyncing(true)
+    try {
+      await onSaveProfiles(profiles)
+      await onSyncProfilesToElements(profiles)
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[82]">
+      <div className="bg-gray-900 rounded-xl border border-gray-700 w-full max-w-6xl max-h-[90vh] overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-100">数字人角色控制台</h3>
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              {series.name} · 阶段角色 {profiles.length} 条
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleSave}
+              disabled={busy || saving || syncing}
+              className="text-xs px-2.5 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 disabled:opacity-40"
+            >
+              {saving ? '保存中...' : '保存配置'}
+            </button>
+            <button
+              onClick={handleSaveAndSync}
+              disabled={busy || saving || syncing}
+              className="text-xs px-2.5 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40"
+            >
+              {(saving || syncing) ? '处理中...' : '保存并同步素材库'}
+            </button>
+            <button onClick={onClose} className="text-gray-500 hover:text-white">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-[300px_minmax(0,1fr)] max-h-[calc(90vh-64px)]">
+          <aside className="border-r border-gray-800 p-3 space-y-2 overflow-y-auto">
+            <div className="flex items-center gap-2">
+              <input
+                value={keyword}
+                onChange={(e) => setKeyword(e.target.value)}
+                placeholder="搜索角色/阶段..."
+                className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+              />
+              <button
+                onClick={addProfile}
+                className="inline-flex items-center gap-1 px-2 py-1.5 rounded bg-purple-700/70 hover:bg-purple-600/70 text-white text-xs"
+              >
+                <Plus className="w-3 h-3" />
+                新增
+              </button>
+            </div>
+            <div className="space-y-1">
+              {filteredProfiles.map((profile) => {
+                const name = getDigitalHumanProfileDisplayName(profile)
+                const linked = linkedCharacterNames.has(name)
+                return (
+                  <button
+                    key={profile.id}
+                    onClick={() => setSelectedId(profile.id)}
+                    className={`w-full text-left rounded border px-2.5 py-2 transition-colors ${
+                      selectedId === profile.id
+                        ? 'border-indigo-500/70 bg-indigo-900/25'
+                        : 'border-gray-800 bg-gray-950/50 hover:border-gray-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs text-gray-100 truncate">{name}</p>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${linked ? 'bg-emerald-900/40 text-emerald-300' : 'bg-gray-800 text-gray-500'}`}>
+                        {linked ? '已同步' : '未同步'}
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-gray-500 mt-1 line-clamp-1">
+                      {profile.appearance || '暂无形象描述'}
+                    </p>
+                  </button>
+                )
+              })}
+              {filteredProfiles.length === 0 && (
+                <p className="text-xs text-gray-500 py-6 text-center">暂无角色配置</p>
+              )}
+            </div>
+          </aside>
+
+          <div className="p-4 overflow-y-auto">
+            {!selectedProfile && (
+              <div className="h-full min-h-[240px] flex items-center justify-center text-sm text-gray-500">
+                请选择一个数字人角色配置，或新建角色
+              </div>
+            )}
+            {selectedProfile && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="text-sm font-medium text-gray-100">角色阶段配置</h4>
+                  <button
+                    onClick={() => removeProfile(selectedProfile.id)}
+                    className="text-xs px-2 py-1 rounded bg-red-900/35 hover:bg-red-900/50 text-red-200"
+                  >
+                    删除
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs text-gray-500 block mb-1">角色主名</label>
+                    <input
+                      value={selectedProfile.base_name}
+                      onChange={(e) => upsertProfile(selectedProfile.id, { base_name: e.target.value })}
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+                      placeholder="例如：金蚊子"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-500 block mb-1">展示名（可选）</label>
+                    <input
+                      value={selectedProfile.display_name}
+                      onChange={(e) => upsertProfile(selectedProfile.id, { display_name: e.target.value })}
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+                      placeholder="例如：金蚊子（青年期）"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-500 block mb-1">阶段标签</label>
+                    <input
+                      value={selectedProfile.stage_label}
+                      onChange={(e) => upsertProfile(selectedProfile.id, { stage_label: e.target.value })}
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+                      placeholder="前期 / 后期 / 战后..."
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-500 block mb-1">口型策略</label>
+                    <select
+                      value={selectedProfile.lip_sync_style}
+                      onChange={(e) => upsertProfile(selectedProfile.id, { lip_sync_style: e.target.value })}
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+                    >
+                      {DIGITAL_HUMAN_LIP_SYNC_OPTIONS.map((option) => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs text-gray-500 block mb-1">形象描述</label>
+                  <textarea
+                    rows={4}
+                    value={selectedProfile.appearance}
+                    onChange={(e) => upsertProfile(selectedProfile.id, { appearance: e.target.value })}
+                    className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500 resize-y"
+                    placeholder="描述该阶段的服饰、年龄感、神态、镜头友好特征"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 block mb-1">音色配置</label>
+                  <input
+                    value={selectedProfile.voice_profile}
+                    onChange={(e) => upsertProfile(selectedProfile.id, { voice_profile: e.target.value })}
+                    className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+                    placeholder="用于 TTS 的角色音色描述"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 block mb-1">场景模板</label>
+                  <textarea
+                    rows={3}
+                    value={selectedProfile.scene_template}
+                    onChange={(e) => upsertProfile(selectedProfile.id, { scene_template: e.target.value })}
+                    className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500 resize-y"
+                    placeholder="常用背景、布光、机位和空间语义"
+                  />
+                </div>
+
+                <div className="rounded border border-gray-800 bg-gray-950/60 px-3 py-2 text-[11px] text-gray-400">
+                  同步到素材库后，会自动创建或更新同名 `character` 元素，供起始帧和视频提示词引用。
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -5357,10 +6108,12 @@ function ToastStack({
 // ============================================================
 
 function CreateSeriesDialog({
+  mode = 'longform',
   onClose,
   onSubmit,
   creating,
 }: {
+  mode?: WorkbenchMode
   onClose: () => void
   onSubmit: (params: {
     name: string
@@ -5372,12 +6125,20 @@ function CreateSeriesDialog({
   }) => void | Promise<void>
   creating: boolean
 }) {
+  const isShortVideo = mode === 'short_video'
+  const isDigitalHuman = mode === 'digital_human'
+  const title = isShortVideo ? '创建短视频项目' : isDigitalHuman ? '创建数字人短剧项目' : '创建新系列'
+  const scriptPlaceholder = isShortVideo
+    ? '粘贴短视频脚本（建议 15-60 秒内容）...'
+    : isDigitalHuman
+      ? '粘贴数字人短剧脚本（对白/口播可更详细）...'
+      : '粘贴完整的故事脚本...'
   const [name, setName] = useState('')
   const [script, setScript] = useState('')
   const [description, setDescription] = useState('')
   const [visualStyle, setVisualStyle] = useState('')
-  const [targetCount, setTargetCount] = useState(0)
-  const [duration, setDuration] = useState(90)
+  const [targetCount, setTargetCount] = useState(isShortVideo || isDigitalHuman ? 1 : 0)
+  const [duration, setDuration] = useState(isShortVideo ? 30 : isDigitalHuman ? 45 : 90)
 
   const handleSubmit = () => {
     if (!name.trim() || !script.trim()) return
@@ -5394,7 +6155,7 @@ function CreateSeriesDialog({
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
       <div className="bg-gray-900 rounded-xl border border-gray-700 w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6">
-        <h2 className="text-lg font-semibold text-gray-100 mb-4">创建新系列</h2>
+        <h2 className="text-lg font-semibold text-gray-100 mb-4">{title}</h2>
 
         <div className="space-y-4">
           <div>
@@ -5411,8 +6172,8 @@ function CreateSeriesDialog({
             <label className="text-sm text-gray-400 block mb-1">完整脚本 *</label>
             <textarea
               className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-purple-500 resize-none"
-              rows={10}
-              placeholder="粘贴完整的故事脚本..."
+              rows={isShortVideo ? 7 : 10}
+              placeholder={scriptPlaceholder}
               value={script}
               onChange={(e) => setScript(e.target.value)}
             />
@@ -5459,9 +6220,9 @@ function CreateSeriesDialog({
                 type="number"
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
                 value={duration}
-                onChange={(e) => setDuration(parseInt(e.target.value) || 90)}
-                min={30}
-                max={300}
+                onChange={(e) => setDuration(parseInt(e.target.value) || (isShortVideo ? 30 : 90))}
+                min={isShortVideo ? 10 : 30}
+                max={isShortVideo ? 90 : 300}
               />
             </div>
           </div>

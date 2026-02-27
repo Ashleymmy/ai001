@@ -590,6 +590,124 @@ class StudioService:
             return ""
         return str(series.get("visual_style") or "").strip()
 
+    def _get_series_by_episode(self, episode_id: str) -> Optional[Dict[str, Any]]:
+        episode = self.storage.get_episode(episode_id)
+        if not episode:
+            return None
+        series_id = str(episode.get("series_id") or "").strip()
+        if not series_id:
+            return None
+        return self.storage.get_series(series_id)
+
+    def _extract_digital_human_profiles(self, series: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
+        if not isinstance(series, dict):
+            return []
+        mode = str((series.get("settings") or {}).get("workbench_mode") or "").strip()
+        if mode != "digital_human":
+            return []
+
+        series_id = str(series.get("id") or "").strip()
+        raw_profiles: List[Dict[str, Any]] = []
+        if series_id:
+            try:
+                db_profiles = self.storage.list_digital_human_profiles(series_id)
+                if isinstance(db_profiles, list) and db_profiles:
+                    raw_profiles = [item for item in db_profiles if isinstance(item, dict)]
+            except Exception:
+                raw_profiles = []
+        if not raw_profiles:
+            settings = series.get("settings")
+            if isinstance(settings, dict):
+                setting_profiles = settings.get("digital_human_profiles")
+                if isinstance(setting_profiles, list):
+                    raw_profiles = [item for item in setting_profiles if isinstance(item, dict)]
+        if not raw_profiles:
+            return []
+
+        profiles: List[Dict[str, str]] = []
+        for item in raw_profiles:
+            base_name = str(item.get("base_name") or item.get("character_name") or item.get("name") or "").strip()
+            stage_label = str(item.get("stage_label") or item.get("stage") or "").strip()
+            display_name = str(item.get("display_name") or item.get("name") or "").strip()
+            appearance = str(item.get("appearance") or item.get("description") or "").strip()
+            voice_profile = str(item.get("voice_profile") or "").strip()
+            scene_template = str(item.get("scene_template") or item.get("scene") or "").strip()
+            lip_sync_style = str(item.get("lip_sync_style") or item.get("lip_sync") or "").strip()
+            if not base_name and not display_name:
+                continue
+            profiles.append({
+                "base_name": base_name or display_name,
+                "stage_label": stage_label,
+                "display_name": display_name or base_name,
+                "appearance": appearance,
+                "voice_profile": voice_profile,
+                "scene_template": scene_template,
+                "lip_sync_style": lip_sync_style,
+            })
+        return profiles
+
+    def _build_digital_human_constraints(
+        self,
+        series: Optional[Dict[str, Any]],
+        prompt_text: str = "",
+    ) -> str:
+        profiles = self._extract_digital_human_profiles(series)
+        if not profiles:
+            return ""
+
+        selected: List[Dict[str, str]] = []
+        probe = str(prompt_text or "").strip()
+        if probe:
+            for profile in profiles:
+                tokens = [
+                    str(profile.get("display_name") or ""),
+                    str(profile.get("base_name") or ""),
+                    str(profile.get("stage_label") or ""),
+                ]
+                if any(token and token in probe for token in tokens):
+                    selected.append(profile)
+            # 若文本没有命中，则回退前几项，避免约束缺失。
+            if not selected:
+                selected = profiles[:4]
+        else:
+            selected = profiles[:4]
+
+        lines: List[str] = []
+        for profile in selected:
+            display_name = str(profile.get("display_name") or profile.get("base_name") or "角色").strip() or "角色"
+            stage = str(profile.get("stage_label") or "").strip()
+            appearance = str(profile.get("appearance") or "").strip()
+            voice = str(profile.get("voice_profile") or "").strip()
+            scene = str(profile.get("scene_template") or "").strip()
+            lip_sync = str(profile.get("lip_sync_style") or "").strip()
+
+            chunks: List[str] = []
+            if appearance:
+                chunks.append(f"形象={appearance}")
+            if voice:
+                chunks.append(f"音色={voice}")
+            if scene:
+                chunks.append(f"场景模板={scene}")
+            if lip_sync:
+                chunks.append(f"口型={lip_sync}")
+            if not chunks:
+                chunks.append("保持该角色既有设定一致")
+
+            label = f"{display_name}（{stage}）" if stage else display_name
+            lines.append(f"- {label}: {'；'.join(chunks)}")
+
+        if not lines:
+            return ""
+        return (
+            "数字人角色阶段约束：保持同一角色在本镜头中的身份、年龄阶段、服装与面部特征连续，"
+            "不要混合不同阶段或多人脸。\n"
+            + "\n".join(lines)
+        )
+
+    def _build_digital_human_constraints_for_episode(self, episode_id: str, prompt_text: str = "") -> str:
+        series = self._get_series_by_episode(episode_id)
+        return self._build_digital_human_constraints(series, prompt_text)
+
     def _build_shot_image_prompt(
         self,
         shot: Dict[str, Any],
@@ -605,12 +723,16 @@ class StudioService:
             "这是单张关键帧构图，禁止四宫格/分屏/拼贴海报/漫画多格排版；"
             "禁止写实照片风、3D渲染实拍质感、文字水印和字幕。"
         )
+        digital_constraints = self._build_digital_human_constraints_for_episode(episode_id, resolved_prompt)
         if stage == "inpaint":
             stage_clause = "在保持主体身份与场景连续性的前提下，只修改用户要求的局部区域。"
         elif stage == "end_frame":
             stage_clause = "该画面用于镜头尾帧，请保持与起始帧的叙事连续性。"
         else:
             stage_clause = "该画面用于镜头起始帧，请聚焦单一时刻的核心视觉信息。"
+
+        if digital_constraints:
+            base_rules = f"{base_rules}\n{digital_constraints}"
 
         if resolved_prompt:
             return f"{resolved_prompt}\n{base_rules}{stage_clause}".strip()
@@ -676,6 +798,36 @@ class StudioService:
                         break
 
         return images[:limit]
+
+    @staticmethod
+    def _build_director_visual_action_text(visual_action: Any) -> str:
+        if not isinstance(visual_action, dict):
+            return ""
+
+        generated = str(visual_action.get("generated_text") or "").strip()
+        if generated:
+            return generated
+
+        subject = str(visual_action.get("subject") or "").strip() or "主体"
+        blocking = visual_action.get("blocking") if isinstance(visual_action.get("blocking"), dict) else {}
+        camera = visual_action.get("camera") if isinstance(visual_action.get("camera"), dict) else {}
+        beats = visual_action.get("beats") if isinstance(visual_action.get("beats"), list) else []
+
+        from_pos = str((blocking or {}).get("from") or visual_action.get("from") or "").strip() or "MC"
+        to_pos = str((blocking or {}).get("to") or visual_action.get("to") or "").strip() or "TR"
+        path = str((blocking or {}).get("path") or "").strip() or "直线"
+        shot_size = str((camera or {}).get("shot_size") or "").strip() or "中景"
+        angle = str((camera or {}).get("angle") or "").strip() or "平视"
+        movement = str((camera or {}).get("movement") or visual_action.get("motion") or "").strip() or "推镜"
+        lens = str((camera or {}).get("lens_mm") or "").strip() or "35"
+        speed = str((camera or {}).get("speed") or "").strip() or "中"
+        beat_items = [str(item).strip() for item in beats if str(item).strip()]
+        beats_part = f"关键节拍：{'；'.join(beat_items)}" if beat_items else "关键节拍：无"
+        return (
+            f"{subject} 从画面 {from_pos} 经 {path} 走位至 {to_pos}；"
+            f"运镜采用{movement}，景别{shot_size}，机位{angle}，镜头约 {lens}mm，节奏{speed}。"
+            f"{beats_part}。"
+        ).strip()
 
     @staticmethod
     def _normalize_element_base_name(name: str) -> str:
@@ -1627,13 +1779,24 @@ class StudioService:
         visual_style = preferences.get("visual_style", "")
         elements = await self.extract_shared_elements(full_script, acts, visual_style=visual_style)
 
+        workbench_mode = str(preferences.get("workbench_mode") or "longform").strip() or "longform"
+        if workbench_mode not in {"longform", "short_video", "digital_human"}:
+            workbench_mode = "longform"
+        workspace_id = str(preferences.get("workspace_id") or "").strip()
+        settings_payload: Dict[str, Any] = {"workbench_mode": workbench_mode}
+        if isinstance(preferences.get("settings"), dict):
+            settings_payload.update(preferences["settings"])
+            settings_payload["workbench_mode"] = workbench_mode
+
         # 3) 写入数据库 —— 系列
         series = self.storage.create_series(
             name=name,
+            workspace_id=workspace_id,
             description=preferences.get("description", ""),
             source_script=full_script,
             series_bible=preferences.get("series_bible", ""),
             visual_style=visual_style,
+            settings=settings_payload,
         )
         series_id = series["id"]
         print(f"[Studio] 系列已创建: {series_id} ({name})")
@@ -1708,6 +1871,13 @@ class StudioService:
             + (f" | 音色: {el['voice_profile']}" if el.get("voice_profile") else "")
             for el in shared_elements
         )
+        digital_human_constraints = self._build_digital_human_constraints(
+            series,
+            str(episode.get("script_excerpt") or ""),
+        )
+        shared_elements_list = elements_list or "（暂无共享元素）"
+        if digital_human_constraints:
+            shared_elements_list = f"{shared_elements_list}\n\n{digital_human_constraints}"
 
         # 获取前后集摘要
         all_episodes = self.storage.list_episodes(series["id"])
@@ -1732,7 +1902,8 @@ class StudioService:
                 "episode_title": episode.get("title", ""),
                 "series_bible": series.get("series_bible", ""),
                 "visual_style": series.get("visual_style", ""),
-                "shared_elements_list": elements_list or "（暂无共享元素）",
+                "shared_elements_list": shared_elements_list,
+                "digital_human_constraints": digital_human_constraints or "（无）",
                 "prev_summary": prev_summary,
                 "script_excerpt": episode.get("script_excerpt", ""),
                 "next_summary": next_summary,
@@ -1846,6 +2017,13 @@ class StudioService:
             f"- [{el['id']}] {el['name']}（{el['type']}）: {el['description']}"
             for el in shared_elements
         )
+        digital_human_constraints = self._build_digital_human_constraints(
+            series,
+            str(episode.get("script_excerpt") or ""),
+        )
+        shared_elements_list = elements_list or "（暂无共享元素）"
+        if digital_human_constraints:
+            shared_elements_list = f"{shared_elements_list}\n\n{digital_human_constraints}"
 
         # 获取当前集的完整快照用于输入
         snapshot = self.storage.get_episode_snapshot(episode_id)
@@ -1856,7 +2034,8 @@ class StudioService:
             prompt_bundle["user"],
             {
                 "series_bible": series.get("series_bible", ""),
-                "shared_elements_list": elements_list or "（暂无共享元素）",
+                "shared_elements_list": shared_elements_list,
+                "digital_human_constraints": digital_human_constraints or "（无）",
                 "episode_json": episode_json,
                 "mode": mode,
             },
@@ -2318,10 +2497,23 @@ class StudioService:
                 context={"shot_id": shot_id},
             )
 
-        video_prompt = self._resolve_element_refs(
-            shot.get("video_prompt") or shot.get("prompt", ""),
-            shot["episode_id"],
+        raw_video_prompt = str(shot.get("video_prompt") or shot.get("prompt", "")).strip()
+        director_text = self._build_director_visual_action_text(shot.get("visual_action"))
+        if director_text:
+            if raw_video_prompt:
+                raw_video_prompt = f"{raw_video_prompt}\n导演运镜要求：{director_text}"
+            else:
+                raw_video_prompt = f"导演运镜要求：{director_text}"
+        digital_human_constraints = self._build_digital_human_constraints_for_episode(
+            str(shot.get("episode_id") or ""),
+            raw_video_prompt,
         )
+        if digital_human_constraints:
+            if raw_video_prompt:
+                raw_video_prompt = f"{raw_video_prompt}\n{digital_human_constraints}"
+            else:
+                raw_video_prompt = digital_human_constraints
+        video_prompt = self._resolve_element_refs(raw_video_prompt, shot["episode_id"])
 
         self.storage.update_shot(shot_id, {"status": "generating"})
 
@@ -2606,6 +2798,7 @@ class StudioService:
         self,
         episode_id: str,
         stages: Optional[List[str]] = None,
+        parallel: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None] | None]] = None,
     ) -> Dict[str, Any]:
         """批量生成单集资产
@@ -2615,6 +2808,21 @@ class StudioService:
         """
         if stages is None:
             stages = ["elements", "frames", "end_frames", "videos", "audio"]
+
+        parallel_cfg = parallel if isinstance(parallel, dict) else {}
+
+        def _to_limit(value: Any, fallback: int) -> int:
+            try:
+                parsed = int(value)
+            except Exception:
+                parsed = fallback
+            return max(1, parsed)
+
+        image_max_concurrency = _to_limit(parallel_cfg.get("image_max_concurrency"), 3)
+        video_max_concurrency = _to_limit(parallel_cfg.get("video_max_concurrency"), 2)
+        global_max_concurrency = _to_limit(parallel_cfg.get("global_max_concurrency"), 4)
+        global_sem = asyncio.Semaphore(global_max_concurrency)
+        counter_lock = asyncio.Lock()
 
         episode = self.storage.get_episode(episode_id)
         if not episode:
@@ -2664,6 +2872,11 @@ class StudioService:
             "episode_id": episode_id,
             "stages": stages,
             "total": total_assets,
+            "parallel": {
+                "image_max_concurrency": image_max_concurrency,
+                "video_max_concurrency": video_max_concurrency,
+                "global_max_concurrency": global_max_concurrency,
+            },
         })
 
         def item_percent() -> int:
@@ -2671,50 +2884,121 @@ class StudioService:
                 return 100
             return int(round((processed_assets / total_assets) * 100))
 
+        async def run_stage_concurrent(
+            *,
+            stage: str,
+            items: List[Any],
+            stage_limit: int,
+            get_item_id: Callable[[Any], str],
+            get_item_name: Callable[[Any], str],
+            worker: Callable[[Any], Awaitable[Dict[str, Any]]],
+        ) -> List[Dict[str, Any]]:
+            nonlocal processed_assets, failed_assets
+            stage_total = len(items)
+            stage_sem = asyncio.Semaphore(max(1, stage_limit))
+            stage_stats = {
+                "queued": stage_total,
+                "running": 0,
+                "completed": 0,
+                "failed": 0,
+            }
+            await emit({
+                "type": "stage_start",
+                "stage": stage,
+                "stage_total": stage_total,
+                "total": total_assets,
+                **stage_stats,
+            })
+            if stage_total <= 0:
+                return []
+
+            async def run_one(index: int, item: Any) -> Tuple[int, Dict[str, Any]]:
+                nonlocal processed_assets, failed_assets
+                item_id = get_item_id(item)
+                item_name = get_item_name(item)
+                async with counter_lock:
+                    stage_stats["queued"] = max(0, stage_stats["queued"] - 1)
+                    stage_stats["running"] += 1
+                    processed_snapshot = processed_assets
+                    metrics_snapshot = dict(stage_stats)
+
+                await emit({
+                    "type": "item_start",
+                    "stage": stage,
+                    "item_id": item_id,
+                    "item_name": item_name,
+                    "stage_index": index,
+                    "stage_total": stage_total,
+                    "processed": processed_snapshot,
+                    "total": total_assets,
+                    "percent": item_percent(),
+                    **metrics_snapshot,
+                })
+
+                ok = True
+                error_message: Optional[str] = None
+                payload: Dict[str, Any]
+                try:
+                    async with global_sem:
+                        async with stage_sem:
+                            payload = await worker(item)
+                except Exception as e:
+                    ok = False
+                    error_message = str(e)
+                    payload = {"error": error_message}
+
+                async with counter_lock:
+                    stage_stats["running"] = max(0, stage_stats["running"] - 1)
+                    if ok:
+                        stage_stats["completed"] += 1
+                    else:
+                        stage_stats["failed"] += 1
+                        failed_assets += 1
+                    processed_assets += 1
+                    processed_snapshot = processed_assets
+                    metrics_snapshot = dict(stage_stats)
+
+                await emit({
+                    "type": "item_complete",
+                    "stage": stage,
+                    "item_id": item_id,
+                    "item_name": item_name,
+                    "stage_index": index,
+                    "stage_total": stage_total,
+                    "ok": ok,
+                    "error": error_message,
+                    "processed": processed_snapshot,
+                    "total": total_assets,
+                    "percent": item_percent(),
+                    **metrics_snapshot,
+                })
+
+                if ok:
+                    return index, payload
+                fail_key = "element_id" if stage == "elements" else "shot_id"
+                return index, {
+                    fail_key: item_id,
+                    "error": error_message or "unknown_error",
+                }
+
+            tasks = [asyncio.create_task(run_one(index, item)) for index, item in enumerate(items, start=1)]
+            pairs = await asyncio.gather(*tasks)
+            pairs.sort(key=lambda pair: pair[0])
+            return [item for _, item in pairs]
+
         # 1) 生成共享元素参考图
         if "elements" in stages:
             series_id = episode["series_id"]
             elements = self.storage.get_shared_elements(series_id)
             element_targets = [el for el in elements if not el.get("image_url")]
-            elem_results = []
-            stage_total = len(element_targets)
-            await emit({"type": "stage_start", "stage": "elements", "stage_total": stage_total, "total": total_assets})
-            for index, el in enumerate(element_targets, start=1):
-                await emit({
-                    "type": "item_start",
-                    "stage": "elements",
-                    "item_id": el["id"],
-                    "item_name": el.get("name") or el["id"],
-                    "stage_index": index,
-                    "stage_total": stage_total,
-                    "processed": processed_assets,
-                    "total": total_assets,
-                    "percent": item_percent(),
-                })
-                ok = True
-                error_message: Optional[str] = None
-                try:
-                    r = await self.generate_element_image(el["id"])
-                    elem_results.append(r)
-                except Exception as e:
-                    ok = False
-                    error_message = str(e)
-                    failed_assets += 1
-                    elem_results.append({"element_id": el["id"], "error": error_message})
-                processed_assets += 1
-                await emit({
-                    "type": "item_complete",
-                    "stage": "elements",
-                    "item_id": el["id"],
-                    "item_name": el.get("name") or el["id"],
-                    "stage_index": index,
-                    "stage_total": stage_total,
-                    "ok": ok,
-                    "error": error_message,
-                    "processed": processed_assets,
-                    "total": total_assets,
-                    "percent": item_percent(),
-                })
+            elem_results = await run_stage_concurrent(
+                stage="elements",
+                items=element_targets,
+                stage_limit=image_max_concurrency,
+                get_item_id=lambda el: str(el.get("id") or ""),
+                get_item_name=lambda el: str(el.get("name") or el.get("id") or "未命名元素"),
+                worker=lambda el: self.generate_element_image(str(el.get("id") or "")),
+            )
             result["stages"]["elements"] = elem_results
 
         shots = self.storage.get_shots(episode_id)
@@ -2722,45 +3006,14 @@ class StudioService:
         # 2) 生成起始帧
         if "frames" in stages:
             frame_targets = [shot for shot in shots if not shot.get("start_image_url")]
-            frame_results = []
-            stage_total = len(frame_targets)
-            await emit({"type": "stage_start", "stage": "frames", "stage_total": stage_total, "total": total_assets})
-            for index, shot in enumerate(frame_targets, start=1):
-                await emit({
-                    "type": "item_start",
-                    "stage": "frames",
-                    "item_id": shot["id"],
-                    "item_name": shot.get("name") or shot["id"],
-                    "stage_index": index,
-                    "stage_total": stage_total,
-                    "processed": processed_assets,
-                    "total": total_assets,
-                    "percent": item_percent(),
-                })
-                ok = True
-                error_message: Optional[str] = None
-                try:
-                    r = await self.generate_shot_frame(shot["id"])
-                    frame_results.append(r)
-                except Exception as e:
-                    ok = False
-                    error_message = str(e)
-                    failed_assets += 1
-                    frame_results.append({"shot_id": shot["id"], "error": error_message})
-                processed_assets += 1
-                await emit({
-                    "type": "item_complete",
-                    "stage": "frames",
-                    "item_id": shot["id"],
-                    "item_name": shot.get("name") or shot["id"],
-                    "stage_index": index,
-                    "stage_total": stage_total,
-                    "ok": ok,
-                    "error": error_message,
-                    "processed": processed_assets,
-                    "total": total_assets,
-                    "percent": item_percent(),
-                })
+            frame_results = await run_stage_concurrent(
+                stage="frames",
+                items=frame_targets,
+                stage_limit=image_max_concurrency,
+                get_item_id=lambda shot_item: str(shot_item.get("id") or ""),
+                get_item_name=lambda shot_item: str(shot_item.get("name") or shot_item.get("id") or "未命名镜头"),
+                worker=lambda shot_item: self.generate_shot_frame(str(shot_item.get("id") or "")),
+            )
             result["stages"]["frames"] = frame_results
 
         # 2.5) 生成尾帧
@@ -2813,69 +3066,14 @@ class StudioService:
             # 刷新 shots（起始帧 URL 可能已更新）
             shots = self.storage.get_shots(episode_id)
             video_targets = [shot for shot in shots if not shot.get("video_url")]
-            stage_total = len([shot for shot in video_targets if shot.get("start_image_url")]) + max(0, precomputed_totals.get("videos", 0) - len([shot for shot in video_targets if shot.get("start_image_url")]))
-            video_results = []
-            await emit({"type": "stage_start", "stage": "videos", "stage_total": stage_total, "total": total_assets})
-            stage_index = 0
-            for shot in video_targets:
-                # 只有有首帧才能生成视频；无首帧按跳过处理，保证总进度单调
-                if not shot.get("start_image_url"):
-                    if "videos" in precomputed_totals and precomputed_totals["videos"] > 0:
-                        stage_index += 1
-                        processed_assets += 1
-                        failed_assets += 1
-                        reason = "缺少首帧，跳过视频生成"
-                        video_results.append({"shot_id": shot["id"], "error": reason})
-                        await emit({
-                            "type": "item_complete",
-                            "stage": "videos",
-                            "item_id": shot["id"],
-                            "item_name": shot.get("name") or shot["id"],
-                            "stage_index": stage_index,
-                            "stage_total": stage_total,
-                            "ok": False,
-                            "error": reason,
-                            "processed": processed_assets,
-                            "total": total_assets,
-                            "percent": item_percent(),
-                        })
-                    continue
-                stage_index += 1
-                await emit({
-                    "type": "item_start",
-                    "stage": "videos",
-                    "item_id": shot["id"],
-                    "item_name": shot.get("name") or shot["id"],
-                    "stage_index": stage_index,
-                    "stage_total": stage_total,
-                    "processed": processed_assets,
-                    "total": total_assets,
-                    "percent": item_percent(),
-                })
-                ok = True
-                error_message: Optional[str] = None
-                try:
-                    r = await self.generate_shot_video(shot["id"])
-                    video_results.append(r)
-                except Exception as e:
-                    ok = False
-                    error_message = str(e)
-                    failed_assets += 1
-                    video_results.append({"shot_id": shot["id"], "error": error_message})
-                processed_assets += 1
-                await emit({
-                    "type": "item_complete",
-                    "stage": "videos",
-                    "item_id": shot["id"],
-                    "item_name": shot.get("name") or shot["id"],
-                    "stage_index": stage_index,
-                    "stage_total": stage_total,
-                    "ok": ok,
-                    "error": error_message,
-                    "processed": processed_assets,
-                    "total": total_assets,
-                    "percent": item_percent(),
-                })
+            video_results = await run_stage_concurrent(
+                stage="videos",
+                items=video_targets,
+                stage_limit=video_max_concurrency,
+                get_item_id=lambda shot_item: str(shot_item.get("id") or ""),
+                get_item_name=lambda shot_item: str(shot_item.get("name") or shot_item.get("id") or "未命名镜头"),
+                worker=lambda shot_item: self.generate_shot_video(str(shot_item.get("id") or "")),
+            )
             result["stages"]["videos"] = video_results
 
         # 4) 生成音频
@@ -2886,45 +3084,14 @@ class StudioService:
                 if ((shot.get("narration") or "").strip() or (shot.get("dialogue_script") or "").strip())
                 and not shot.get("audio_url")
             ]
-            stage_total = len(audio_targets)
-            audio_results = []
-            await emit({"type": "stage_start", "stage": "audio", "stage_total": stage_total, "total": total_assets})
-            for index, shot in enumerate(audio_targets, start=1):
-                await emit({
-                    "type": "item_start",
-                    "stage": "audio",
-                    "item_id": shot["id"],
-                    "item_name": shot.get("name") or shot["id"],
-                    "stage_index": index,
-                    "stage_total": stage_total,
-                    "processed": processed_assets,
-                    "total": total_assets,
-                    "percent": item_percent(),
-                })
-                ok = True
-                error_message: Optional[str] = None
-                try:
-                    r = await self.generate_shot_audio(shot["id"])
-                    audio_results.append(r)
-                except Exception as e:
-                    ok = False
-                    error_message = str(e)
-                    failed_assets += 1
-                    audio_results.append({"shot_id": shot["id"], "error": error_message})
-                processed_assets += 1
-                await emit({
-                    "type": "item_complete",
-                    "stage": "audio",
-                    "item_id": shot["id"],
-                    "item_name": shot.get("name") or shot["id"],
-                    "stage_index": index,
-                    "stage_total": stage_total,
-                    "ok": ok,
-                    "error": error_message,
-                    "processed": processed_assets,
-                    "total": total_assets,
-                    "percent": item_percent(),
-                })
+            audio_results = await run_stage_concurrent(
+                stage="audio",
+                items=audio_targets,
+                stage_limit=max(1, image_max_concurrency),
+                get_item_id=lambda shot_item: str(shot_item.get("id") or ""),
+                get_item_name=lambda shot_item: str(shot_item.get("name") or shot_item.get("id") or "未命名镜头"),
+                worker=lambda shot_item: self.generate_shot_audio(str(shot_item.get("id") or "")),
+            )
             result["stages"]["audio"] = audio_results
 
         # 更新集状态
@@ -2988,6 +3155,48 @@ class StudioService:
     # 查询/导出
     # ------------------------------------------------------------------
 
+    def list_digital_human_profiles(self, series_id: str) -> List[Dict[str, Any]]:
+        series = self.storage.get_series(series_id)
+        if not series:
+            raise StudioServiceError(
+                f"系列 {series_id} 不存在",
+                error_code="series_not_found",
+                context={"series_id": series_id},
+            )
+        profiles = self.storage.list_digital_human_profiles(series_id)
+        if profiles:
+            return profiles
+
+        # 兼容旧数据：如果历史上写在 settings 里，回填到实体表并返回。
+        settings = series.get("settings") if isinstance(series.get("settings"), dict) else {}
+        legacy = settings.get("digital_human_profiles") if isinstance(settings, dict) else None
+        if isinstance(legacy, list) and legacy:
+            normalized = [item for item in legacy if isinstance(item, dict)]
+            if normalized:
+                saved = self.storage.replace_digital_human_profiles(series_id, normalized)
+                return saved
+        return []
+
+    def save_digital_human_profiles(self, series_id: str, profiles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        series = self.storage.get_series(series_id)
+        if not series:
+            raise StudioServiceError(
+                f"系列 {series_id} 不存在",
+                error_code="series_not_found",
+                context={"series_id": series_id},
+            )
+        normalized = [item for item in profiles if isinstance(item, dict)]
+        saved = self.storage.replace_digital_human_profiles(series_id, normalized)
+
+        # 同步清理 settings 中历史字段，避免双写冲突。
+        settings = series.get("settings") if isinstance(series.get("settings"), dict) else {}
+        if isinstance(settings, dict) and "digital_human_profiles" in settings:
+            next_settings = dict(settings)
+            next_settings.pop("digital_human_profiles", None)
+            self.storage.update_series(series_id, {"settings": next_settings})
+
+        return saved
+
     def get_series_detail(self, series_id: str) -> Optional[Dict[str, Any]]:
         """获取系列完整详情（含集列表和共享元素）"""
         series = self.storage.get_series(series_id)
@@ -2995,10 +3204,12 @@ class StudioService:
             return None
         episodes = self.storage.list_episodes(series_id)
         elements = self.storage.get_shared_elements(series_id)
+        digital_human_profiles = self.storage.list_digital_human_profiles(series_id)
         return {
             **series,
             "episodes": episodes,
             "shared_elements": elements,
+            "digital_human_profiles": digital_human_profiles,
         }
 
     def get_episode_detail(self, episode_id: str) -> Optional[Dict[str, Any]]:

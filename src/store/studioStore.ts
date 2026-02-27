@@ -1,6 +1,11 @@
 import { create } from 'zustand'
 import axios from 'axios'
 import * as api from '../services/api'
+import {
+  enqueueImageGeneration,
+  enqueueVideoGeneration,
+  getGenerationQueueParallelConfig,
+} from './generationQueueStore'
 import type {
   StudioSeries,
   StudioEpisode,
@@ -208,6 +213,8 @@ interface StudioState {
   createSeries: (params: {
     name: string
     script: string
+    workspace_id?: string
+    workbench_mode?: 'longform' | 'short_video' | 'digital_human'
     description?: string
     series_bible?: string
     visual_style?: string
@@ -246,6 +253,8 @@ interface StudioState {
   reorderShots: (episodeId: string, shotIds: string[]) => Promise<void>
   loadEpisodeHistory: (episodeId: string, limit?: number, includeSnapshot?: boolean) => Promise<void>
   restoreEpisodeHistory: (episodeId: string, historyId: string) => Promise<void>
+  undoWorkspaceOperation: (workspaceId: string, projectScope: string) => Promise<void>
+  redoWorkspaceOperation: (workspaceId: string, projectScope: string) => Promise<void>
 
   batchGenerate: (episodeId: string, stages?: string[]) => Promise<void>
   retryFailedOperation: (operationId: string) => Promise<void>
@@ -526,7 +535,26 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     try {
       const list = await withTransientRetry(() => api.studioListSeries(), 2)
       if (requestSeq !== loadSeriesRequestSeq) return
-      set({ seriesList: list, loading: false })
+      const currentSeriesId = get().currentSeriesId
+      const keepCurrent = !!currentSeriesId && list.some((item) => item.id === currentSeriesId)
+      if (keepCurrent) {
+        set({ seriesList: list, loading: false })
+      } else {
+        set({
+          seriesList: list,
+          loading: false,
+          currentSeriesId: null,
+          currentSeries: null,
+          episodes: [],
+          sharedElements: [],
+          currentEpisodeId: null,
+          currentEpisode: null,
+          shots: [],
+          episodeHistory: [],
+          historyLoading: false,
+          historyRestoring: false,
+        })
+      }
     } catch (e: unknown) {
       if (requestSeq !== loadSeriesRequestSeq) return
       const parsed = queueOperationFailure(set, e, {
@@ -890,12 +918,15 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       generationProgress: createInitialGenerationProgress(),
     })
     try {
-      await api.studioGenerateElementImage(elementId, {
-        use_reference: options?.useReference,
-        reference_mode: options?.referenceMode,
-        width: options?.width,
-        height: options?.height,
-      })
+      await enqueueImageGeneration(
+        `元素图: ${elementId}`,
+        () => api.studioGenerateElementImage(elementId, {
+          use_reference: options?.useReference,
+          reference_mode: options?.referenceMode,
+          width: options?.width,
+          height: options?.height,
+        }),
+      )
       const seriesId = get().currentSeriesId
       if (seriesId) {
         const els = await api.studioGetElements(seriesId)
@@ -973,7 +1004,19 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       generationProgress: createInitialGenerationProgress(),
     })
     try {
-      await api.studioGenerateShotAsset(shotId, { stage })
+      if (stage === 'video') {
+        await enqueueVideoGeneration(
+          `镜头视频: ${shotId}`,
+          () => api.studioGenerateShotAsset(shotId, { stage }),
+        )
+      } else if (stage === 'frame' || stage === 'end_frame') {
+        await enqueueImageGeneration(
+          stage === 'end_frame' ? `镜头尾帧: ${shotId}` : `镜头首帧: ${shotId}`,
+          () => api.studioGenerateShotAsset(shotId, { stage }),
+        )
+      } else {
+        await api.studioGenerateShotAsset(shotId, { stage })
+      }
       const epId = get().currentEpisodeId
       if (epId) {
         const shots = await api.studioGetShots(epId)
@@ -1103,6 +1146,54 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }
   },
 
+  undoWorkspaceOperation: async (workspaceId, projectScope) => {
+    if (!workspaceId || !projectScope) return
+    try {
+      await api.workspaceUndo(workspaceId, projectScope)
+      const currentEpisodeId = get().currentEpisodeId
+      const currentSeriesId = get().currentSeriesId
+      if (currentEpisodeId) {
+        await get().selectEpisode(currentEpisodeId)
+        await get().loadEpisodeHistory(currentEpisodeId, 80, true)
+      } else if (currentSeriesId) {
+        await get().selectSeries(currentSeriesId)
+      } else {
+        await get().loadSeriesList()
+      }
+    } catch (e: unknown) {
+      const parsed = queueOperationFailure(set, e, {
+        key: `workspace_undo:${workspaceId}:${projectScope}`,
+        title: '撤销修改',
+        retryTask: () => get().undoWorkspaceOperation(workspaceId, projectScope),
+      })
+      set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
+    }
+  },
+
+  redoWorkspaceOperation: async (workspaceId, projectScope) => {
+    if (!workspaceId || !projectScope) return
+    try {
+      await api.workspaceRedo(workspaceId, projectScope)
+      const currentEpisodeId = get().currentEpisodeId
+      const currentSeriesId = get().currentSeriesId
+      if (currentEpisodeId) {
+        await get().selectEpisode(currentEpisodeId)
+        await get().loadEpisodeHistory(currentEpisodeId, 80, true)
+      } else if (currentSeriesId) {
+        await get().selectSeries(currentSeriesId)
+      } else {
+        await get().loadSeriesList()
+      }
+    } catch (e: unknown) {
+      const parsed = queueOperationFailure(set, e, {
+        key: `workspace_redo:${workspaceId}:${projectScope}`,
+        title: '重做修改',
+        retryTask: () => get().redoWorkspaceOperation(workspaceId, projectScope),
+      })
+      set({ error: parsed.message, errorCode: parsed.code, errorContext: parsed.context })
+    }
+  },
+
   batchGenerate: async (episodeId, stages) => {
     if (generationProgressResetTimer) {
       clearTimeout(generationProgressResetTimer)
@@ -1117,9 +1208,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       errorContext: null,
       generationProgress: createInitialGenerationProgress(),
     })
+    const parallel = getGenerationQueueParallelConfig()
 
     const runFallbackBatch = async () => {
-      await api.studioBatchGenerate(episodeId, stages)
+      await api.studioBatchGenerate(episodeId, stages, parallel)
       set((state) => ({
         generationProgress: {
           ...state.generationProgress,
@@ -1164,6 +1256,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           closeStream = api.studioBatchGenerateStream(
             episodeId,
             stages,
+            parallel,
             (event) => {
               hasProgressEvent = true
 

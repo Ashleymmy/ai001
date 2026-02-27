@@ -29,6 +29,13 @@ export default function PreviewPlayer({
   const [playing, setPlaying] = useState(false)
   const [elapsedInShot, setElapsedInShot] = useState(0)
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const rafRef = useRef<number | null>(null)
+  const imagePlayStartRef = useRef<number | null>(null)
+  const elapsedRef = useRef(0)
+
+  useEffect(() => {
+    elapsedRef.current = elapsedInShot
+  }, [elapsedInShot])
 
   useEffect(() => {
     if (!shots.length) {
@@ -42,6 +49,8 @@ export default function PreviewPlayer({
     if (idx >= 0) {
       setIndex(idx)
       setElapsedInShot(0)
+      elapsedRef.current = 0
+      imagePlayStartRef.current = null
     }
   }, [shots, currentShotId])
 
@@ -53,25 +62,49 @@ export default function PreviewPlayer({
   }, [current?.id, onCurrentShotChange])
 
   useEffect(() => {
-    if (!playing || !current) return
-    const stepMs = 200
-    const timer = window.setInterval(() => {
-      setElapsedInShot((prev) => {
-        const next = prev + stepMs / 1000
-        const duration = normalizeDuration(Number(current.duration || 0))
-        if (next >= duration) {
-          if (index < shots.length - 1) {
-            setIndex((i) => i + 1)
-            return 0
-          }
-          setPlaying(false)
-          return duration
+    if (rafRef.current) {
+      window.cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
+    if (!playing || !current || current.video_url) {
+      imagePlayStartRef.current = null
+      return
+    }
+
+    const duration = normalizeDuration(Number(current.duration || 0))
+
+    const tick = (ts: number) => {
+      if (imagePlayStartRef.current == null) {
+        imagePlayStartRef.current = ts - elapsedRef.current * 1000
+      }
+      const nextElapsed = Math.max(0, (ts - imagePlayStartRef.current) / 1000)
+      if (nextElapsed >= duration) {
+        if (index < shots.length - 1) {
+          setIndex((i) => i + 1)
+          setElapsedInShot(0)
+          elapsedRef.current = 0
+          imagePlayStartRef.current = null
+          return
         }
-        return next
-      })
-    }, stepMs)
-    return () => window.clearInterval(timer)
-  }, [playing, current?.id, index, shots.length])
+        setElapsedInShot(duration)
+        elapsedRef.current = duration
+        imagePlayStartRef.current = null
+        setPlaying(false)
+        return
+      }
+      setElapsedInShot(nextElapsed)
+      elapsedRef.current = nextElapsed
+      rafRef.current = window.requestAnimationFrame(tick)
+    }
+
+    rafRef.current = window.requestAnimationFrame(tick)
+    return () => {
+      if (rafRef.current) {
+        window.cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+    }
+  }, [playing, current?.id, current?.video_url, index, shots.length])
 
   useEffect(() => {
     const video = videoRef.current
@@ -82,6 +115,20 @@ export default function PreviewPlayer({
       video.pause()
     }
   }, [playing, current?.video_url])
+
+  useEffect(() => {
+    if (!current?.video_url) return
+    setElapsedInShot(0)
+    elapsedRef.current = 0
+    imagePlayStartRef.current = null
+  }, [current?.id, current?.video_url])
+
+  useEffect(() => () => {
+    if (rafRef.current) {
+      window.cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
+  }, [])
 
   const timeline = useMemo(() => {
     let cursor = 0
@@ -107,6 +154,8 @@ export default function PreviewPlayer({
     const next = Math.max(0, Math.min(shots.length - 1, idx))
     setIndex(next)
     setElapsedInShot(0)
+    elapsedRef.current = 0
+    imagePlayStartRef.current = null
   }
 
   const duration = normalizeDuration(Number(current.duration || 0))
@@ -132,6 +181,11 @@ export default function PreviewPlayer({
             className="w-full h-full object-cover"
             muted
             playsInline
+            onTimeUpdate={(event) => {
+              const time = event.currentTarget.currentTime
+              setElapsedInShot(time)
+              elapsedRef.current = time
+            }}
             onEnded={() => {
               if (index < shots.length - 1) {
                 goTo(index + 1)

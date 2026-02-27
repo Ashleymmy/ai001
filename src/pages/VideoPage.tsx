@@ -33,6 +33,7 @@ import {
   deleteVideoHistory
 } from '../services/api'
 import { useSettingsStore, VIDEO_PROVIDERS } from '../store/settingsStore'
+import { enqueueVideoGeneration } from '../store/generationQueueStore'
 
 // 统一的任务项类型
 interface TaskItem {
@@ -317,18 +318,21 @@ export default function VideoPage() {
     updateTask({ status: 'generating', progress: 0, error: undefined })
     
     try {
-      const result = await generateVideo(task.sourceImage, task.prompt, {
-        projectId,
-        duration: task.duration,
-        motionStrength: task.motionStrength,
-        seed: task.seed || undefined,
-        resolution: task.resolution || defaultResolution,
-        ratio: task.ratio || defaultRatio,
-        cameraFixed: task.cameraFixed ?? defaultCameraFixed,
-        watermark: task.watermark ?? defaultWatermark,
-        generateAudio: task.generateAudio ?? defaultGenerateAudio,
-        videoConfig: settings.video
-      })
+      const result = await enqueueVideoGeneration(
+        `视频任务: ${task.id}`,
+        () => generateVideo(task.sourceImage, task.prompt, {
+          projectId,
+          duration: task.duration,
+          motionStrength: task.motionStrength,
+          seed: task.seed || undefined,
+          resolution: task.resolution || defaultResolution,
+          ratio: task.ratio || defaultRatio,
+          cameraFixed: task.cameraFixed ?? defaultCameraFixed,
+          watermark: task.watermark ?? defaultWatermark,
+          generateAudio: task.generateAudio ?? defaultGenerateAudio,
+          videoConfig: settings.video,
+        }),
+      )
       
       if (result.status === 'completed' && result.videoUrl) {
         updateTask({ status: 'done', videoUrl: result.videoUrl, taskId: result.taskId, seed: result.seed, progress: 100 })

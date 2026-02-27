@@ -5,6 +5,54 @@ const runtimeHost = typeof window !== 'undefined' ? window.location.hostname : '
 const backendPort = import.meta.env.VITE_BACKEND_PORT || '18001'
 export const BACKEND_ORIGIN = import.meta.env.VITE_API_BASE || `http://${runtimeHost}:${backendPort}`
 const API_BASE = BACKEND_ORIGIN
+const AUTH_ACCESS_TOKEN_KEY = 'studio.collab.access_token'
+const AUTH_REFRESH_TOKEN_KEY = 'studio.collab.refresh_token'
+const AUTH_WORKSPACE_ID_KEY = 'studio.collab.workspace_id'
+
+function readStorageValue(key: string): string {
+  if (typeof window === 'undefined') return ''
+  try {
+    return window.localStorage.getItem(key) || ''
+  } catch {
+    return ''
+  }
+}
+
+function writeStorageValue(key: string, value: string): void {
+  if (typeof window === 'undefined') return
+  try {
+    if (value) window.localStorage.setItem(key, value)
+    else window.localStorage.removeItem(key)
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function getStoredAccessToken(): string {
+  return readStorageValue(AUTH_ACCESS_TOKEN_KEY)
+}
+
+export function getStoredRefreshToken(): string {
+  return readStorageValue(AUTH_REFRESH_TOKEN_KEY)
+}
+
+export function getStoredWorkspaceId(): string {
+  return readStorageValue(AUTH_WORKSPACE_ID_KEY)
+}
+
+export function setStoredAuthTokens(accessToken: string, refreshToken: string): void {
+  writeStorageValue(AUTH_ACCESS_TOKEN_KEY, accessToken)
+  writeStorageValue(AUTH_REFRESH_TOKEN_KEY, refreshToken)
+}
+
+export function clearStoredAuthTokens(): void {
+  writeStorageValue(AUTH_ACCESS_TOKEN_KEY, '')
+  writeStorageValue(AUTH_REFRESH_TOKEN_KEY, '')
+}
+
+export function setStoredWorkspaceId(workspaceId: string): void {
+  writeStorageValue(AUTH_WORKSPACE_ID_KEY, workspaceId)
+}
 
 const api = axios.create({
   baseURL: API_BASE,
@@ -16,6 +64,19 @@ const studioApi = axios.create({
   baseURL: API_BASE,
   timeout: 600000
 })
+
+function attachRuntimeContext(config: { headers?: Record<string, unknown> }) {
+  const token = getStoredAccessToken()
+  const workspaceId = getStoredWorkspaceId()
+  const headers = (config.headers || {}) as Record<string, unknown>
+  if (token) headers.Authorization = `Bearer ${token}`
+  if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+  config.headers = headers
+  return config
+}
+
+api.interceptors.request.use((config) => attachRuntimeContext(config))
+studioApi.interceptors.request.use((config) => attachRuntimeContext(config))
 
 function parseContentDispositionFilename(contentDisposition: string | undefined, fallback: string): string {
   if (!contentDisposition) return fallback
@@ -1902,6 +1963,230 @@ export async function deleteCustomProvider(providerId: string): Promise<void> {
   await api.delete(`/api/module/custom-providers/${providerId}`)
 }
 
+// ==========================================================================
+// Collaboration APIs (Auth / Workspace / OKR / Undo-Redo)
+// ==========================================================================
+
+export interface CollabAuthConfig {
+  auth_required: boolean
+}
+
+export interface CollabUser {
+  id: string
+  email: string
+  name: string
+  status: string
+  created_at: string
+  updated_at: string
+}
+
+export interface WorkspaceSummary {
+  id: string
+  name: string
+  owner_user_id: string
+  role?: 'owner' | 'editor' | 'viewer'
+  created_at: string
+  updated_at: string
+}
+
+export interface WorkspaceMember {
+  id: string
+  workspace_id: string
+  user_id: string
+  role: 'owner' | 'editor' | 'viewer'
+  email: string
+  name: string
+  status: string
+  created_at: string
+  updated_at: string
+}
+
+export interface OkrKeyResult {
+  id?: string
+  title: string
+  metric_target: number
+  metric_current: number
+  metric_current_manual?: number
+  auto_metric?: '' | 'episodes_completion' | 'shots_completion' | 'frame_completion' | 'video_completion' | 'audio_completion'
+  auto_enabled?: boolean
+  links?: OkrLink[]
+  status?: string
+  owner_user_id?: string
+}
+
+export interface OkrLink {
+  link_type: 'workspace' | 'series' | 'episode'
+  link_id: string
+}
+
+export interface OkrObjective {
+  id: string
+  workspace_id: string
+  title: string
+  owner_user_id?: string
+  status?: string
+  risk?: string
+  due_date?: string
+  progress?: number
+  links?: OkrLink[]
+  key_results: OkrKeyResult[]
+  created_at: string
+  updated_at: string
+}
+
+export interface WorkspaceUndoRedoResult {
+  ok: boolean
+  mode?: 'undo' | 'redo'
+  operation?: Record<string, unknown> | null
+  applied?: Record<string, unknown>
+  head_index?: number
+}
+
+export async function authGetConfig(): Promise<CollabAuthConfig> {
+  const response = await api.get('/api/auth/config')
+  return response.data as CollabAuthConfig
+}
+
+export async function authRegister(payload: {
+  email: string
+  password: string
+  name: string
+}): Promise<{
+  user: CollabUser
+  workspace?: WorkspaceSummary
+  access_token: string
+  refresh_token: string
+}> {
+  const response = await api.post('/api/auth/register', payload)
+  return response.data
+}
+
+export async function authLogin(payload: {
+  email: string
+  password: string
+}): Promise<{
+  user: CollabUser
+  workspaces: WorkspaceSummary[]
+  access_token: string
+  refresh_token: string
+}> {
+  const response = await api.post('/api/auth/login', payload)
+  return response.data
+}
+
+export async function authRefresh(refreshToken: string): Promise<{
+  access_token: string
+  refresh_token: string
+}> {
+  const response = await api.post('/api/auth/refresh', { refresh_token: refreshToken })
+  return response.data
+}
+
+export async function authLogout(refreshToken: string): Promise<void> {
+  await api.post('/api/auth/logout', { refresh_token: refreshToken })
+}
+
+export async function authMe(): Promise<{
+  user: CollabUser
+  workspaces: WorkspaceSummary[]
+}> {
+  const response = await api.get('/api/auth/me')
+  return response.data
+}
+
+export async function workspaceList(): Promise<WorkspaceSummary[]> {
+  const response = await api.get('/api/workspaces')
+  return response.data as WorkspaceSummary[]
+}
+
+export async function workspaceCreate(name: string): Promise<WorkspaceSummary> {
+  const response = await api.post('/api/workspaces', { name })
+  return response.data as WorkspaceSummary
+}
+
+export async function workspaceListMembers(workspaceId: string): Promise<WorkspaceMember[]> {
+  const response = await api.get(`/api/workspaces/${workspaceId}/members`)
+  return response.data as WorkspaceMember[]
+}
+
+export async function workspaceAddMember(
+  workspaceId: string,
+  payload: { email: string; role?: 'owner' | 'editor' | 'viewer' },
+): Promise<Record<string, unknown>> {
+  const response = await api.post(`/api/workspaces/${workspaceId}/members`, payload)
+  return response.data as Record<string, unknown>
+}
+
+export async function workspaceUpdateMemberRole(
+  workspaceId: string,
+  memberId: string,
+  role: 'owner' | 'editor' | 'viewer',
+): Promise<void> {
+  await api.patch(`/api/workspaces/${workspaceId}/members/${memberId}`, { role })
+}
+
+export async function workspaceDeleteMember(workspaceId: string, memberId: string): Promise<void> {
+  await api.delete(`/api/workspaces/${workspaceId}/members/${memberId}`)
+}
+
+export async function workspaceListOkrs(workspaceId: string): Promise<OkrObjective[]> {
+  const response = await api.get(`/api/workspaces/${workspaceId}/okrs`)
+  return response.data as OkrObjective[]
+}
+
+export async function workspaceCreateOkr(
+  workspaceId: string,
+  payload: {
+    title: string
+    owner_user_id?: string
+    status?: string
+    risk?: string
+    due_date?: string
+    key_results?: OkrKeyResult[]
+    links?: OkrLink[]
+  },
+): Promise<OkrObjective> {
+  const response = await api.post(`/api/workspaces/${workspaceId}/okrs`, payload)
+  return response.data as OkrObjective
+}
+
+export async function workspaceUpdateOkr(
+  workspaceId: string,
+  okrId: string,
+  updates: Partial<{
+    title: string
+    owner_user_id: string
+    status: string
+    risk: string
+    due_date: string
+    key_results: OkrKeyResult[]
+    links: OkrLink[]
+  }>,
+): Promise<OkrObjective> {
+  const response = await api.patch(`/api/workspaces/${workspaceId}/okrs/${okrId}`, updates)
+  return response.data as OkrObjective
+}
+
+export async function workspaceUndo(
+  workspaceId: string,
+  projectScope: string,
+): Promise<WorkspaceUndoRedoResult> {
+  const response = await api.post(`/api/workspaces/${workspaceId}/undo`, {
+    project_scope: projectScope,
+  })
+  return response.data as WorkspaceUndoRedoResult
+}
+
+export async function workspaceRedo(
+  workspaceId: string,
+  projectScope: string,
+): Promise<WorkspaceUndoRedoResult> {
+  const response = await api.post(`/api/workspaces/${workspaceId}/redo`, {
+    project_scope: projectScope,
+  })
+  return response.data as WorkspaceUndoRedoResult
+}
+
 // ========== Agent Video Task Polling ==========
 
 // Poll pending video tasks for a project (updates backend project YAML)
@@ -1923,16 +2208,21 @@ export async function pollProjectVideoTasks(projectId: string): Promise<{
 
 export interface StudioSeries {
   id: string
+  workspace_id: string
   name: string
   description: string
   series_bible: string
   visual_style: string
   source_script: string
-  settings: Record<string, unknown>
+  settings: {
+    workbench_mode?: 'longform' | 'short_video' | 'digital_human'
+    [key: string]: unknown
+  }
   created_at: string
   updated_at: string
   episode_count?: number
   element_count?: number
+  digital_human_profiles?: StudioDigitalHumanProfile[]
   episodes?: StudioEpisode[]
   shared_elements?: StudioElement[]
 }
@@ -1976,6 +2266,18 @@ export interface StudioCharacterProfile {
   description: string
   voice_profile: string
   keywords: string[]
+}
+
+export interface StudioDigitalHumanProfile {
+  id: string
+  base_name: string
+  display_name: string
+  stage_label: string
+  appearance: string
+  voice_profile: string
+  scene_template: string
+  lip_sync_style: string
+  sort_order?: number
 }
 
 export interface StudioCharacterDocImportResult {
@@ -2157,6 +2459,8 @@ export interface StudioImportFromAgentResult {
 export async function studioCreateSeries(params: {
   name: string
   script: string
+  workspace_id?: string
+  workbench_mode?: 'longform' | 'short_video' | 'digital_human'
   description?: string
   series_bible?: string
   visual_style?: string
@@ -2183,7 +2487,14 @@ export async function studioGetSeries(seriesId: string): Promise<StudioSeries> {
 
 export async function studioUpdateSeries(
   seriesId: string,
-  updates: Partial<Pick<StudioSeries, 'name' | 'description' | 'series_bible' | 'visual_style' | 'source_script'>>
+  updates: Partial<
+    Pick<
+      StudioSeries,
+      'name' | 'description' | 'series_bible' | 'visual_style' | 'source_script' | 'workspace_id'
+    >
+  > & {
+    settings?: Record<string, unknown>
+  }
 ): Promise<StudioSeries> {
   const response = await api.put(`/api/studio/series/${seriesId}`, updates)
   return response.data
@@ -2315,6 +2626,23 @@ export async function studioSplitCharacterByAge(
   return response.data as StudioCharacterSplitResult
 }
 
+export async function studioListDigitalHumanProfiles(
+  seriesId: string,
+): Promise<StudioDigitalHumanProfile[]> {
+  const response = await api.get(`/api/studio/series/${seriesId}/digital-human-profiles`)
+  return (response.data?.profiles || []) as StudioDigitalHumanProfile[]
+}
+
+export async function studioSaveDigitalHumanProfiles(
+  seriesId: string,
+  profiles: StudioDigitalHumanProfile[],
+): Promise<StudioDigitalHumanProfile[]> {
+  const response = await api.put(`/api/studio/series/${seriesId}/digital-human-profiles`, {
+    profiles,
+  })
+  return (response.data?.profiles || []) as StudioDigitalHumanProfile[]
+}
+
 export async function studioGenerateElementImage(
   elementId: string,
   options?: { use_reference?: boolean; reference_mode?: 'none' | 'light' | 'full'; width?: number; height?: number }
@@ -2397,14 +2725,30 @@ export interface StudioBatchGenerateStreamEvent {
   failed?: number
   total?: number
   percent?: number
+  queued?: number
+  running?: number
+  completed?: number
+  parallel?: {
+    image_max_concurrency?: number
+    video_max_concurrency?: number
+    global_max_concurrency?: number
+  }
+}
+
+export interface StudioBatchParallelConfig {
+  image_max_concurrency?: number
+  video_max_concurrency?: number
+  global_max_concurrency?: number
 }
 
 export async function studioBatchGenerate(
   episodeId: string,
-  stages?: string[]
+  stages?: string[],
+  parallel?: StudioBatchParallelConfig,
 ): Promise<Record<string, unknown>> {
   const response = await studioApi.post(`/api/studio/episodes/${episodeId}/batch-generate`, {
     stages: stages || ['elements', 'frames', 'end_frames', 'videos', 'audio'],
+    parallel: parallel || undefined,
   })
   return response.data
 }
@@ -2412,6 +2756,7 @@ export async function studioBatchGenerate(
 export function studioBatchGenerateStream(
   episodeId: string,
   stages: string[] | undefined,
+  parallel: StudioBatchParallelConfig | undefined,
   onEvent: (event: StudioBatchGenerateStreamEvent) => void,
   onError?: (error: Error) => void
 ): () => void {
@@ -2422,6 +2767,13 @@ export function studioBatchGenerateStream(
   if (stageList.length > 0) {
     query.set('stages', stageList.join(','))
   }
+  const workspaceId = getStoredWorkspaceId()
+  if (workspaceId) query.set('workspace_id', workspaceId)
+  const accessToken = getStoredAccessToken()
+  if (accessToken) query.set('access_token', accessToken)
+  if (parallel?.image_max_concurrency) query.set('image_max_concurrency', String(parallel.image_max_concurrency))
+  if (parallel?.video_max_concurrency) query.set('video_max_concurrency', String(parallel.video_max_concurrency))
+  if (parallel?.global_max_concurrency) query.set('global_max_concurrency', String(parallel.global_max_concurrency))
 
   const url = `${API_BASE}/api/studio/episodes/${episodeId}/batch-generate-stream${query.toString() ? `?${query.toString()}` : ''}`
   const eventSource = new EventSource(url)

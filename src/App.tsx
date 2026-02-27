@@ -10,9 +10,14 @@ import VideoPage from './pages/VideoPage'
 import SettingsPage from './pages/SettingsPage'
 import AgentPage from './pages/AgentPage'
 import StudioPage from './pages/StudioPage'
+import ShortVideoWorkbenchPage from './pages/ShortVideoWorkbenchPage'
+import DigitalHumanWorkbenchPage from './pages/DigitalHumanWorkbenchPage'
+import WorkspaceOkrPage from './pages/WorkspaceOkrPage'
+import AuthPage from './pages/AuthPage'
 import ProjectPage from './pages/ProjectPage'
 import ApiMonitorPage from './pages/ApiMonitorPage'
 import { useSettingsStore } from './store/settingsStore'
+import { useWorkspaceStore } from './store/workspaceStore'
 
 // 首次访问检测 key
 const VISITED_KEY = 'ai-storyboarder-visited'
@@ -113,10 +118,12 @@ function LayoutWithKeepAlive() {
 
 function App() {
   const loadFromBackend = useSettingsStore((state) => state.loadFromBackend)
+  const initWorkspace = useWorkspaceStore((state) => state.init)
 
   // 启动时从后端加载设置 - 只执行一次
   useEffect(() => {
     loadFromBackend()
+    void initWorkspace()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -130,10 +137,18 @@ function App() {
         {/* Agent 模式 - 独立布局，需要首次访问检测 */}
         <Route path="agent" element={<RequireVisited><AgentPage /></RequireVisited>} />
         <Route path="agent/:projectId" element={<RequireVisited><AgentPage /></RequireVisited>} />
+        <Route path="auth" element={<RequireVisited><AuthPage /></RequireVisited>} />
+        <Route path="workspace/okr" element={<RequireVisited><WorkspaceOkrPage /></RequireVisited>} />
         {/* Studio 长篇制作工作台 - 独立布局 */}
         <Route path="studio" element={<RequireVisited><StudioPage /></RequireVisited>} />
         <Route path="studio/:seriesId" element={<RequireVisited><StudioPage /></RequireVisited>} />
         <Route path="studio/:seriesId/:episodeId" element={<RequireVisited><StudioPage /></RequireVisited>} />
+        <Route path="short-video" element={<RequireVisited><ShortVideoWorkbenchPage /></RequireVisited>} />
+        <Route path="short-video/:seriesId" element={<RequireVisited><ShortVideoWorkbenchPage /></RequireVisited>} />
+        <Route path="short-video/:seriesId/:episodeId" element={<RequireVisited><ShortVideoWorkbenchPage /></RequireVisited>} />
+        <Route path="digital-human" element={<RequireVisited><DigitalHumanWorkbenchPage /></RequireVisited>} />
+        <Route path="digital-human/:seriesId" element={<RequireVisited><DigitalHumanWorkbenchPage /></RequireVisited>} />
+        <Route path="digital-human/:seriesId/:episodeId" element={<RequireVisited><DigitalHumanWorkbenchPage /></RequireVisited>} />
       </Routes>
     </HashRouter>
   )

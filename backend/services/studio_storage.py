@@ -26,6 +26,7 @@ def _now() -> str:
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS series (
     id              TEXT PRIMARY KEY,
+    workspace_id    TEXT DEFAULT '',
     name            TEXT NOT NULL,
     description     TEXT DEFAULT '',
     series_bible    TEXT DEFAULT '',
@@ -114,11 +115,28 @@ CREATE TABLE IF NOT EXISTS studio_history (
     created_at      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS digital_human_profiles (
+    id              TEXT PRIMARY KEY,
+    series_id       TEXT NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+    base_name       TEXT NOT NULL,
+    display_name    TEXT DEFAULT '',
+    stage_label     TEXT DEFAULT '',
+    appearance      TEXT DEFAULT '',
+    voice_profile   TEXT DEFAULT '',
+    scene_template  TEXT DEFAULT '',
+    lip_sync_style  TEXT DEFAULT '',
+    sort_order      INTEGER DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_episodes_series ON episodes(series_id);
+CREATE INDEX IF NOT EXISTS idx_series_workspace ON series(workspace_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_shared_elements_series ON shared_elements(series_id);
 CREATE INDEX IF NOT EXISTS idx_shots_episode ON shots(episode_id);
 CREATE INDEX IF NOT EXISTS idx_episode_elements_episode ON episode_elements(episode_id);
 CREATE INDEX IF NOT EXISTS idx_studio_history_episode ON studio_history(episode_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dh_profiles_series ON digital_human_profiles(series_id, sort_order, updated_at DESC);
 """
 
 
@@ -167,12 +185,19 @@ class StudioStorage:
 
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
         """为历史数据库补齐新列。"""
+        self._ensure_column(conn, "series", "workspace_id", "TEXT DEFAULT ''")
         self._ensure_column(conn, "shared_elements", "is_favorite", "INTEGER DEFAULT 0")
         self._ensure_column(conn, "shots", "end_prompt", "TEXT DEFAULT ''")
         self._ensure_column(conn, "shots", "end_image_url", "TEXT DEFAULT ''")
         self._ensure_column(conn, "shots", "frame_history", "TEXT DEFAULT '[]'")
         self._ensure_column(conn, "shots", "video_history", "TEXT DEFAULT '[]'")
         self._ensure_column(conn, "shots", "visual_action", "TEXT DEFAULT '{}'")
+        self._ensure_column(conn, "digital_human_profiles", "display_name", "TEXT DEFAULT ''")
+        self._ensure_column(conn, "digital_human_profiles", "scene_template", "TEXT DEFAULT ''")
+        self._ensure_column(conn, "digital_human_profiles", "lip_sync_style", "TEXT DEFAULT ''")
+        self._ensure_column(conn, "digital_human_profiles", "sort_order", "INTEGER DEFAULT 0")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_series_workspace ON series(workspace_id, updated_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_dh_profiles_series ON digital_human_profiles(series_id, sort_order, updated_at DESC)")
 
     @staticmethod
     def _row_to_dict(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
@@ -203,6 +228,7 @@ class StudioStorage:
     def create_series(
         self,
         name: str,
+        workspace_id: str = "",
         description: str = "",
         source_script: str = "",
         series_bible: str = "",
@@ -215,10 +241,10 @@ class StudioStorage:
         try:
             conn.execute(
                 """INSERT INTO series
-                   (id, name, description, series_bible, visual_style,
+                   (id, workspace_id, name, description, series_bible, visual_style,
                     source_script, settings, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
-                (sid, name, description, series_bible, visual_style,
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (sid, workspace_id, name, description, series_bible, visual_style,
                  source_script, self._json_field(settings or {}), now, now),
             )
             conn.commit()
@@ -239,16 +265,22 @@ class StudioStorage:
             if _conn is None:
                 conn.close()
 
-    def list_series(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def list_series(self, limit: int = 50, workspace_id: Optional[str] = None) -> List[Dict[str, Any]]:
         conn = self._connect()
         try:
-            rows = conn.execute(
-                """SELECT s.*,
-                          (SELECT COUNT(*) FROM episodes e WHERE e.series_id=s.id) AS episode_count,
-                          (SELECT COUNT(*) FROM shared_elements se WHERE se.series_id=s.id) AS element_count
-                   FROM series s ORDER BY s.updated_at DESC LIMIT ?""",
-                (limit,),
-            ).fetchall()
+            sql = """SELECT s.*,
+                            (SELECT COUNT(*) FROM episodes e WHERE e.series_id=s.id) AS episode_count,
+                            (SELECT COUNT(*) FROM shared_elements se WHERE se.series_id=s.id) AS element_count
+                     FROM series s"""
+            params: List[Any] = []
+            workspace = str(workspace_id or "").strip()
+            if workspace:
+                # 兼容历史数据：旧系列可能没有 workspace_id
+                sql += " WHERE (s.workspace_id=? OR s.workspace_id='' OR s.workspace_id IS NULL)"
+                params.append(workspace)
+            sql += " ORDER BY s.updated_at DESC LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(sql, tuple(params)).fetchall()
             return [self._row_to_dict(r) for r in rows]  # type: ignore[misc]
         finally:
             conn.close()
@@ -258,7 +290,7 @@ class StudioStorage:
     ) -> Optional[Dict[str, Any]]:
         allowed = {
             "name", "description", "series_bible", "visual_style",
-            "source_script", "settings",
+            "source_script", "settings", "workspace_id",
         }
         fields = []
         values: list = []
@@ -289,6 +321,181 @@ class StudioStorage:
             cur = conn.execute("DELETE FROM series WHERE id=?", (series_id,))
             conn.commit()
             return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    # ==================================================================
+    # 数字人角色配置
+    # ==================================================================
+
+    def list_digital_human_profiles(self, series_id: str) -> List[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT * FROM digital_human_profiles
+                WHERE series_id=?
+                ORDER BY sort_order ASC, updated_at DESC
+                """,
+                (series_id,),
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]  # type: ignore[misc]
+        finally:
+            conn.close()
+
+    def get_digital_human_profile(self, profile_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM digital_human_profiles WHERE id=?",
+                (profile_id,),
+            ).fetchone()
+            return self._row_to_dict(row)
+        finally:
+            conn.close()
+
+    def create_digital_human_profile(
+        self,
+        series_id: str,
+        base_name: str,
+        display_name: str = "",
+        stage_label: str = "",
+        appearance: str = "",
+        voice_profile: str = "",
+        scene_template: str = "",
+        lip_sync_style: str = "",
+        sort_order: int = 0,
+    ) -> Dict[str, Any]:
+        profile_id = _gen_id("dhp_")
+        now = _now()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO digital_human_profiles
+                (id, series_id, base_name, display_name, stage_label, appearance, voice_profile, scene_template, lip_sync_style, sort_order, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    profile_id,
+                    series_id,
+                    base_name,
+                    display_name,
+                    stage_label,
+                    appearance,
+                    voice_profile,
+                    scene_template,
+                    lip_sync_style,
+                    int(sort_order),
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM digital_human_profiles WHERE id=?", (profile_id,)).fetchone()
+            return self._row_to_dict(row) or {"id": profile_id, "series_id": series_id, "base_name": base_name}
+        finally:
+            conn.close()
+
+    def update_digital_human_profile(
+        self,
+        profile_id: str,
+        updates: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        allowed = {
+            "base_name",
+            "display_name",
+            "stage_label",
+            "appearance",
+            "voice_profile",
+            "scene_template",
+            "lip_sync_style",
+            "sort_order",
+        }
+        clauses: List[str] = []
+        values: List[Any] = []
+        for key, value in updates.items():
+            if key not in allowed:
+                continue
+            clauses.append(f"{key}=?")
+            values.append(value)
+        if not clauses:
+            return self.get_digital_human_profile(profile_id)
+        clauses.append("updated_at=?")
+        values.append(_now())
+        values.append(profile_id)
+        conn = self._connect()
+        try:
+            conn.execute(
+                f"UPDATE digital_human_profiles SET {', '.join(clauses)} WHERE id=?",
+                tuple(values),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM digital_human_profiles WHERE id=?", (profile_id,)).fetchone()
+            return self._row_to_dict(row)
+        finally:
+            conn.close()
+
+    def delete_digital_human_profile(self, profile_id: str) -> bool:
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                "DELETE FROM digital_human_profiles WHERE id=?",
+                (profile_id,),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    def replace_digital_human_profiles(
+        self,
+        series_id: str,
+        profiles: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        now = _now()
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM digital_human_profiles WHERE series_id=?", (series_id,))
+            for index, item in enumerate(profiles):
+                if not isinstance(item, dict):
+                    continue
+                base_name = str(item.get("base_name") or item.get("character_name") or item.get("name") or "").strip()
+                display_name = str(item.get("display_name") or item.get("name") or base_name).strip()
+                if not base_name and not display_name:
+                    continue
+                profile_id = str(item.get("id") or "").strip() or _gen_id("dhp_")
+                conn.execute(
+                    """
+                    INSERT INTO digital_human_profiles
+                    (id, series_id, base_name, display_name, stage_label, appearance, voice_profile, scene_template, lip_sync_style, sort_order, created_at, updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        profile_id,
+                        series_id,
+                        base_name or display_name,
+                        display_name or base_name,
+                        str(item.get("stage_label") or item.get("stage") or "").strip(),
+                        str(item.get("appearance") or item.get("description") or "").strip(),
+                        str(item.get("voice_profile") or "").strip(),
+                        str(item.get("scene_template") or item.get("scene") or "").strip(),
+                        str(item.get("lip_sync_style") or item.get("lip_sync") or "").strip(),
+                        int(item.get("sort_order") or index),
+                        now,
+                        now,
+                    ),
+                )
+            conn.commit()
+            rows = conn.execute(
+                """
+                SELECT * FROM digital_human_profiles
+                WHERE series_id=?
+                ORDER BY sort_order ASC, updated_at DESC
+                """,
+                (series_id,),
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]  # type: ignore[misc]
         finally:
             conn.close()
 

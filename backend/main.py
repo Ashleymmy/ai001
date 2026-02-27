@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, Header
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
@@ -23,6 +23,7 @@ from services.studio_service import StudioService, StudioServiceError
 from services.studio_export_service import StudioExportService
 from services.studio.prompt_sentinel import analyze_prompt_text, apply_prompt_suggestions
 from services.studio.prompts import build_default_custom_prompts, normalize_custom_prompts
+from services.collab_service import CollabService
 from services.fish_audio_service import FishAudioConfig, FishAudioService
 from services.tts_service import (
     DashScopeTTSConfig,
@@ -99,6 +100,9 @@ module_current_settings: Dict[str, Any] = {}  # Module settings
 studio_storage: Optional[StudioStorage] = None
 studio_service: Optional[StudioService] = None
 studio_current_settings: Dict[str, Any] = {}
+collab_service: Optional[CollabService] = None
+
+AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -113,7 +117,7 @@ def load_saved_settings():
     global llm_service, image_service, storyboard_service, video_service
     global module_llm_service, module_image_service, module_storyboard_service, module_video_service
     global agent_service, current_settings, module_current_settings
-    global studio_storage, studio_service, studio_current_settings
+    global studio_storage, studio_service, studio_current_settings, collab_service
 
     # Agent 运行时：只读全局 settings
     agent_saved = storage.get_settings()
@@ -242,6 +246,7 @@ def load_saved_settings():
     # 初始化 Studio 工作台（独立模块，独立配置）
     studio_storage = StudioStorage()
     studio_service = StudioService(studio_storage)
+    collab_service = CollabService()
 
     # Studio 设置：优先 studio.settings.local.yaml，其次复用 module settings
     import yaml as _yaml
@@ -5778,12 +5783,292 @@ async def get_project_generation_status(project_id: str):
 
 
 # ==========================================================================
+# Auth / Workspace / OKR / Undo-Redo
+# ==========================================================================
+
+class AuthRegisterRequest(BaseModel):
+    email: str
+    password: str
+    name: str = ""
+
+
+class AuthLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class AuthRefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class WorkspaceCreateRequest(BaseModel):
+    name: str
+
+
+class WorkspaceMemberCreateRequest(BaseModel):
+    email: str
+    role: str = "viewer"
+
+
+class WorkspaceMemberUpdateRequest(BaseModel):
+    role: str
+
+
+class WorkspaceOKRCreateRequest(BaseModel):
+    title: str
+    owner_user_id: Optional[str] = None
+    status: str = "active"
+    risk: str = "normal"
+    due_date: str = ""
+    key_results: Optional[List[Dict[str, Any]]] = None
+    links: Optional[List[Dict[str, Any]]] = None
+
+
+class WorkspaceOKRUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    owner_user_id: Optional[str] = None
+    status: Optional[str] = None
+    risk: Optional[str] = None
+    due_date: Optional[str] = None
+    key_results: Optional[List[Dict[str, Any]]] = None
+    links: Optional[List[Dict[str, Any]]] = None
+
+
+class WorkspaceUndoRedoRequest(BaseModel):
+    project_scope: str = "studio:global"
+
+
+@app.get("/api/auth/config")
+async def collab_auth_config():
+    return {"auth_required": AUTH_REQUIRED}
+
+
+@app.post("/api/auth/register")
+async def collab_register(req: AuthRegisterRequest):
+    service = _collab_ensure_service_ready()
+    try:
+        return service.register_user(
+            email=req.email,
+            password=req.password,
+            name=req.name,
+            create_workspace=True,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/auth/login")
+async def collab_login(req: AuthLoginRequest):
+    service = _collab_ensure_service_ready()
+    try:
+        return service.login_user(req.email, req.password)
+    except ValueError as e:
+        raise HTTPException(401, str(e))
+
+
+@app.post("/api/auth/refresh")
+async def collab_refresh(req: AuthRefreshRequest):
+    service = _collab_ensure_service_ready()
+    try:
+        return service.refresh_access_token(req.refresh_token)
+    except ValueError as e:
+        raise HTTPException(401, str(e))
+
+
+@app.post("/api/auth/logout")
+async def collab_logout(req: AuthRefreshRequest):
+    service = _collab_ensure_service_ready()
+    try:
+        service.revoke_refresh_token(req.refresh_token)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/auth/me")
+async def collab_me(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    user = _collab_get_current_user(request, authorization, required=AUTH_REQUIRED)
+    workspaces = _collab_ensure_service_ready().list_workspaces(user["id"])
+    return {"user": user, "workspaces": workspaces}
+
+
+@app.get("/api/workspaces")
+async def collab_list_workspaces(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    user = _collab_get_current_user(request, authorization, required=AUTH_REQUIRED)
+    return _collab_ensure_service_ready().list_workspaces(user["id"])
+
+
+@app.post("/api/workspaces")
+async def collab_create_workspace(
+    req: WorkspaceCreateRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    user = _collab_get_current_user(request, authorization, required=AUTH_REQUIRED)
+    return _collab_ensure_service_ready().create_workspace(user["id"], req.name)
+
+
+@app.get("/api/workspaces/{workspace_id}/members")
+async def collab_list_workspace_members(
+    workspace_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    _collab_require_workspace_role(request, workspace_id, "viewer", authorization)
+    return _collab_ensure_service_ready().list_members(workspace_id)
+
+
+@app.post("/api/workspaces/{workspace_id}/members")
+async def collab_add_workspace_member(
+    workspace_id: str,
+    req: WorkspaceMemberCreateRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    actor = _collab_require_workspace_role(request, workspace_id, "owner", authorization)
+    role = str(req.role or "viewer").strip() or "viewer"
+    if role not in {"owner", "editor", "viewer"}:
+        raise HTTPException(400, "角色无效")
+    return _collab_ensure_service_ready().add_member(
+        workspace_id=workspace_id,
+        actor_user_id=str(actor["id"]),
+        email=req.email,
+        role=role,
+    )
+
+
+@app.patch("/api/workspaces/{workspace_id}/members/{member_id}")
+async def collab_update_workspace_member(
+    workspace_id: str,
+    member_id: str,
+    req: WorkspaceMemberUpdateRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    _collab_require_workspace_role(request, workspace_id, "owner", authorization)
+    role = str(req.role or "").strip()
+    if role not in {"owner", "editor", "viewer"}:
+        raise HTTPException(400, "角色无效")
+    ok = _collab_ensure_service_ready().update_member_role(workspace_id, member_id, role)
+    if not ok:
+        raise HTTPException(404, "成员不存在")
+    return {"ok": True}
+
+
+@app.delete("/api/workspaces/{workspace_id}/members/{member_id}")
+async def collab_delete_workspace_member(
+    workspace_id: str,
+    member_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    _collab_require_workspace_role(request, workspace_id, "owner", authorization)
+    ok = _collab_ensure_service_ready().remove_member(workspace_id, member_id)
+    if not ok:
+        raise HTTPException(404, "成员不存在")
+    return {"ok": True}
+
+
+@app.get("/api/workspaces/{workspace_id}/okrs")
+async def collab_list_workspace_okrs(
+    workspace_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    _collab_require_workspace_role(request, workspace_id, "viewer", authorization)
+    return _collab_ensure_service_ready().list_okrs(workspace_id)
+
+
+@app.post("/api/workspaces/{workspace_id}/okrs")
+async def collab_create_workspace_okr(
+    workspace_id: str,
+    req: WorkspaceOKRCreateRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    user = _collab_require_workspace_role(request, workspace_id, "editor", authorization)
+    return _collab_ensure_service_ready().create_okr(
+        workspace_id=workspace_id,
+        payload=req.model_dump(),
+        actor_user_id=user["id"],
+    )
+
+
+@app.patch("/api/workspaces/{workspace_id}/okrs/{okr_id}")
+async def collab_update_workspace_okr(
+    workspace_id: str,
+    okr_id: str,
+    req: WorkspaceOKRUpdateRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    _collab_require_workspace_role(request, workspace_id, "editor", authorization)
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    updated = _collab_ensure_service_ready().update_okr(workspace_id, okr_id, updates)
+    if not updated:
+        raise HTTPException(404, "OKR 不存在")
+    return updated
+
+
+@app.post("/api/workspaces/{workspace_id}/undo")
+async def collab_workspace_undo(
+    workspace_id: str,
+    req: WorkspaceUndoRedoRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    _collab_require_workspace_role(request, workspace_id, "editor", authorization)
+    service = _collab_ensure_service_ready()
+    op = service.undo(workspace_id, req.project_scope)
+    if not op:
+        return {"ok": True, "operation": None, "head_index": service.get_head(workspace_id, req.project_scope)}
+    applied = _studio_apply_collab_operation(op, "undo")
+    return {
+        "ok": True,
+        "mode": "undo",
+        "operation": op,
+        "applied": applied,
+        "head_index": service.get_head(workspace_id, req.project_scope),
+    }
+
+
+@app.post("/api/workspaces/{workspace_id}/redo")
+async def collab_workspace_redo(
+    workspace_id: str,
+    req: WorkspaceUndoRedoRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    _collab_require_workspace_role(request, workspace_id, "editor", authorization)
+    service = _collab_ensure_service_ready()
+    op = service.redo(workspace_id, req.project_scope)
+    if not op:
+        return {"ok": True, "operation": None, "head_index": service.get_head(workspace_id, req.project_scope)}
+    applied = _studio_apply_collab_operation(op, "redo")
+    return {
+        "ok": True,
+        "mode": "redo",
+        "operation": op,
+        "applied": applied,
+        "head_index": service.get_head(workspace_id, req.project_scope),
+    }
+
+
+# ==========================================================================
 # Studio 长篇制作工作台路由
 # ==========================================================================
 
 class StudioSeriesCreateRequest(BaseModel):
     name: str
     script: str
+    workspace_id: Optional[str] = None
+    workbench_mode: str = "longform"
     description: str = ""
     series_bible: str = ""
     visual_style: str = ""
@@ -5797,6 +6082,8 @@ class StudioSeriesUpdateRequest(BaseModel):
     series_bible: Optional[str] = None
     visual_style: Optional[str] = None
     source_script: Optional[str] = None
+    workspace_id: Optional[str] = None
+    settings: Optional[Dict[str, Any]] = None
 
 
 class StudioEpisodeUpdateRequest(BaseModel):
@@ -5859,6 +6146,7 @@ class StudioInpaintRequest(BaseModel):
 
 class StudioBatchGenerateRequest(BaseModel):
     stages: List[str] = ["elements", "frames", "end_frames", "videos", "audio"]
+    parallel: Optional[Dict[str, Any]] = None
 
 
 class StudioReorderShotsRequest(BaseModel):
@@ -5880,6 +6168,22 @@ class StudioCharacterDocImportRequest(BaseModel):
 
 class StudioCharacterSplitRequest(BaseModel):
     replace_original: bool = False
+
+
+class StudioDigitalHumanProfileItem(BaseModel):
+    id: Optional[str] = None
+    base_name: str = ""
+    display_name: str = ""
+    stage_label: str = ""
+    appearance: str = ""
+    voice_profile: str = ""
+    scene_template: str = ""
+    lip_sync_style: str = ""
+    sort_order: Optional[int] = None
+
+
+class StudioDigitalHumanProfilesSaveRequest(BaseModel):
+    profiles: List[StudioDigitalHumanProfileItem] = []
 
 
 class StudioSettingsRequest(BaseModel):
@@ -6057,16 +6361,182 @@ def _studio_summarize_agent_project(project: Dict[str, Any], shots_count: int, t
     return f"由 Agent 项目导入，镜头 {shots_count} 条，总时长约 {round(total_duration, 1)} 秒。"
 
 
+def _collab_ensure_service_ready() -> CollabService:
+    if not collab_service:
+        raise HTTPException(500, "协作服务未初始化")
+    return collab_service
+
+
+def _collab_extract_token(authorization: Optional[str]) -> str:
+    raw = str(authorization or "").strip()
+    if raw.lower().startswith("bearer "):
+        return raw[7:].strip()
+    return raw
+
+
+def _collab_get_current_user(
+    request: Request,
+    authorization: Optional[str] = None,
+    *,
+    required: bool = True,
+) -> Dict[str, Any]:
+    service = _collab_ensure_service_ready()
+    header_auth = authorization or request.headers.get("authorization") or request.headers.get("Authorization")
+    token = _collab_extract_token(header_auth)
+    if not token:
+        token = _collab_extract_token(str(request.query_params.get("access_token") or ""))
+    if token:
+        try:
+            return service.verify_access_token(token)
+        except Exception as e:
+            if AUTH_REQUIRED and required:
+                raise HTTPException(401, f"认证失败: {str(e)}")
+    if AUTH_REQUIRED and required:
+        raise HTTPException(401, "未登录或令牌缺失")
+    return service.ensure_local_dev_user()
+
+
+def _collab_pick_workspace_id(request: Request, explicit_workspace_id: Optional[str] = None) -> str:
+    ws = str(explicit_workspace_id or "").strip()
+    if ws:
+        return ws
+    ws = str(request.query_params.get("workspace_id") or "").strip()
+    if ws:
+        return ws
+    ws = str(request.headers.get("x-workspace-id") or request.headers.get("X-Workspace-Id") or "").strip()
+    if ws:
+        return ws
+    if AUTH_REQUIRED:
+        return ""
+    service = _collab_ensure_service_ready()
+    user = service.ensure_local_dev_user()
+    workspaces = service.list_workspaces(user["id"])
+    return str(workspaces[0]["id"]) if workspaces else ""
+
+
+def _collab_require_workspace_role(
+    request: Request,
+    workspace_id: str,
+    minimum_role: str = "viewer",
+    authorization: Optional[str] = None,
+) -> Dict[str, Any]:
+    user = _collab_get_current_user(request, authorization, required=True)
+    service = _collab_ensure_service_ready()
+    role = service.get_member_role(workspace_id, user["id"])
+    if not role:
+        raise HTTPException(403, "无工作区访问权限")
+    rank = {"viewer": 1, "editor": 2, "owner": 3}
+    if rank.get(role, 0) < rank.get(minimum_role, 1):
+        raise HTTPException(403, "工作区权限不足")
+    return user
+
+
+def _studio_append_collab_operation(
+    *,
+    workspace_id: str,
+    project_scope: str,
+    action: str,
+    before: Dict[str, Any],
+    after: Dict[str, Any],
+    created_by: str = "",
+) -> None:
+    if not workspace_id:
+        return
+    try:
+        _collab_ensure_service_ready().append_operation(
+            workspace_id=workspace_id,
+            project_scope=project_scope,
+            action=action,
+            payload={
+                "before": before,
+                "after": after,
+                "version": 1,
+            },
+            created_by=created_by,
+        )
+    except Exception as e:
+        print(f"[Collab] 记录操作日志失败: {e}")
+
+
+def _studio_apply_collab_operation(op: Dict[str, Any], direction: str) -> Dict[str, Any]:
+    service = _studio_ensure_service_ready()
+    payload = op.get("payload")
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "操作日志载荷无效")
+    target = payload.get("before") if direction == "undo" else payload.get("after")
+    if not isinstance(target, dict):
+        raise HTTPException(400, "操作日志缺少 before/after")
+
+    action = str(op.get("action") or "")
+    if action == "studio.shot.update":
+        shot_id = str(target.get("id") or "")
+        if not shot_id:
+            raise HTTPException(400, "操作日志缺少 shot.id")
+        updated = service.storage.update_shot(shot_id, target)
+        if not updated:
+            raise HTTPException(404, "镜头不存在")
+        return {"target": "shot", "id": shot_id}
+
+    if action == "studio.shot.reorder":
+        episode_id = str(target.get("episode_id") or "")
+        shot_ids = target.get("shot_ids")
+        if not episode_id or not isinstance(shot_ids, list):
+            raise HTTPException(400, "操作日志缺少排序信息")
+        normalized = [str(sid) for sid in shot_ids if str(sid).strip()]
+        service.storage.reorder_shots(episode_id, normalized)
+        return {"target": "episode", "id": episode_id}
+
+    if action == "studio.episode.update":
+        episode_id = str(target.get("id") or "")
+        if not episode_id:
+            raise HTTPException(400, "操作日志缺少 episode.id")
+        updated = service.storage.update_episode(episode_id, target)
+        if not updated:
+            raise HTTPException(404, "分幕不存在")
+        return {"target": "episode", "id": episode_id}
+
+    if action == "studio.series.update":
+        series_id = str(target.get("id") or "")
+        if not series_id:
+            raise HTTPException(400, "操作日志缺少 series.id")
+        updated = service.storage.update_series(series_id, target)
+        if not updated:
+            raise HTTPException(404, "系列不存在")
+        return {"target": "series", "id": series_id}
+
+    if action == "studio.element.update":
+        element_id = str(target.get("id") or "")
+        if not element_id:
+            raise HTTPException(400, "操作日志缺少 element.id")
+        updated = service.storage.update_shared_element(element_id, target)
+        if not updated:
+            raise HTTPException(404, "元素不存在")
+        return {"target": "element", "id": element_id}
+
+    raise HTTPException(400, f"不支持的撤销动作: {action}")
+
+
 # --- 系列 CRUD ---
 
 @app.post("/api/studio/series")
-async def studio_create_series(req: StudioSeriesCreateRequest):
+async def studio_create_series(
+    req: StudioSeriesCreateRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
     try:
+        workspace_id = _collab_pick_workspace_id(request, req.workspace_id)
+        if AUTH_REQUIRED and not workspace_id:
+            _studio_raise(400, "创建系列必须指定 workspace_id", "workspace_required")
+        if workspace_id:
+            _collab_require_workspace_role(request, workspace_id, "editor", authorization)
         result = await service.create_series(
             name=req.name,
             full_script=req.script,
             preferences={
+                "workspace_id": workspace_id,
+                "workbench_mode": req.workbench_mode,
                 "description": req.description,
                 "series_bible": req.series_bible,
                 "visual_style": req.visual_style,
@@ -6080,36 +6550,89 @@ async def studio_create_series(req: StudioSeriesCreateRequest):
 
 
 @app.get("/api/studio/series")
-async def studio_list_series():
+async def studio_list_series(
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
     try:
-        return service.storage.list_series()
+        resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+        if AUTH_REQUIRED and not resolved_workspace_id:
+            _studio_raise(400, "读取系列列表必须指定 workspace_id", "workspace_required")
+        if resolved_workspace_id:
+            _collab_require_workspace_role(request, resolved_workspace_id, "viewer", authorization)
+        return service.storage.list_series(workspace_id=resolved_workspace_id)
     except Exception as e:
         _studio_raise_from_exception(e)
 
 
 @app.get("/api/studio/series/{series_id}")
-async def studio_get_series(series_id: str):
+async def studio_get_series(
+    series_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
     detail = service.get_series_detail(series_id)
     if not detail:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    series_workspace_id = str(detail.get("workspace_id") or "").strip()
+    resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+    effective_workspace_id = series_workspace_id or resolved_workspace_id
+    if effective_workspace_id and (AUTH_REQUIRED or resolved_workspace_id):
+        _collab_require_workspace_role(request, effective_workspace_id, "viewer", authorization)
+    if resolved_workspace_id and series_workspace_id and series_workspace_id != resolved_workspace_id:
         _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
     return detail
 
 
 @app.put("/api/studio/series/{series_id}")
-async def studio_update_series(series_id: str, req: StudioSeriesUpdateRequest):
+async def studio_update_series(
+    series_id: str,
+    req: StudioSeriesUpdateRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    before = service.storage.get_series(series_id)
+    if not before:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    resolved_workspace_id = str(before.get("workspace_id") or "").strip() or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
     result = service.storage.update_series(series_id, updates)
     if not result:
         _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    actor = _collab_get_current_user(request, authorization, required=False)
+    _studio_append_collab_operation(
+        workspace_id=resolved_workspace_id,
+        project_scope=f"series:{series_id}",
+        action="studio.series.update",
+        before=before,
+        after=result,
+        created_by=str(actor.get("id") or ""),
+    )
     return result
 
 
 @app.delete("/api/studio/series/{series_id}")
-async def studio_delete_series(series_id: str):
+async def studio_delete_series(
+    series_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    resolved_workspace_id = str(series.get("workspace_id") or "").strip() or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "owner", authorization)
     ok = service.storage.delete_series(series_id)
     if not ok:
         _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
@@ -6119,27 +6642,78 @@ async def studio_delete_series(series_id: str):
 # --- 分集 ---
 
 @app.get("/api/studio/series/{series_id}/episodes")
-async def studio_list_episodes(series_id: str):
+async def studio_list_episodes(
+    series_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    series_workspace = str(series.get("workspace_id") or "").strip()
+    resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+    effective_workspace_id = series_workspace or resolved_workspace_id
+    if effective_workspace_id and (AUTH_REQUIRED or resolved_workspace_id):
+        _collab_require_workspace_role(request, effective_workspace_id, "viewer", authorization)
+    if resolved_workspace_id and series_workspace and resolved_workspace_id != series_workspace:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
     return service.storage.list_episodes(series_id)
 
 
 @app.get("/api/studio/episodes/{episode_id}")
-async def studio_get_episode(episode_id: str):
+async def studio_get_episode(
+    episode_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
     detail = service.get_episode_detail(episode_id)
     if not detail:
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+    series = service.storage.get_series(str(detail.get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+    effective_workspace_id = series_workspace or resolved_workspace_id
+    if effective_workspace_id and (AUTH_REQUIRED or resolved_workspace_id):
+        _collab_require_workspace_role(request, effective_workspace_id, "viewer", authorization)
+    if resolved_workspace_id and series_workspace and resolved_workspace_id != series_workspace:
         _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
     return detail
 
 
 @app.put("/api/studio/episodes/{episode_id}")
-async def studio_update_episode(episode_id: str, req: StudioEpisodeUpdateRequest):
+async def studio_update_episode(
+    episode_id: str,
+    req: StudioEpisodeUpdateRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    before = service.storage.get_episode(episode_id)
+    if not before:
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+    series = service.storage.get_series(str(before.get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
     result = service.storage.update_episode(episode_id, updates)
     if not result:
         _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+    actor = _collab_get_current_user(request, authorization, required=False)
+    _studio_append_collab_operation(
+        workspace_id=resolved_workspace_id,
+        project_scope=f"episode:{episode_id}",
+        action="studio.episode.update",
+        before=before,
+        after=result,
+        created_by=str(actor.get("id") or ""),
+    )
     try:
         service.storage.record_episode_history(episode_id, "edit_episode")
     except Exception as e:
@@ -6148,8 +6722,21 @@ async def studio_update_episode(episode_id: str, req: StudioEpisodeUpdateRequest
 
 
 @app.delete("/api/studio/episodes/{episode_id}")
-async def studio_delete_episode(episode_id: str):
+async def studio_delete_episode(
+    episode_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    episode = service.storage.get_episode(episode_id)
+    if not episode:
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+    series = service.storage.get_series(str(episode.get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
     ok = service.storage.delete_episode(episode_id)
     if not ok:
         _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
@@ -6157,8 +6744,21 @@ async def studio_delete_episode(episode_id: str):
 
 
 @app.post("/api/studio/episodes/{episode_id}/plan")
-async def studio_plan_episode(episode_id: str):
+async def studio_plan_episode(
+    episode_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    episode = service.storage.get_episode(episode_id)
+    if not episode:
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+    series = service.storage.get_series(str(episode.get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
     try:
         result = await service.plan_episode(episode_id)
         return result
@@ -6167,8 +6767,22 @@ async def studio_plan_episode(episode_id: str):
 
 
 @app.post("/api/studio/episodes/{episode_id}/enhance")
-async def studio_enhance_episode(episode_id: str, mode: str = "refine"):
+async def studio_enhance_episode(
+    episode_id: str,
+    request: Request,
+    mode: str = "refine",
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    episode = service.storage.get_episode(episode_id)
+    if not episode:
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+    series = service.storage.get_series(str(episode.get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
     try:
         result = await service.enhance_episode(episode_id, mode=mode)
         return result
@@ -6181,10 +6795,23 @@ async def studio_enhance_episode(episode_id: str, mode: str = "refine"):
 @app.get("/api/studio/series/{series_id}/elements")
 async def studio_get_elements(
     series_id: str,
+    request: Request,
     element_type: Optional[str] = Query(None, alias="type"),
     favorite: Optional[bool] = Query(None),
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
 ):
     service = _studio_ensure_service_ready()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    series_workspace = str(series.get("workspace_id") or "").strip()
+    resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+    effective_workspace_id = series_workspace or resolved_workspace_id
+    if effective_workspace_id and (AUTH_REQUIRED or resolved_workspace_id):
+        _collab_require_workspace_role(request, effective_workspace_id, "viewer", authorization)
+    if resolved_workspace_id and series_workspace and resolved_workspace_id != series_workspace:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
     normalized_type = element_type if element_type and element_type != "all" else None
     return service.storage.get_shared_elements(
         series_id,
@@ -6194,8 +6821,21 @@ async def studio_get_elements(
 
 
 @app.post("/api/studio/series/{series_id}/elements")
-async def studio_add_element(series_id: str, req: StudioElementCreateRequest):
+async def studio_add_element(
+    series_id: str,
+    req: StudioElementCreateRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    series_workspace = str(series.get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
     return service.storage.add_shared_element(
         series_id=series_id,
         name=req.name,
@@ -6207,8 +6847,21 @@ async def studio_add_element(series_id: str, req: StudioElementCreateRequest):
 
 
 @app.post("/api/studio/series/{series_id}/character-doc/import")
-async def studio_import_character_doc(series_id: str, req: StudioCharacterDocImportRequest):
+async def studio_import_character_doc(
+    series_id: str,
+    req: StudioCharacterDocImportRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    series_workspace = str(series.get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
     try:
         return await service.import_character_document(
             series_id=series_id,
@@ -6220,19 +6873,118 @@ async def studio_import_character_doc(series_id: str, req: StudioCharacterDocImp
         _studio_raise_from_exception(e)
 
 
-@app.put("/api/studio/elements/{element_id}")
-async def studio_update_element(element_id: str, req: StudioElementUpdateRequest):
+@app.get("/api/studio/series/{series_id}/digital-human-profiles")
+async def studio_list_digital_human_profiles(
+    series_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    series_workspace = str(series.get("workspace_id") or "").strip()
+    resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+    effective_workspace_id = series_workspace or resolved_workspace_id
+    if effective_workspace_id and (AUTH_REQUIRED or resolved_workspace_id):
+        _collab_require_workspace_role(request, effective_workspace_id, "viewer", authorization)
+    if resolved_workspace_id and series_workspace and resolved_workspace_id != series_workspace:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    try:
+        return {
+            "series_id": series_id,
+            "profiles": service.list_digital_human_profiles(series_id),
+        }
+    except Exception as e:
+        _studio_raise_from_exception(e)
+
+
+@app.put("/api/studio/series/{series_id}/digital-human-profiles")
+async def studio_save_digital_human_profiles(
+    series_id: str,
+    req: StudioDigitalHumanProfilesSaveRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    service = _studio_ensure_service_ready()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    series_workspace = str(series.get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+    try:
+        profiles_payload = [item.model_dump() for item in req.profiles]
+        saved = service.save_digital_human_profiles(series_id, profiles_payload)
+        actor = _collab_get_current_user(request, authorization, required=False)
+        _studio_append_collab_operation(
+            workspace_id=resolved_workspace_id,
+            project_scope=f"series:{series_id}",
+            action="studio.series.update",
+            before={"id": series_id, "digital_human_profiles": series.get("digital_human_profiles") or []},
+            after={"id": series_id, "digital_human_profiles": saved},
+            created_by=str(actor.get("id") or ""),
+        )
+        return {
+            "series_id": series_id,
+            "profiles": saved,
+        }
+    except Exception as e:
+        _studio_raise_from_exception(e)
+
+
+@app.put("/api/studio/elements/{element_id}")
+async def studio_update_element(
+    element_id: str,
+    req: StudioElementUpdateRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    service = _studio_ensure_service_ready()
+    before = service.storage.get_shared_element(element_id)
+    if not before:
+        _studio_raise(404, "元素不存在", "element_not_found", {"element_id": element_id})
+    series = service.storage.get_series(str(before.get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
     result = service.storage.update_shared_element(element_id, updates)
     if not result:
         _studio_raise(404, "元素不存在", "element_not_found", {"element_id": element_id})
+    actor = _collab_get_current_user(request, authorization, required=False)
+    _studio_append_collab_operation(
+        workspace_id=resolved_workspace_id,
+        project_scope=f"series:{before['series_id']}",
+        action="studio.element.update",
+        before=before,
+        after=result,
+        created_by=str(actor.get("id") or ""),
+    )
     return result
 
 
 @app.delete("/api/studio/elements/{element_id}")
-async def studio_delete_element(element_id: str):
+async def studio_delete_element(
+    element_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    element = service.storage.get_shared_element(element_id)
+    if not element:
+        _studio_raise(404, "元素不存在", "element_not_found", {"element_id": element_id})
+    series = service.storage.get_series(str(element.get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
     ok = service.storage.delete_shared_element(element_id)
     if not ok:
         _studio_raise(404, "元素不存在", "element_not_found", {"element_id": element_id})
@@ -6240,8 +6992,22 @@ async def studio_delete_element(element_id: str):
 
 
 @app.post("/api/studio/elements/{element_id}/split-by-age")
-async def studio_split_character_by_age(element_id: str, req: StudioCharacterSplitRequest):
+async def studio_split_character_by_age(
+    element_id: str,
+    req: StudioCharacterSplitRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    element = service.storage.get_shared_element(element_id)
+    if not element:
+        _studio_raise(404, "元素不存在", "element_not_found", {"element_id": element_id})
+    series = service.storage.get_series(str(element.get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
     try:
         return await service.split_character_element_by_age(
             element_id=element_id,
@@ -6252,9 +7018,22 @@ async def studio_split_character_by_age(element_id: str, req: StudioCharacterSpl
 
 
 @app.get("/api/studio/series/{series_id}/stats")
-async def studio_series_stats(series_id: str):
+async def studio_series_stats(
+    series_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
-    if not service.storage.get_series(series_id):
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    series_workspace = str(series.get("workspace_id") or "").strip()
+    resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+    effective_workspace_id = series_workspace or resolved_workspace_id
+    if effective_workspace_id and (AUTH_REQUIRED or resolved_workspace_id):
+        _collab_require_workspace_role(request, effective_workspace_id, "viewer", authorization)
+    if resolved_workspace_id and series_workspace and resolved_workspace_id != series_workspace:
         _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
     return service.storage.get_series_stats(series_id)
 
@@ -6262,17 +7041,48 @@ async def studio_series_stats(series_id: str):
 # --- 镜头 ---
 
 @app.get("/api/studio/episodes/{episode_id}/shots")
-async def studio_get_shots(episode_id: str):
+async def studio_get_shots(
+    episode_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    episode = service.storage.get_episode(episode_id)
+    if not episode:
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+    series = service.storage.get_series(str(episode.get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+    effective_workspace_id = series_workspace or resolved_workspace_id
+    if effective_workspace_id and (AUTH_REQUIRED or resolved_workspace_id):
+        _collab_require_workspace_role(request, effective_workspace_id, "viewer", authorization)
+    if resolved_workspace_id and series_workspace and resolved_workspace_id != series_workspace:
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
     return service.storage.get_shots(episode_id)
 
 
 @app.post("/api/studio/episodes/{episode_id}/shots/reorder")
-async def studio_reorder_shots(episode_id: str, req: StudioReorderShotsRequest):
+async def studio_reorder_shots(
+    episode_id: str,
+    req: StudioReorderShotsRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
     ids = [sid for sid in req.shot_ids if isinstance(sid, str) and sid.strip()]
     if not ids:
         _studio_raise(400, "镜头排序列表不能为空", "invalid_shot_order_payload", {"episode_id": episode_id})
+
+    episode = service.storage.get_episode(episode_id)
+    if not episode:
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+    series = service.storage.get_series(str(episode.get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
 
     existing = service.storage.get_shots(episode_id)
     existing_ids = [shot["id"] for shot in existing]
@@ -6285,16 +7095,49 @@ async def studio_reorder_shots(episode_id: str, req: StudioReorderShotsRequest):
         )
 
     service.storage.reorder_shots(episode_id, ids)
+    actor = _collab_get_current_user(request, authorization, required=False)
+    _studio_append_collab_operation(
+        workspace_id=resolved_workspace_id,
+        project_scope=f"episode:{episode_id}",
+        action="studio.shot.reorder",
+        before={"episode_id": episode_id, "shot_ids": existing_ids},
+        after={"episode_id": episode_id, "shot_ids": ids},
+        created_by=str(actor.get("id") or ""),
+    )
     return {"ok": True, "shots": service.storage.get_shots(episode_id)}
 
 
 @app.put("/api/studio/shots/{shot_id}")
-async def studio_update_shot(shot_id: str, req: StudioShotUpdateRequest):
+async def studio_update_shot(
+    shot_id: str,
+    req: StudioShotUpdateRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    before = service.storage.get_shot(shot_id)
+    if not before:
+        _studio_raise(404, "镜头不存在", "shot_not_found", {"shot_id": shot_id})
+    episode = service.storage.get_episode(str(before.get("episode_id") or ""))
+    series = service.storage.get_series(str((episode or {}).get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
     result = service.storage.update_shot(shot_id, updates)
     if not result:
         _studio_raise(404, "镜头不存在", "shot_not_found", {"shot_id": shot_id})
+    actor = _collab_get_current_user(request, authorization, required=False)
+    _studio_append_collab_operation(
+        workspace_id=resolved_workspace_id,
+        project_scope=f"episode:{result['episode_id']}",
+        action="studio.shot.update",
+        before=before,
+        after=result,
+        created_by=str(actor.get("id") or ""),
+    )
     if result.get("episode_id"):
         try:
             service.storage.record_episode_history(result["episode_id"], "edit_shot")
@@ -6304,8 +7147,22 @@ async def studio_update_shot(shot_id: str, req: StudioShotUpdateRequest):
 
 
 @app.delete("/api/studio/shots/{shot_id}")
-async def studio_delete_shot(shot_id: str):
+async def studio_delete_shot(
+    shot_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    shot = service.storage.get_shot(shot_id)
+    if not shot:
+        _studio_raise(404, "镜头不存在", "shot_not_found", {"shot_id": shot_id})
+    episode = service.storage.get_episode(str(shot.get("episode_id") or ""))
+    series = service.storage.get_series(str((episode or {}).get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
     ok = service.storage.delete_shot(shot_id)
     if not ok:
         _studio_raise(404, "镜头不存在", "shot_not_found", {"shot_id": shot_id})
@@ -6313,8 +7170,23 @@ async def studio_delete_shot(shot_id: str):
 
 
 @app.post("/api/studio/shots/{shot_id}/generate")
-async def studio_generate_shot_asset(shot_id: str, req: StudioGenerateRequest):
+async def studio_generate_shot_asset(
+    shot_id: str,
+    req: StudioGenerateRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    shot = service.storage.get_shot(shot_id)
+    if not shot:
+        _studio_raise(404, "镜头不存在", "shot_not_found", {"shot_id": shot_id})
+    episode = service.storage.get_episode(str(shot.get("episode_id") or ""))
+    series = service.storage.get_series(str((episode or {}).get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
     try:
         if req.stage == "frame":
             return await service.generate_shot_frame(
@@ -6337,8 +7209,23 @@ async def studio_generate_shot_asset(shot_id: str, req: StudioGenerateRequest):
 
 
 @app.post("/api/studio/shots/{shot_id}/inpaint")
-async def studio_inpaint_shot_frame(shot_id: str, req: StudioInpaintRequest):
+async def studio_inpaint_shot_frame(
+    shot_id: str,
+    req: StudioInpaintRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    shot = service.storage.get_shot(shot_id)
+    if not shot:
+        _studio_raise(404, "镜头不存在", "shot_not_found", {"shot_id": shot_id})
+    episode = service.storage.get_episode(str(shot.get("episode_id") or ""))
+    series = service.storage.get_series(str((episode or {}).get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
     try:
         return await service.inpaint_shot_frame(
             shot_id=shot_id,
@@ -6356,9 +7243,20 @@ async def studio_inpaint_shot_frame(shot_id: str, req: StudioInpaintRequest):
 @app.post("/api/studio/elements/{element_id}/generate-image")
 async def studio_generate_element_image(
     element_id: str,
+    request: Request,
     req: Optional[StudioElementGenerateImageRequest] = None,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
 ):
     service = _studio_ensure_service_ready()
+    element = service.storage.get_shared_element(element_id)
+    if not element:
+        _studio_raise(404, "元素不存在", "element_not_found", {"element_id": element_id})
+    series = service.storage.get_series(str(element.get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
     try:
         payload = req or StudioElementGenerateImageRequest()
         return await service.generate_element_image(
@@ -6377,12 +7275,24 @@ async def studio_generate_element_image(
 @app.get("/api/studio/episodes/{episode_id}/batch-generate-stream")
 async def studio_batch_generate_stream(
     episode_id: str,
+    request: Request,
     stages: Optional[str] = Query(None),
+    workspace_id: Optional[str] = Query(None),
+    image_max_concurrency: Optional[int] = Query(None, ge=1, le=12),
+    video_max_concurrency: Optional[int] = Query(None, ge=1, le=8),
+    global_max_concurrency: Optional[int] = Query(None, ge=1, le=16),
+    authorization: Optional[str] = Header(None),
 ):
     service = _studio_ensure_service_ready()
 
-    if not service.storage.get_episode(episode_id):
+    episode = service.storage.get_episode(episode_id)
+    if not episode:
         _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+    series = service.storage.get_series(str(episode.get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
 
     default_stages = ["elements", "frames", "end_frames", "videos", "audio"]
     stage_list = [s.strip() for s in (stages or "").split(",") if s.strip()] or default_stages
@@ -6396,6 +7306,14 @@ async def studio_batch_generate_stream(
             {"invalid_stages": invalid_stages, "allowed_stages": default_stages},
         )
 
+    parallel_cfg: Dict[str, Any] = {}
+    if image_max_concurrency is not None:
+        parallel_cfg["image_max_concurrency"] = image_max_concurrency
+    if video_max_concurrency is not None:
+        parallel_cfg["video_max_concurrency"] = video_max_concurrency
+    if global_max_concurrency is not None:
+        parallel_cfg["global_max_concurrency"] = global_max_concurrency
+
     async def event_generator():
         queue: asyncio.Queue = asyncio.Queue()
 
@@ -6406,6 +7324,7 @@ async def studio_batch_generate_stream(
             service.batch_generate_episode(
                 episode_id=episode_id,
                 stages=stage_list,
+                parallel=parallel_cfg,
                 progress_callback=on_progress,
             )
         )
@@ -6446,11 +7365,27 @@ async def studio_batch_generate_stream(
 
 
 @app.post("/api/studio/episodes/{episode_id}/batch-generate")
-async def studio_batch_generate(episode_id: str, req: StudioBatchGenerateRequest):
+async def studio_batch_generate(
+    episode_id: str,
+    req: StudioBatchGenerateRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    episode = service.storage.get_episode(episode_id)
+    if not episode:
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+    series = service.storage.get_series(str(episode.get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
     try:
         return await service.batch_generate_episode(
-            episode_id, stages=req.stages
+            episode_id,
+            stages=req.stages,
+            parallel=req.parallel,
         )
     except Exception as e:
         _studio_raise_from_exception(e)
@@ -6459,10 +7394,24 @@ async def studio_batch_generate(episode_id: str, req: StudioBatchGenerateRequest
 @app.get("/api/studio/episodes/{episode_id}/history")
 async def studio_get_episode_history(
     episode_id: str,
+    request: Request,
     limit: int = Query(50, ge=1, le=200),
     include_snapshot: bool = Query(False),
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
 ):
     service = _studio_ensure_service_ready()
+    episode = service.storage.get_episode(episode_id)
+    if not episode:
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+    series = service.storage.get_series(str(episode.get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+    effective_workspace_id = series_workspace or resolved_workspace_id
+    if effective_workspace_id and (AUTH_REQUIRED or resolved_workspace_id):
+        _collab_require_workspace_role(request, effective_workspace_id, "viewer", authorization)
+    if resolved_workspace_id and series_workspace and resolved_workspace_id != series_workspace:
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
     try:
         return service.get_episode_history(
             episode_id,
@@ -6474,8 +7423,22 @@ async def studio_get_episode_history(
 
 
 @app.post("/api/studio/episodes/{episode_id}/restore/{history_id}")
-async def studio_restore_episode_history(episode_id: str, history_id: str):
+async def studio_restore_episode_history(
+    episode_id: str,
+    history_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     service = _studio_ensure_service_ready()
+    episode = service.storage.get_episode(episode_id)
+    if not episode:
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+    series = service.storage.get_series(str(episode.get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
     try:
         service.restore_episode_history(episode_id, history_id)
         detail = service.get_episode_detail(episode_id)

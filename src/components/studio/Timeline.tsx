@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
-import { GripVertical, ImageIcon, Music2, Video } from 'lucide-react'
+import { GripVertical, Music2, Video } from 'lucide-react'
 import type { StudioShot } from '../../services/api'
+import HoverMediaPreview from './HoverMediaPreview'
 
 interface TimelineProps {
   shots: StudioShot[]
@@ -21,51 +22,6 @@ function formatSec(sec: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
-function TimelineHoverOverview({ shot }: { shot: StudioShot }) {
-  return (
-    <div className="pointer-events-none fixed inset-0 z-[130] flex items-center justify-center px-4 py-8 opacity-0 scale-[0.97] transition-all duration-150 delay-0 group-hover:delay-700 group-hover:opacity-100 group-hover:scale-100">
-      <div className="w-full max-w-4xl rounded-xl border border-gray-600 bg-gray-950/95 p-4 shadow-2xl backdrop-blur-sm">
-        <div className="grid gap-4 md:grid-cols-[1.3fr_1fr]">
-          <div className="rounded-lg overflow-hidden border border-gray-800 bg-gray-900/70">
-            <div className="aspect-video w-full bg-gray-900/80">
-              {shot.start_image_url ? (
-                <img src={shot.start_image_url} alt={shot.name || shot.id} className="w-full h-full object-cover" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center text-gray-600">
-                  <ImageIcon className="w-10 h-10" />
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-base text-gray-100 font-semibold line-clamp-2">{shot.name || '未命名镜头'}</p>
-              <span className="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-300">{shot.type || 'standard'}</span>
-            </div>
-            <p className="text-sm text-gray-200 leading-relaxed line-clamp-6">
-              {shot.narration || shot.description || '暂无描述'}
-            </p>
-            <div className="rounded-lg border border-gray-800 bg-gray-900/70 p-2.5 space-y-1.5 text-xs">
-              <div className="flex items-center justify-between text-gray-400">
-                <span>状态</span>
-                <span>{shot.status || 'pending'}</span>
-              </div>
-              <div className="flex items-center justify-between text-gray-400">
-                <span>时长</span>
-                <span>{shot.duration || 0}s</span>
-              </div>
-              <div className="flex items-center justify-between text-gray-400">
-                <span>资源</span>
-                <span>{shot.video_url ? '视频就绪' : '视频未生成'} · {shot.audio_url ? '音频就绪' : '音频未生成'}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 export default function Timeline({
   shots,
   currentShotId,
@@ -74,6 +30,7 @@ export default function Timeline({
 }: TimelineProps) {
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [reordering, setReordering] = useState(false)
+  const [hoveredShotId, setHoveredShotId] = useState<string | null>(null)
 
   const totalDuration = useMemo(
     () => shots.reduce((sum, shot) => sum + normalizeDuration(Number(shot.duration || 0)), 0),
@@ -141,6 +98,8 @@ export default function Timeline({
                     <button
                       key={shot.id}
                       draggable={!reordering}
+                      onMouseEnter={() => setHoveredShotId(shot.id)}
+                      onMouseLeave={() => setHoveredShotId((prev) => (prev === shot.id ? null : prev))}
                       onDragStart={() => setDraggingId(shot.id)}
                       onDragOver={(e) => e.preventDefault()}
                       onDrop={(e) => {
@@ -161,7 +120,13 @@ export default function Timeline({
                       <div className="text-[10px] text-gray-400 truncate">
                         {shot.video_url ? '视频已生成' : '快速预览'}
                       </div>
-                      <TimelineHoverOverview shot={shot} />
+                      <HoverMediaPreview
+                        active={hoveredShotId === shot.id}
+                        shot={shot}
+                        maxWidthClass="max-w-4xl"
+                        openDelayMs={800}
+                        videoDelayMs={800}
+                      />
                     </button>
                   )
                 })}
