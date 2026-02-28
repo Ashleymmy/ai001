@@ -11,6 +11,7 @@ import {
 import type { StudioShot, StudioElement } from '../../store/studioStore'
 import type { StudioPromptAnalysis } from '../../services/api'
 import { studioPromptCheck, studioPromptOptimize } from '../../services/api'
+import InpaintCanvas from './InpaintCanvas'
 
 // ============================================================
 // PromptFieldKey 类型 & 元数据
@@ -349,6 +350,7 @@ function ShotDetailPanel({
   shot,
   elements,
   onGenerateAsset,
+  imageGeneration,
   onInpaint,
   onUpdate,
   onCollapse,
@@ -356,7 +358,11 @@ function ShotDetailPanel({
 }: {
   shot: StudioShot
   elements: StudioElement[]
-  onGenerateAsset: (stage: 'frame' | 'key_frame' | 'end_frame' | 'video' | 'audio') => void | Promise<void>
+  onGenerateAsset: (
+    stage: 'frame' | 'key_frame' | 'end_frame' | 'video' | 'audio',
+    options?: { width?: number; height?: number }
+  ) => void | Promise<void>
+  imageGeneration?: { ratioLabel: string; width: number; height: number }
   onInpaint: (payload: { editPrompt: string; maskData?: string }) => void | Promise<void>
   onUpdate: (updates: Record<string, unknown>) => void
   onCollapse: () => void
@@ -471,7 +477,7 @@ function ShotDetailPanel({
     setCheckingPromptField({})
     setOptimizingPromptField(null)
     PROMPT_FIELD_META.forEach((meta) => {
-      const value = String((shot as Record<string, unknown>)[meta.field] || '')
+      const value = String((shot as unknown as Record<string, unknown>)[meta.field] || '')
       if (value.trim()) {
         void runPromptCheck(meta.field, value)
       }
@@ -537,21 +543,21 @@ function ShotDetailPanel({
 
       <div className="grid grid-cols-3 gap-2">
         <button
-          onClick={() => onGenerateAsset('frame')}
+          onClick={() => onGenerateAsset('frame', imageGeneration)}
           className="text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 flex items-center justify-center gap-1"
         >
           <ImageIcon className="w-3 h-3" />
           {shot.start_image_url ? '重做首帧' : '生成首帧'}
         </button>
         <button
-          onClick={() => onGenerateAsset('key_frame')}
+          onClick={() => onGenerateAsset('key_frame', imageGeneration)}
           className="text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-yellow-300 flex items-center justify-center gap-1"
         >
           <ImageIcon className="w-3 h-3" />
           {shot.key_frame_url ? '重做关键帧' : '生成关键帧'}
         </button>
         <button
-          onClick={() => onGenerateAsset('end_frame')}
+          onClick={() => onGenerateAsset('end_frame', imageGeneration)}
           className="text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 flex items-center justify-center gap-1"
         >
           <ImageIcon className="w-3 h-3" />
@@ -572,6 +578,11 @@ function ShotDetailPanel({
           {shot.audio_url ? '重做音频' : '生成音频'}
         </button>
       </div>
+      {imageGeneration && (
+        <p className="text-[11px] text-gray-500 -mt-2">
+          出图比例: {imageGeneration.ratioLabel} ({imageGeneration.width}x{imageGeneration.height})
+        </p>
+      )}
 
       <div className="p-3 rounded-lg border border-gray-800 bg-gray-900/70 space-y-2">
         <p className="text-xs font-medium text-gray-300">局部重绘（Inpaint）</p>
@@ -582,13 +593,15 @@ function ShotDetailPanel({
           placeholder="描述需要修改的局部效果，例如：将人物手中的道具改为折扇，保持服饰和背景不变"
           className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-purple-500 resize-y"
         />
-        <textarea
-          rows={2}
-          value={maskData}
-          onChange={(e) => setMaskData(e.target.value)}
-          placeholder="可选：mask 数据（base64 / URL / JSON）。当前未接入画布选区时可留空"
-          className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-purple-500 resize-y"
-        />
+        {shot.start_image_url ? (
+          <InpaintCanvas
+            imageUrl={shot.start_image_url}
+            maskData={maskData}
+            onMaskChange={setMaskData}
+          />
+        ) : (
+          <p className="text-[11px] text-gray-500">请先生成首帧图后使用画布选区绘制蒙版</p>
+        )}
         <button
           onClick={handleInpaint}
           disabled={!shot.start_image_url || !inpaintPrompt.trim() || inpainting}

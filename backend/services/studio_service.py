@@ -10,6 +10,17 @@ import re
 import inspect
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
+# ---------------------------------------------------------------------------
+# Token 估算常量
+# ---------------------------------------------------------------------------
+# 粗略估算：中文约 1.5 token/字，英文约 1.3 token/word，
+# 保守取 1 字符 ≈ 0.6 token 作为快速估算（偏高，宁可提前拦截）。
+_CHARS_PER_TOKEN = 1.7  # 平均每 token 对应字符数（含中英混排）
+# 默认上下文窗口 token 上限（可被 generation_defaults.max_context_tokens 覆盖）
+_DEFAULT_MAX_CONTEXT_TOKENS = 120_000
+# 安全余量系数：仅使用上下文窗口的 85% 以留出 output 空间
+_CONTEXT_SAFETY_RATIO = 0.85
+
 from .studio_storage import StudioStorage
 from .studio.prompts import DEFAULT_CUSTOM_PROMPTS, normalize_custom_prompts
 from .studio.prompt_sentinel import build_prompt_optimize_llm_payload
@@ -554,39 +565,417 @@ class StudioService:
 
         return normalized
 
-    def _build_element_image_prompt(
+    @staticmethod
+    def _trim_prompt_text(text: str, max_chars: int) -> str:
+        source = str(text or "").strip()
+        if len(source) <= max_chars:
+            return source
+        trimmed = source[:max_chars].rstrip(" \n\r\t，；。,.")
+        return f"{trimmed}。"
+
+    @staticmethod
+    def _clean_style_line(line: str) -> str:
+        text = str(line or "").strip()
+        if not text:
+            return ""
+        if text.startswith("```") or text in {"---", "***"}:
+            return ""
+        if text.count("|") >= 2:
+            return ""
+        if re.match(r"^\|?\s*[-:]{3,}\s*\|?$", text):
+            return ""
+        # 去掉 markdown 列表/标题前缀
+        text = re.sub(r"^[#>\-\*\+\d\.\)\(\s]+", "", text).strip()
+        text = re.sub(r"[*_`]+", "", text).strip()
+        # 表格行简化
+        if "|" in text:
+            text = " ".join([part.strip() for part in text.split("|") if part.strip()])
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text) < 4:
+            return ""
+        return text
+
+    @staticmethod
+    def _count_keyword_hits(text: str, keywords: List[str]) -> int:
+        haystack = str(text or "").lower()
+        if not haystack:
+            return 0
+        hits = 0
+        for kw in keywords:
+            token = str(kw or "").strip().lower()
+            if token and token in haystack:
+                hits += 1
+        return hits
+
+    @staticmethod
+    def _split_markdown_sections(text: str) -> List[Tuple[str, List[str]]]:
+        lines = str(text or "").splitlines()
+        sections: List[Tuple[str, List[str]]] = []
+        current_title = "正文"
+        current_lines: List[str] = []
+        for line in lines:
+            stripped = str(line or "").strip()
+            if re.match(r"^#{1,6}\s*", stripped):
+                if current_lines:
+                    sections.append((current_title, current_lines))
+                current_title = re.sub(r"^#{1,6}\s*", "", stripped).strip() or "正文"
+                current_lines = []
+                continue
+            cleaned = StudioService._clean_style_line(stripped)
+            if cleaned:
+                current_lines.append(cleaned)
+        if current_lines:
+            sections.append((current_title, current_lines))
+        if not sections:
+            fallback_lines: List[str] = []
+            for line in lines:
+                cleaned = StudioService._clean_style_line(line)
+                if cleaned:
+                    fallback_lines.append(cleaned)
+            if fallback_lines:
+                sections.append(("正文", fallback_lines))
+        return sections
+
+    @staticmethod
+    def _extract_style_headline(raw_style: str) -> str:
+        priorities = [
+            "画风基准",
+            "核心关键词",
+            "视觉基调",
+            "风格定位",
+            "视觉风格",
+            "主色调",
+        ]
+        lines = [StudioService._clean_style_line(line) for line in str(raw_style or "").splitlines()]
+        lines = [line for line in lines if line]
+        for key in priorities:
+            for line in lines:
+                if key in line:
+                    normalized = re.sub(r"^(画风基准|核心关键词|视觉基调|风格定位|视觉风格)\s*[:：]\s*", "", line).strip()
+                    return StudioService._trim_prompt_text(normalized or line, 180)
+        if lines:
+            return StudioService._trim_prompt_text(lines[0], 180)
+        return ""
+
+    @staticmethod
+    def _style_focus_keywords_for_element(element_type: str, element_name: str = "") -> List[str]:
+        common = [
+            "画风", "视觉风格", "风格", "色彩", "光影", "构图", "材质", "质感",
+            "比例", "景深", "镜头", "禁止", "not", "must",
+        ]
+        type_keywords: Dict[str, List[str]] = {
+            "character": [
+                "角色", "人物", "人设", "服饰", "五官", "皮肤", "发型", "pose",
+                "表情", "单人", "体态", "头身", "眼神",
+            ],
+            "scene": [
+                "场景", "环境", "背景", "建筑", "地面", "大气", "透视",
+                "氛围", "灯光", "空间", "景别",
+            ],
+            "object": [
+                "道具", "物品", "器物", "材质", "纹理", "细节", "特写",
+                "产品", "product", "背景隔离",
+            ],
+        }
+        keywords: List[str] = []
+        for item in [*common, *(type_keywords.get(str(element_type or "").strip().lower(), []))]:
+            if item and item not in keywords:
+                keywords.append(item)
+        cleaned_name = str(element_name or "").strip()
+        if cleaned_name:
+            for token in re.split(r"[_\-\s/]+", cleaned_name):
+                t = str(token or "").strip()
+                if len(t) >= 2 and t not in keywords:
+                    keywords.append(t)
+                if re.search(r"[\u4e00-\u9fff]", t) and len(t) >= 4:
+                    for i in range(0, len(t) - 1, 2):
+                        seg = t[i:i + 2].strip()
+                        if len(seg) >= 2 and seg not in keywords:
+                            keywords.append(seg)
+        return keywords
+
+    @staticmethod
+    def _style_focus_keywords_for_shot(prompt_text: str = "") -> List[str]:
+        keywords = [
+            "画风", "视觉风格", "风格", "色彩", "光影", "构图", "材质", "质感",
+            "比例", "景深", "镜头", "景别", "机位", "运镜", "氛围", "禁止",
+        ]
+        tokens = re.findall(r"[A-Za-z0-9_\u4e00-\u9fff]{2,12}", str(prompt_text or ""))
+        stop = {"镜头", "场景", "画面", "角色", "人物", "画风", "构图", "提示词", "prompt"}
+        for token in tokens[:12]:
+            t = token.strip()
+            if not t or t in stop:
+                continue
+            if t not in keywords:
+                keywords.append(t)
+        return keywords
+
+    @staticmethod
+    def _style_anchor_from_volume_anchor(anchor: Any) -> str:
+        if isinstance(anchor, str):
+            return anchor.strip()
+        if not isinstance(anchor, dict):
+            return ""
+        for key in ("anchor_text", "style", "visual_style"):
+            value = str(anchor.get(key) or "").strip()
+            if value:
+                return value
+        snippets: List[str] = []
+        for key, value in anchor.items():
+            if key in {"source", "updated_at", "reference_episode_id", "reference_shot_id", "reference_frame_url"}:
+                continue
+            text = str(value or "").strip()
+            if not text:
+                continue
+            snippets.append(f"{key}: {text}")
+            if len(snippets) >= 4:
+                break
+        return "；".join(snippets)
+
+    def _extract_relevant_style_anchor(
         self,
-        element: Dict[str, Any],
-        series: Optional[Dict[str, Any]] = None,
+        raw_style: str,
+        focus_keywords: List[str],
+        max_chars: int = 900,
+        exclude_keywords: Optional[List[str]] = None,
+        exclude_line_keywords: Optional[List[str]] = None,
+        exclude_line_patterns: Optional[List[str]] = None,
+        require_priority_match: bool = False,
     ) -> str:
-        description = str(element.get("description") or "").strip()
-        name = str(element.get("name") or "").strip()
-        base_prompt = description or name or "角色概念设定图"
+        fallback = "国风叙事动画插画风格，保持统一线条、色彩与材质。"
+        source = str(raw_style or "").strip()
+        if not source:
+            return fallback
 
-        visual_style = ""
+        compact = re.sub(r"\s+", " ", source).strip()
+        if len(compact) <= max_chars and ("\n" not in source and "#" not in source):
+            return compact
+
+        sections = self._split_markdown_sections(source)
+        if not sections:
+            return self._trim_prompt_text(compact, max_chars)
+
+        keywords = [kw for kw in focus_keywords if kw]
+        if not keywords:
+            keywords = ["画风", "视觉风格", "色彩", "光影", "构图", "材质", "禁止"]
+        generic_tokens = {
+            "画风", "视觉风格", "风格", "色彩", "光影", "构图", "材质", "质感",
+            "比例", "景深", "镜头", "景别", "机位", "运镜", "氛围", "禁止",
+            "not", "must", "角色", "场景", "道具", "人物",
+        }
+        priority_keywords = [kw for kw in keywords if kw not in generic_tokens and len(str(kw or "").strip()) >= 2]
+        blocked = [str(kw or "").strip().lower() for kw in (exclude_keywords or []) if str(kw or "").strip()]
+        blocked_line_tokens = [str(kw or "").strip().lower() for kw in (exclude_line_keywords or []) if str(kw or "").strip()]
+        blocked_line_patterns = [str(p or "").strip() for p in (exclude_line_patterns or []) if str(p or "").strip()]
+        line_noise_blacklist = [
+            "本文档", "配合使用", "完整使用示例", "文档使用", "使用流程", "操作流程", "示例输入", "示例输出",
+        ]
+
+        headline = self._extract_style_headline(source)
+
+        def _line_allowed(line: str) -> bool:
+            lowered = str(line or "").lower()
+            if not lowered:
+                return False
+            priority_hits = self._count_keyword_hits(lowered, priority_keywords)
+            if any(noise in line for noise in line_noise_blacklist) and priority_hits <= 0:
+                return False
+            if blocked_line_tokens and any(token in lowered for token in blocked_line_tokens):
+                return False
+            if blocked_line_patterns:
+                for pattern in blocked_line_patterns:
+                    try:
+                        if re.search(pattern, line, flags=re.IGNORECASE):
+                            return False
+                    except re.error:
+                        if pattern.lower() in lowered:
+                            return False
+            if blocked and any(token in lowered for token in blocked) and priority_hits <= 0:
+                return False
+            return True
+
+        # 1) 先抽关键行（按关键词命中）
+        picked_lines: List[str] = []
+        for _title, lines in sections:
+            for line in lines:
+                line_hits = self._count_keyword_hits(line, keywords)
+                line_priority_hits = self._count_keyword_hits(line, priority_keywords)
+                if line_hits <= 0:
+                    continue
+                if not _line_allowed(line):
+                    continue
+                if require_priority_match and priority_keywords and line_priority_hits <= 0:
+                    continue
+                if line not in picked_lines:
+                    picked_lines.append(line)
+                if len(picked_lines) >= 12:
+                    break
+            if len(picked_lines) >= 12:
+                break
+
+        # 2) 再挑匹配分区（角色/场景/道具等）
+        ranked_sections: List[Tuple[int, int, str]] = []
+        section_title_blacklist = ["使用流程", "文档使用", "完整使用示例", "配合文件"]
+        section_topic_whitelist = [
+            "风格", "视觉", "色彩", "光影", "构图", "场景", "角色", "道具",
+            "材质", "镜头", "关键词", "规范", "限制", "禁止", "ui",
+        ]
+        for idx, (title, lines) in enumerate(sections):
+            title_lower = str(title or "").lower()
+            if any(flag in title for flag in section_title_blacklist):
+                continue
+            if blocked and any(token in title_lower for token in blocked):
+                continue
+            topic_hits = self._count_keyword_hits(title_lower, section_topic_whitelist)
+            if topic_hits <= 0:
+                probe = " ".join(lines[:6]).lower()
+                topic_hits = self._count_keyword_hits(probe, section_topic_whitelist)
+            if topic_hits <= 0:
+                continue
+            section_text = f"{title} {' '.join(lines)}"
+            priority_section_hits = self._count_keyword_hits(section_text, priority_keywords)
+            score = self._count_keyword_hits(section_text, keywords)
+            if priority_keywords:
+                score += priority_section_hits * 3
+            if require_priority_match and priority_keywords and priority_section_hits <= 0:
+                continue
+            if score <= 0:
+                continue
+            snippet_lines: List[str] = []
+            # 优先摘取命中“目标关键词”（角色名/道具名等）的行，减少串到其他对象。
+            if priority_keywords:
+                for line in lines:
+                    if not _line_allowed(line):
+                        continue
+                    if self._count_keyword_hits(line, priority_keywords) > 0:
+                        snippet_lines.append(line)
+                    if len(snippet_lines) >= 3:
+                        break
+            if len(snippet_lines) < 3:
+                for line in lines:
+                    if line in snippet_lines:
+                        continue
+                    if not _line_allowed(line):
+                        continue
+                    if require_priority_match and priority_keywords:
+                        continue
+                    line_score = self._count_keyword_hits(line, keywords)
+                    if priority_keywords:
+                        line_score += self._count_keyword_hits(line, priority_keywords) * 2
+                    if line_score > 0:
+                        snippet_lines.append(line)
+                    if len(snippet_lines) >= 3:
+                        break
+            if not snippet_lines:
+                snippet_lines = [line for line in lines if _line_allowed(line)][:2]
+            if not snippet_lines:
+                continue
+            snippet = "；".join(snippet_lines)
+            snippet = self._trim_prompt_text(snippet, 260)
+            ranked_sections.append((score, -idx, f"【{title}】{snippet}"))
+        ranked_sections.sort(reverse=True)
+        section_chunks = [item[2] for item in ranked_sections[:3]]
+
+        if headline:
+            picked_lines = [line for line in picked_lines if "画风基准" not in line]
+
+        style_parts: List[str] = []
+        if headline:
+            style_parts.append(f"画风基准：{headline}")
+        if picked_lines:
+            style_parts.append(
+                "关键约束：" + "；".join(self._trim_prompt_text(line, 90) for line in picked_lines[:8])
+            )
+        if section_chunks:
+            style_parts.append("匹配片段：" + " | ".join(section_chunks))
+
+        merged = " ".join(part for part in style_parts if part).strip()
+        if not merged:
+            merged = compact
+        return self._trim_prompt_text(merged, max_chars)
+
+    def _resolve_series_visual_style_for_element(
+        self,
+        series: Optional[Dict[str, Any]],
+        element_type: str,
+        element_name: str = "",
+        element_description: str = "",
+    ) -> str:
+        raw_style = ""
+        series_id = ""
         if isinstance(series, dict):
-            visual_style = str(series.get("visual_style") or "").strip()
+            raw_style = str(series.get("visual_style") or "").strip()
+            series_id = str(series.get("id") or "").strip()
 
-        style_anchor = visual_style or "国风叙事动画插画风格"
-        style_clause = f"整体视觉风格：{style_anchor}。"
-        element_type = str(element.get("type") or "").strip().lower()
-        character_clause = ""
-        mixed_variant_clause = ""
-        if element_type == "character":
-            character_clause = "角色图必须为单人、单版本设定（年龄/时间/剧情阶段/场景形态）；不得出现同一角色多版本拼贴或多人群像；"
-            if self._contains_multi_age_signals(base_prompt):
-                mixed_variant_clause = "若原描述含前期/后期等多版本词，仅渲染一个版本的人物立绘；"
-        return (
-            f"{base_prompt}\n"
-            f"{style_clause}"
-            "保持与同系列素材一致的线条、色彩、材质语言；"
-            f"{character_clause}"
-            f"{mixed_variant_clause}"
-            "画面必须为统一的二维影视概念插画；"
-            "禁止切换为写实照片风、3D渲染、Q版卡通。"
-        ).strip()
+        # 系列视觉风格为空时，尝试卷锚点兜底
+        if not raw_style and series_id:
+            try:
+                volumes = self.storage.list_volumes(series_id)
+            except Exception:
+                volumes = []
+            for volume in reversed(volumes):
+                candidate = self._style_anchor_from_volume_anchor(volume.get("style_anchor"))
+                if candidate:
+                    raw_style = candidate
+                    break
 
-    def _get_series_visual_style_for_episode(self, episode_id: str) -> str:
+        exclude_keywords: List[str] = []
+        normalized_type = str(element_type or "").strip().lower()
+        exclude_line_keywords: List[str] = []
+        exclude_line_patterns: List[str] = []
+        if series_id and normalized_type == "character":
+            current_base = self._normalize_element_base_name(element_name) or str(element_name or "").strip()
+            if current_base:
+                try:
+                    siblings = self.storage.get_shared_elements(series_id, element_type="character")
+                except Exception:
+                    siblings = []
+                for sibling in siblings:
+                    sibling_name = str(sibling.get("name") or "").strip()
+                    if not sibling_name:
+                        continue
+                    sibling_base = self._normalize_element_base_name(sibling_name) or sibling_name
+                    if sibling_base == current_base:
+                        continue
+                    if len(sibling_base) >= 2 and sibling_base not in exclude_keywords:
+                        exclude_keywords.append(sibling_base)
+
+            subject_text = f"{element_name} {element_description}".lower()
+            device_signals = ["手机", "电话", "phone", "mobile", "cellphone", "平板", "tablet", "电脑", "laptop", "monitor", "屏幕"]
+            if not any(signal in subject_text for signal in device_signals):
+                exclude_line_keywords.extend(["手机", "电话", "平板", "电脑", "屏幕", "phone", "mobile", "cellphone", "tablet", "laptop", "monitor"])
+            # 若描述未要求特效，屏蔽风格文档中的能力/特效条目，避免“删掉提示词后仍带特效”。
+            if not self._contains_visual_effect_signals(subject_text):
+                exclude_line_keywords.extend([
+                    "火焰", "火光", "爆炸", "冲击波", "烟", "烟雾", "蒸汽", "特效",
+                    "发光", "光效", "光晕", "粒子", "能量", "电弧", "闪电", "星芒", "纹路", "激活",
+                    "flame", "fire", "explosion", "smoke", "glow", "energy", "particle", "lightning", "fx", "vfx", "effect",
+                ])
+            # 若描述明确是短发，屏蔽马尾/长发/辫子相关条目，避免串到其他角色发型。
+            if self._contains_short_hair_signals(subject_text):
+                exclude_line_keywords.extend([
+                    "马尾", "双马尾", "辫", "发辫", "长发", "及肩发", "披发", "盘发",
+                    "ponytail", "braid", "long hair",
+                ])
+            # 素材图不应注入分镜号/混剪等镜头调度语句，避免带入无关道具。
+            exclude_line_patterns.extend([
+                r"镜头\s*\d+",
+                r"\bshot\s*\d+\b",
+                r"混剪",
+                r"登场镜头",
+            ])
+
+        return self._extract_relevant_style_anchor(
+            raw_style=raw_style,
+            focus_keywords=self._style_focus_keywords_for_element(element_type, element_name),
+            max_chars=900,
+            exclude_keywords=exclude_keywords,
+            exclude_line_keywords=exclude_line_keywords,
+            exclude_line_patterns=exclude_line_patterns,
+            require_priority_match=(normalized_type == "character"),
+        )
+
+    def _get_raw_series_visual_style_for_episode(self, episode_id: str) -> str:
         episode = self.storage.get_episode(episode_id)
         if not episode:
             return ""
@@ -594,12 +983,9 @@ class StudioService:
         if volume_id:
             volume = self.storage.get_volume(volume_id)
             if volume:
-                raw_anchor = volume.get("style_anchor")
-                anchor = raw_anchor if isinstance(raw_anchor, dict) else {}
-                for key in ("visual_style", "style", "anchor_text"):
-                    value = str(anchor.get(key) or "").strip()
-                    if value:
-                        return value
+                anchor_text = self._style_anchor_from_volume_anchor(volume.get("style_anchor"))
+                if anchor_text:
+                    return anchor_text
         series_id = str(episode.get("series_id") or "").strip()
         if not series_id:
             return ""
@@ -607,6 +993,102 @@ class StudioService:
         if not series:
             return ""
         return str(series.get("visual_style") or "").strip()
+
+    def _build_element_image_prompt(
+        self,
+        element: Dict[str, Any],
+        series: Optional[Dict[str, Any]] = None,
+        render_mode: str = "auto",
+    ) -> str:
+        description = str(element.get("description") or "").strip()
+        name = str(element.get("name") or "").strip()
+        base_prompt = description or name or "角色概念设定图"
+
+        element_type = str(element.get("type") or "").strip().lower()
+        style_anchor = self._resolve_series_visual_style_for_element(
+            series=series,
+            element_type=element_type,
+            element_name=name,
+            element_description=description,
+        )
+        style_clause = f"整体视觉风格：{style_anchor}。"
+        mode = str(render_mode or "auto").strip().lower()
+        if mode not in {"auto", "storybook", "comic"}:
+            mode = "auto"
+        character_clause = (
+            "若主体是角色，默认单人构图，保持面部特征、发型、服饰和体态一致；"
+            if element_type == "character"
+            else ""
+        )
+        mixed_variant_clause = (
+            "若原描述含前期/后期等多版本词，仅渲染一个版本，不要拼贴多阶段形象；"
+            if element_type == "character" and self._contains_multi_age_signals(base_prompt)
+            else ""
+        )
+        device_guard_clause = (
+            "若描述未明确要求，严禁出现手机、平板、电脑、电子屏或其他手持终端设备；"
+            if element_type == "character" and not self._contains_handheld_device_signals(base_prompt)
+            else ""
+        )
+        effect_guard_clause = (
+            "若描述未明确要求，严禁出现火焰、能量光效、粒子、发光纹路、爆炸冲击波等超自然特效；"
+            if element_type == "character" and not self._contains_visual_effect_signals(base_prompt)
+            else ""
+        )
+        hair_guard_clause = (
+            "发型严格保持短发，不要马尾、辫子或长发造型；"
+            if element_type == "character" and self._contains_short_hair_signals(base_prompt)
+            else ""
+        )
+
+        if mode == "storybook":
+            return (
+                f"{base_prompt}\n"
+                f"{style_clause}"
+                "保持与同系列素材一致的线条、色彩、材质语言；"
+                f"{character_clause}"
+                f"{mixed_variant_clause}"
+                f"{device_guard_clause}"
+                f"{effect_guard_clause}"
+                f"{hair_guard_clause}"
+                "画面必须为统一的二维影视概念插画；"
+                "禁止切换为写实照片风、3D渲染、Q版卡通。"
+            ).strip()
+
+        if mode == "comic":
+            return (
+                f"{base_prompt}\n"
+                f"{style_clause}"
+                f"{character_clause}"
+                f"{mixed_variant_clause}"
+                f"{device_guard_clause}"
+                f"{effect_guard_clause}"
+                f"{hair_guard_clause}"
+                "采用连环画风格的单格画面，强调干净线稿、明确明暗和戏剧化构图；"
+                "保持主体在画面内完整，不要多人拼贴或多宫格分屏；"
+                "禁止水印、字幕和多余文字。"
+            ).strip()
+
+        # auto 模式：尽量贴近原始描述，减少额外风格约束，提升与官方直出一致性。
+        return (
+            f"{base_prompt}\n"
+            f"{style_clause}"
+            f"{character_clause}"
+            f"{mixed_variant_clause}"
+            f"{device_guard_clause}"
+            f"{effect_guard_clause}"
+            f"{hair_guard_clause}"
+            "优先忠实还原描述中的主体特征与构图；"
+            "保持主体清晰完整，细节自然，避免畸变、重影、低清和多余元素。"
+        ).strip()
+
+    def _get_series_visual_style_for_episode(self, episode_id: str, prompt_text: str = "") -> str:
+        raw_style = self._get_raw_series_visual_style_for_episode(episode_id)
+        return self._extract_relevant_style_anchor(
+            raw_style=raw_style,
+            focus_keywords=self._style_focus_keywords_for_shot(prompt_text),
+            max_chars=900,
+        )
 
     def _get_series_by_episode(self, episode_id: str) -> Optional[Dict[str, Any]]:
         episode = self.storage.get_episode(episode_id)
@@ -734,7 +1216,7 @@ class StudioService:
     ) -> str:
         episode_id = str(shot.get("episode_id") or "").strip()
         resolved_prompt = self._resolve_element_refs(raw_prompt, episode_id).strip()
-        style_anchor = self._get_series_visual_style_for_episode(episode_id) or "国风叙事动画插画风格"
+        style_anchor = self._get_series_visual_style_for_episode(episode_id, resolved_prompt) or "国风叙事动画插画风格"
         base_rules = (
             f"整体视觉风格：{style_anchor}。"
             "保持与同系列素材一致的角色比例、线条语言、配色与材质；"
@@ -881,14 +1363,80 @@ class StudioService:
         ).strip()
 
     @staticmethod
-    def _normalize_element_base_name(name: str) -> str:
+    def _looks_like_character_variant_suffix(value: str) -> bool:
+        candidate = str(value or "").strip().lower()
+        if not candidate:
+            return False
+        markers = (
+            "状态", "形态", "模式", "版本", "时期", "阶段", "战斗", "日常", "作家",
+            "战前", "战后", "回忆", "现实", "前期", "后期", "早期", "晚期",
+            "幼年", "童年", "少年", "青年", "中年", "老年", "晚年", "雨夜", "夜晚", "白天",
+            "state", "mode", "form", "style", "version", "stage", "battle", "casual", "young", "old",
+        )
+        return any(marker in candidate for marker in markers)
+
+    @classmethod
+    def _extract_character_stage_label(cls, name: str, normalized_base: str = "") -> str:
         text = str(name or "").strip()
         if not text:
             return ""
-        # 去掉括号内阶段标注，如“石上麻吕（中年期）”/“石上麻吕(中年期)”
-        text = re.sub(r"[（(][^（）()]{0,32}[）)]", "", text).strip()
-        text = re.sub(r"\s+", "", text)
-        return text
+        bracket_match = re.search(r"[（(]([^（）()]{1,24})[）)]\s*$", text)
+        if bracket_match:
+            return bracket_match.group(1).strip()
+
+        compact = re.sub(r"\s+", "", text)
+        base = str(normalized_base or "").strip()
+        if base and compact.startswith(base):
+            suffix = compact[len(base):].lstrip("_-—|/·•:：")
+            if suffix and len(suffix) <= 24:
+                return suffix
+
+        split_parts = re.split(r"[·•｜|/_\-—:：]", compact, maxsplit=1)
+        if len(split_parts) == 2:
+            tail = split_parts[1].strip()
+            if tail and len(tail) <= 24 and cls._looks_like_character_variant_suffix(tail):
+                return tail
+        return ""
+
+    @classmethod
+    def _normalize_element_base_name(cls, name: str) -> str:
+        text = str(name or "").strip()
+        if not text:
+            return ""
+        compact = re.sub(r"\s+", "", text)
+        # 去掉尾部括号中的阶段标注，如“石上麻吕（中年期）”。
+        compact = re.sub(r"[（(][^（）()]{1,24}[）)]\s*$", "", compact).strip()
+
+        parts = re.split(r"[·•｜|/_\-—:：]", compact, maxsplit=1)
+        if len(parts) == 2:
+            head = parts[0].strip()
+            tail = parts[1].strip()
+            if head and tail and cls._looks_like_character_variant_suffix(tail):
+                compact = head
+
+        direct_suffixes = (
+            "战斗状态", "战斗形态", "作家模式", "日常状态", "日常",
+            "前期", "后期", "早期", "晚期",
+            "幼年期", "少年期", "青年期", "中年期", "老年期",
+            "战前", "战后", "回忆", "现实", "雨夜", "夜晚", "白天",
+        )
+        for suffix in direct_suffixes:
+            if compact.endswith(suffix) and len(compact) > len(suffix) + 1:
+                compact = compact[: -len(suffix)].strip()
+                break
+        return compact
+
+    @classmethod
+    def _is_character_anchor_name(cls, name: str, base_name: str) -> bool:
+        compact = re.sub(r"\s+", "", str(name or ""))
+        base = re.sub(r"\s+", "", str(base_name or ""))
+        if not compact or not base:
+            return False
+        if compact == base:
+            return True
+        lowered = compact.lower()
+        anchor_hints = ("母角色", "母版", "基准", "锚点", "原型", "主设定", "base")
+        return base in compact and any(hint in lowered for hint in anchor_hints)
 
     def _collect_character_consistency_refs(
         self,
@@ -902,7 +1450,7 @@ class StudioService:
         current_name = str(element.get("name") or "").strip()
         base_name = self._normalize_element_base_name(current_name)
 
-        refs: List[str] = []
+        candidates: List[Tuple[int, str]] = []
         siblings = self.storage.get_shared_elements(series_id, element_type="character")
         for sibling in siblings:
             sibling_id = str(sibling.get("id") or "").strip()
@@ -914,11 +1462,26 @@ class StudioService:
 
             sibling_name = str(sibling.get("name") or "").strip()
             sibling_base = self._normalize_element_base_name(sibling_name)
-            if base_name and sibling_base:
-                if sibling_base != base_name and base_name not in sibling_name and sibling_base not in current_name:
-                    continue
-            if image_url not in refs:
-                refs.append(image_url)
+            if base_name and sibling_base != base_name:
+                continue
+
+            is_anchor = self._is_character_anchor_name(sibling_name, base_name)
+            stage_label = self._extract_character_stage_label(sibling_name, sibling_base)
+            sibling_compact = re.sub(r"\s+", "", sibling_name)
+            anchor_hint = any(token in sibling_name for token in ("母角色", "母版", "基准", "锚点", "原型"))
+            is_plain_base = bool(sibling_base) and sibling_compact == sibling_base and not stage_label
+            if not (is_anchor or anchor_hint or is_plain_base):
+                # 避免把同族历史版本当作随机参考图。
+                continue
+
+            score = 100 if is_anchor else 90 if anchor_hint else 70
+            candidates.append((score, image_url))
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        refs: List[str] = []
+        for _, url in candidates:
+            if url not in refs:
+                refs.append(url)
             if len(refs) >= max(1, int(limit)):
                 break
         return refs
@@ -953,6 +1516,42 @@ class StudioService:
         if any(a in candidate and b in candidate for a, b in stage_pairs):
             return True
         return len(set(hit)) >= 2
+
+    @staticmethod
+    def _contains_handheld_device_signals(text: str) -> bool:
+        candidate = str(text or "").lower()
+        if not candidate.strip():
+            return False
+        markers = [
+            "手机", "电话", "平板", "电脑", "屏幕",
+            "phone", "mobile", "cellphone", "tablet", "laptop", "monitor",
+        ]
+        return any(marker in candidate for marker in markers)
+
+    @staticmethod
+    def _contains_visual_effect_signals(text: str) -> bool:
+        candidate = str(text or "").lower()
+        if not candidate.strip():
+            return False
+        markers = [
+            "火焰", "火光", "爆炸", "冲击波", "烟", "烟雾", "蒸汽", "特效",
+            "发光", "光效", "光晕", "粒子", "能量", "电弧", "闪电", "星芒",
+            "纹路", "激活", "超自然",
+            "flame", "fire", "explosion", "smoke", "glow", "energy", "particle",
+            "lightning", "fx", "vfx", "effect",
+        ]
+        return any(marker in candidate for marker in markers)
+
+    @staticmethod
+    def _contains_short_hair_signals(text: str) -> bool:
+        candidate = str(text or "").lower()
+        if not candidate.strip():
+            return False
+        markers = [
+            "短发", "短卷发", "寸头", "平头", "板寸", "利落短发",
+            "short hair", "crew cut", "buzz cut",
+        ]
+        return any(marker in candidate for marker in markers)
 
     @staticmethod
     def _normalize_character_profiles_payload(payload: Any) -> List[Dict[str, Any]]:
@@ -1186,6 +1785,15 @@ class StudioService:
                 error_code="character_doc_too_short",
                 context={"series_id": series_id},
             )
+
+        # 角色文档长度保护：截断到安全上限（prompt 模板 ~500 token + 输出预留 6000 token）
+        max_doc_chars = int((self._max_input_tokens() - 6500) * _CHARS_PER_TOKEN)
+        if max_doc_chars < 5000:
+            max_doc_chars = 5000
+        text = self._truncate_text(text, max_doc_chars, label="角色设定文档")
+
+        # 剥离 AI 绘图 prompt 代码块（避免混淆 LLM 角色提取）
+        text = re.sub(r"```[\s\S]*?```", "[AI绘图prompt已省略]", text)
 
         visual_style = str(series.get("visual_style") or "").strip() or "未指定"
         prompt = (
@@ -1570,6 +2178,34 @@ class StudioService:
 
         return None
 
+    # ------------------------------------------------------------------
+    # Token 估算 & 输入保护
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        """粗略估算文本的 token 数量（中英混排，偏高估算）。"""
+        if not text:
+            return 0
+        return max(1, int(len(text) / _CHARS_PER_TOKEN))
+
+    def _max_input_tokens(self) -> int:
+        """当前配置下允许的最大输入 token 数。"""
+        raw = self.generation_defaults.get("max_context_tokens", _DEFAULT_MAX_CONTEXT_TOKENS)
+        try:
+            limit = int(raw)
+        except (TypeError, ValueError):
+            limit = _DEFAULT_MAX_CONTEXT_TOKENS
+        return max(4096, int(limit * _CONTEXT_SAFETY_RATIO))
+
+    @staticmethod
+    def _truncate_text(text: str, max_chars: int, label: str = "文本") -> str:
+        """截断文本到指定字符数，保留尾部提示。"""
+        if not text or len(text) <= max_chars:
+            return text
+        truncated = text[:max_chars]
+        return truncated + f"\n\n…… [{label}因长度限制已截断，原文约 {len(text)} 字，已保留前 {max_chars} 字]"
+
     async def _llm_call(
         self,
         user_prompt: str,
@@ -1577,18 +2213,49 @@ class StudioService:
         max_tokens: int = 8000,
         temperature: float = 0.7,
     ) -> str:
-        """调用 LLM 并返回原始文本"""
+        """调用 LLM 并返回原始文本，含输入 token 估算保护。"""
         if not self.llm:
             raise StudioServiceError(
                 "Studio LLM 服务未配置，请先在设置中配置 LLM API Key",
                 error_code="config_missing_llm",
             )
-        return await self.llm.generate_text(
-            prompt=user_prompt,
-            system_prompt=system_prompt,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+
+        # 估算输入 token 数（system + user + output 预留）
+        input_tokens = self._estimate_tokens(system_prompt) + self._estimate_tokens(user_prompt)
+        total_estimated = input_tokens + max_tokens
+        limit = self._max_input_tokens()
+
+        if total_estimated > limit:
+            raise StudioServiceError(
+                f"输入内容过长，预估 {input_tokens:,} token（加输出预留共 {total_estimated:,}），"
+                f"超出当前模型上下文上限 {limit:,} token。\n"
+                f"建议：缩短脚本/文档内容，或在设置中调高 max_context_tokens。",
+                error_code="context_length_exceeded",
+                context={
+                    "estimated_input_tokens": input_tokens,
+                    "max_output_tokens": max_tokens,
+                    "total_estimated": total_estimated,
+                    "context_limit": limit,
+                },
+            )
+
+        try:
+            return await self.llm.generate_text(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "context_length" in err_msg or "max_tokens" in err_msg or "too many tokens" in err_msg:
+                raise StudioServiceError(
+                    f"LLM 返回上下文超限错误。输入约 {input_tokens:,} token，"
+                    f"请缩短输入内容或切换到更大上下文窗口的模型。\n原始错误: {e}",
+                    error_code="context_length_exceeded",
+                    context={"estimated_input_tokens": input_tokens, "original_error": str(e)},
+                )
+            raise
 
     async def optimize_prompt_with_llm(
         self,
@@ -1718,6 +2385,18 @@ class StudioService:
     # A. 大脚本分幕拆解
     # ------------------------------------------------------------------
 
+    def _safe_script_for_prompt(self, full_script: str, reserved_tokens: int = 2000) -> str:
+        """根据当前模型上下文窗口，截断脚本到安全长度。
+
+        reserved_tokens: prompt 模板本身 + system prompt + output 预留的 token 数。
+        """
+        max_input = self._max_input_tokens()
+        available_tokens = max_input - reserved_tokens
+        if available_tokens < 2000:
+            available_tokens = 2000
+        max_chars = int(available_tokens * _CHARS_PER_TOKEN)
+        return self._truncate_text(full_script, max_chars, label="脚本")
+
     async def split_script_to_acts(
         self,
         full_script: str,
@@ -1732,12 +2411,16 @@ class StudioService:
         target_count = preferences.get("target_episode_count", 0)
         episode_duration = preferences.get("episode_duration_seconds", 90)
         visual_style = preferences.get("visual_style", "电影级")
+        split_max_tokens = int(self.generation_defaults.get("split_max_tokens", 8000))
+
+        # 预留 prompt 模板 + system prompt + output 的 token
+        safe_script = self._safe_script_for_prompt(full_script, reserved_tokens=3000 + split_max_tokens)
 
         prompt_bundle = self._resolve_prompt_bundle("script_split")
         user_prompt = self._render_prompt_template(
             prompt_bundle["user"],
             {
-                "full_script": full_script,
+                "full_script": safe_script,
                 "target_episode_count": target_count,
                 "episode_duration_seconds": episode_duration,
                 "visual_style": visual_style,
@@ -1748,7 +2431,7 @@ class StudioService:
         raw = await self._llm_call(
             user_prompt=user_prompt,
             system_prompt=prompt_bundle["system"],
-            max_tokens=int(self.generation_defaults.get("split_max_tokens", 8000)),
+            max_tokens=split_max_tokens,
             temperature=0.5,
         )
 
@@ -1776,6 +2459,132 @@ class StudioService:
     # B. 共享元素提取
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _build_character_anchor_description(raw_description: str) -> str:
+        description = str(raw_description or "").strip()
+        anchor_clause = (
+            "该条目为母角色基准图：单人全身静态站姿，纯白背景，"
+            "只保留稳定外观特征，不加入场景道具与动作特效。"
+        )
+        if not description:
+            return anchor_clause
+        if "母角色" in description and "纯白背景" in description:
+            return description
+        return f"{description}；{anchor_clause}"
+
+    def _inject_character_anchor_elements(
+        self,
+        elements: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for raw in elements:
+            if not isinstance(raw, dict):
+                continue
+            name = str(raw.get("name") or "").strip() or "未知"
+            element_type = str(raw.get("type") or "character").strip().lower() or "character"
+            description = str(raw.get("description") or "").strip()
+            voice_profile = str(raw.get("voice_profile") or "").strip()
+            appears_raw = raw.get("appears_in_acts")
+            appears: List[int] = []
+            if isinstance(appears_raw, list):
+                for item in appears_raw:
+                    try:
+                        act_no = int(item)
+                    except Exception:
+                        continue
+                    if act_no > 0 and act_no not in appears:
+                        appears.append(act_no)
+
+            key = (element_type, name.lower())
+            existing = merged.get(key)
+            if existing:
+                if description and len(description) > len(str(existing.get("description") or "")):
+                    existing["description"] = description
+                if voice_profile and not str(existing.get("voice_profile") or "").strip():
+                    existing["voice_profile"] = voice_profile
+                merged_acts = set(existing.get("appears_in_acts") or [])
+                merged_acts.update(appears)
+                existing["appears_in_acts"] = sorted(
+                    int(v) for v in merged_acts if isinstance(v, int) and v > 0
+                )
+                continue
+
+            merged[key] = {
+                "name": name,
+                "type": element_type,
+                "description": description,
+                "voice_profile": voice_profile,
+                "appears_in_acts": appears,
+            }
+
+        normalized = list(merged.values())
+        existing_names = {
+            str(item.get("name") or "").strip().lower()
+            for item in normalized
+            if str(item.get("name") or "").strip()
+        }
+
+        grouped: Dict[str, Dict[str, Any]] = {}
+        for item in normalized:
+            if str(item.get("type") or "") != "character":
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            base_name = self._normalize_element_base_name(name) or name
+            stage_label = self._extract_character_stage_label(name, base_name)
+            name_compact = re.sub(r"\s+", "", name)
+            is_variant = bool(stage_label) or (base_name and name_compact != base_name)
+            is_anchor = self._is_character_anchor_name(name, base_name) or (name_compact == base_name and not stage_label)
+
+            key = base_name.lower()
+            group = grouped.setdefault(
+                key,
+                {
+                    "base_name": base_name,
+                    "needs_anchor": False,
+                    "has_anchor": False,
+                    "description": "",
+                    "voice_profile": "",
+                    "appears_in_acts": set(),
+                },
+            )
+            if is_variant:
+                group["needs_anchor"] = True
+            if is_anchor:
+                group["has_anchor"] = True
+            if str(item.get("description") or "").strip() and not group["description"]:
+                group["description"] = str(item.get("description") or "").strip()
+            if str(item.get("voice_profile") or "").strip() and not group["voice_profile"]:
+                group["voice_profile"] = str(item.get("voice_profile") or "").strip()
+            for act in item.get("appears_in_acts") or []:
+                if isinstance(act, int) and act > 0:
+                    group["appears_in_acts"].add(act)
+
+        anchor_additions: List[Dict[str, Any]] = []
+        for group in grouped.values():
+            if not group.get("needs_anchor"):
+                continue
+            base_name = str(group.get("base_name") or "").strip()
+            if not base_name:
+                continue
+            if group.get("has_anchor") or base_name.lower() in existing_names:
+                continue
+            anchor_additions.append(
+                {
+                    "name": base_name,
+                    "type": "character",
+                    "description": self._build_character_anchor_description(str(group.get("description") or "")),
+                    "voice_profile": str(group.get("voice_profile") or "").strip(),
+                    "appears_in_acts": sorted(group.get("appears_in_acts") or []),
+                }
+            )
+            existing_names.add(base_name.lower())
+
+        if anchor_additions:
+            print(f"[Studio] 自动补充母角色锚点 {len(anchor_additions)} 个")
+        return [*normalized, *anchor_additions]
+
     async def extract_shared_elements(
         self,
         full_script: str,
@@ -1792,11 +2601,14 @@ class StudioService:
             for i, a in enumerate(acts)
         )
 
+        # 截断脚本到安全长度
+        safe_script = self._safe_script_for_prompt(full_script, reserved_tokens=3000 + 8000)
+
         prompt_bundle = self._resolve_prompt_bundle("element_extraction")
         user_prompt = self._render_prompt_template(
             prompt_bundle["user"],
             {
-                "full_script": full_script,
+                "full_script": safe_script,
                 "acts_summary": acts_summary,
                 "visual_style": visual_style or "未指定",
             },
@@ -1819,14 +2631,16 @@ class StudioService:
             )
 
         for el in elements:
-            el.setdefault("name", "未知")
-            el.setdefault("type", "character")
-            el.setdefault("description", "")
-            el.setdefault("voice_profile", "")
-            el.setdefault("appears_in_acts", [])
+            if isinstance(el, dict):
+                el.setdefault("name", "未知")
+                el.setdefault("type", "character")
+                el.setdefault("description", "")
+                el.setdefault("voice_profile", "")
+                el.setdefault("appears_in_acts", [])
 
-        print(f"[Studio] 元素提取完成，共 {len(elements)} 个元素")
-        return elements
+        normalized_elements = self._inject_character_anchor_elements(elements)
+        print(f"[Studio] 元素提取完成，共 {len(normalized_elements)} 个元素")
+        return normalized_elements
 
     # ------------------------------------------------------------------
     # C. 创建系列（编排 A + B）
@@ -1962,18 +2776,36 @@ class StudioService:
         suggested_shots = max(5, math.ceil(target_duration / 7))
 
         prompt_bundle = self._resolve_prompt_bundle("episode_planning", series_id=series["id"])
+
+        # 截断可能过长的字段，为 episode_planning 留出足够空间
+        plan_max_tokens = int(self.generation_defaults.get("plan_max_tokens", 16000))
+        budget = self._max_input_tokens() - plan_max_tokens - 3000  # 3000 = prompt 模板 + system prompt
+        if budget < 5000:
+            budget = 5000
+        # 按优先级分配：script_excerpt > shared_elements > series_bible > visual_style
+        budget_chars = int(budget * _CHARS_PER_TOKEN)
+        safe_bible = self._truncate_text(
+            series.get("series_bible", ""), min(budget_chars // 3, 15000), label="世界观设定"
+        )
+        safe_visual = self._truncate_text(
+            series.get("visual_style", ""), min(budget_chars // 6, 5000), label="视觉风格"
+        )
+        safe_excerpt = self._truncate_text(
+            episode.get("script_excerpt", ""), budget_chars // 2, label="本集脚本"
+        )
+
         user_prompt = self._render_prompt_template(
             prompt_bundle["user"],
             {
                 "series_name": series["name"],
                 "act_number": act_num,
                 "episode_title": episode.get("title", ""),
-                "series_bible": series.get("series_bible", ""),
-                "visual_style": series.get("visual_style", ""),
+                "series_bible": safe_bible,
+                "visual_style": safe_visual,
                 "shared_elements_list": shared_elements_list,
                 "digital_human_constraints": digital_human_constraints or "（无）",
                 "prev_summary": prev_summary,
-                "script_excerpt": episode.get("script_excerpt", ""),
+                "script_excerpt": safe_excerpt,
                 "next_summary": next_summary,
                 "target_duration_seconds": target_duration,
                 "suggested_shot_count": suggested_shots,
@@ -2102,11 +2934,21 @@ class StudioService:
         snapshot = self.storage.get_episode_snapshot(episode_id)
         episode_json = json.dumps(snapshot, ensure_ascii=False, indent=2)
 
+        # 截断过长字段
+        enhance_max_tokens = int(self.generation_defaults.get("enhance_max_tokens", 16000))
+        budget_chars = int((self._max_input_tokens() - enhance_max_tokens - 2000) * _CHARS_PER_TOKEN)
+        if budget_chars < 8000:
+            budget_chars = 8000
+        safe_bible = self._truncate_text(
+            series.get("series_bible", ""), min(budget_chars // 4, 10000), label="世界观设定"
+        )
+        episode_json = self._truncate_text(episode_json, budget_chars // 2, label="集快照JSON")
+
         prompt_bundle = self._resolve_prompt_bundle("episode_enhance", series_id=series["id"])
         user_prompt = self._render_prompt_template(
             prompt_bundle["user"],
             {
-                "series_bible": series.get("series_bible", ""),
+                "series_bible": safe_bible,
                 "shared_elements_list": shared_elements_list,
                 "digital_human_constraints": digital_human_constraints or "（无）",
                 "episode_json": episode_json,
@@ -2204,6 +3046,10 @@ class StudioService:
         height: int = 1024,
         use_reference: bool = False,
         reference_mode: str = "none",
+        render_mode: str = "auto",
+        max_images: int = 1,
+        steps: int = 28,
+        seed: Optional[int] = None,
     ) -> Dict[str, Any]:
         """为共享元素生成参考图"""
         if not self.image:
@@ -2221,80 +3067,104 @@ class StudioService:
             )
 
         default_w, default_h = self._default_frame_size()
-        width = int(width or default_w)
-        height = int(height or default_h)
+        width = max(128, min(4096, int(width or default_w)))
+        height = max(128, min(4096, int(height or default_h)))
+        max_images = max(1, min(15, int(max_images or 1)))
+        steps = max(10, min(60, int(steps or 28)))
+        parsed_seed: Optional[int] = None
+        if seed is not None:
+            try:
+                parsed_seed = int(seed)
+            except Exception:
+                parsed_seed = None
 
         series = self.storage.get_series(el.get("series_id")) if el.get("series_id") else None
-        prompt = self._build_element_image_prompt(el, series)
+        normalized_render_mode = str(render_mode or "auto").strip().lower()
+        if normalized_render_mode not in {"auto", "storybook", "comic"}:
+            normalized_render_mode = "auto"
+        prompt = self._build_element_image_prompt(el, series, render_mode=normalized_render_mode)
         element_type = str(el.get("type") or "").strip().lower()
         ref_images: List[str] = []
-        mode = (reference_mode or "").strip().lower()
-        if mode not in {"none", "light", "full"}:
-            mode = "light" if use_reference else "none"
-        if use_reference and mode == "none":
-            mode = "light"
+        ref_mode = (reference_mode or "").strip().lower()
+        if ref_mode not in {"none", "light", "full"}:
+            ref_mode = "light" if use_reference else "none"
+        if use_reference and ref_mode == "none":
+            ref_mode = "light"
 
         # 限制一致性参考图：仅角色类型允许，且默认 light 模式只带 1 张图
         if element_type != "character":
-            mode = "none"
+            ref_mode = "none"
 
         raw_refs: List[str] = []
         source_refs = el.get("reference_images") or []
         if isinstance(source_refs, list):
             raw_refs = [str(u).strip() for u in source_refs if isinstance(u, str) and str(u).strip()]
-        current_image = str(el.get("image_url") or "").strip()
-        sibling_refs = self._collect_character_consistency_refs(el, limit=3) if element_type == "character" else []
+        anchor_refs = self._collect_character_consistency_refs(el, limit=3) if element_type == "character" else []
 
-        if mode == "light":
-            if current_image:
-                ref_images = [current_image]
-            elif raw_refs:
+        # 角色一致性仅使用“显式参考图 + 母角色锚点图”，避免意外复用历史图导致污染。
+        if ref_mode == "light":
+            if raw_refs:
                 ref_images = [raw_refs[0]]
-            elif sibling_refs:
-                ref_images = [sibling_refs[0]]
-        elif mode == "full":
-            if current_image:
-                ref_images.append(current_image)
+            elif anchor_refs:
+                ref_images = [anchor_refs[0]]
+        elif ref_mode == "full":
             for url in raw_refs:
                 if url and url not in ref_images:
                     ref_images.append(url)
                 if len(ref_images) >= 3:
                     break
-            for url in sibling_refs:
+            for url in anchor_refs:
                 if url and url not in ref_images:
                     ref_images.append(url)
                 if len(ref_images) >= 3:
                     break
 
-        result = await self.image.generate(
-            prompt=prompt,
-            reference_images=ref_images if ref_images else None,
-            width=width,
-            height=height,
-        )
+        generated_urls: List[str] = []
+        generated_results: List[Dict[str, Any]] = []
 
-        url = self._normalize_image_result_url(result)
-        url = self._validate_generated_image_url(
-            url,
-            error_code_empty="element_image_empty_result",
-            context={"element_id": element_id, "stage": "element"},
-        )
+        for index in range(max_images):
+            run_seed = parsed_seed + index if parsed_seed is not None else None
+            result = await self.image.generate(
+                prompt=prompt,
+                reference_images=ref_images if ref_images else None,
+                width=width,
+                height=height,
+                steps=steps,
+                seed=run_seed,
+            )
+            url = self._normalize_image_result_url(result)
+            url = self._validate_generated_image_url(
+                url,
+                error_code_empty="element_image_empty_result",
+                context={"element_id": element_id, "stage": "element", "index": index + 1},
+            )
+            generated_urls.append(url)
+            generated_results.append(result)
 
         # 更新元素的 image_url 和 image_history
         history = el.get("image_history") or []
-        if el.get("image_url"):
-            history.append(el["image_url"])
+        if not isinstance(history, list):
+            history = []
+        current_image_url = str(el.get("image_url") or "").strip()
+        if current_image_url:
+            history.append(current_image_url)
+        for historical_url in generated_urls[:-1]:
+            history.append(historical_url)
+        final_url = generated_urls[-1]
         self.storage.update_shared_element(element_id, {
-            "image_url": url,
+            "image_url": final_url,
             "image_history": history,
         })
 
         return {
             "element_id": element_id,
-            "image_url": url,
-            "reference_mode_applied": mode,
+            "image_url": final_url,
+            "generated_urls": generated_urls,
+            "generated_count": len(generated_urls),
+            "render_mode_applied": normalized_render_mode,
+            "reference_mode_applied": ref_mode,
             "reference_images_used": len(ref_images),
-            "result": result,
+            "result": generated_results[-1] if generated_results else {},
         }
 
     async def generate_shot_frame(
@@ -2975,6 +3845,10 @@ class StudioService:
         stages: Optional[List[str]] = None,
         parallel: Optional[Dict[str, Any]] = None,
         video_generate_audio: Optional[bool] = None,
+        image_width: Optional[int] = None,
+        image_height: Optional[int] = None,
+        element_use_reference: Optional[bool] = None,
+        element_reference_mode: str = "none",
         progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None] | None]] = None,
     ) -> Dict[str, Any]:
         """批量生成单集资产
@@ -2987,6 +3861,27 @@ class StudioService:
 
         parallel_cfg = parallel if isinstance(parallel, dict) else {}
         resolved_video_generate_audio = self._resolve_video_generate_audio(video_generate_audio)
+        resolved_element_reference_mode = str(element_reference_mode or "none").strip().lower()
+        if resolved_element_reference_mode not in {"none", "light", "full"}:
+            resolved_element_reference_mode = "none"
+        resolved_element_use_reference = bool(element_use_reference)
+        if resolved_element_reference_mode != "none" and element_use_reference is None:
+            resolved_element_use_reference = True
+        if resolved_element_use_reference and resolved_element_reference_mode == "none":
+            resolved_element_reference_mode = "light"
+        default_w, default_h = self._default_frame_size()
+        try:
+            resolved_image_width = int(image_width or default_w)
+        except Exception:
+            resolved_image_width = int(default_w)
+        try:
+            resolved_image_height = int(image_height or default_h)
+        except Exception:
+            resolved_image_height = int(default_h)
+        if resolved_image_width <= 0:
+            resolved_image_width = int(default_w)
+        if resolved_image_height <= 0:
+            resolved_image_height = int(default_h)
 
         def _to_limit(value: Any, fallback: int) -> int:
             try:
@@ -3052,6 +3947,10 @@ class StudioService:
             "stages": stages,
             "total": total_assets,
             "video_generate_audio": resolved_video_generate_audio,
+            "image_width": resolved_image_width,
+            "image_height": resolved_image_height,
+            "element_use_reference": resolved_element_use_reference,
+            "element_reference_mode": resolved_element_reference_mode,
             "parallel": {
                 "image_max_concurrency": image_max_concurrency,
                 "video_max_concurrency": video_max_concurrency,
@@ -3177,7 +4076,13 @@ class StudioService:
                 stage_limit=image_max_concurrency,
                 get_item_id=lambda el: str(el.get("id") or ""),
                 get_item_name=lambda el: str(el.get("name") or el.get("id") or "未命名元素"),
-                worker=lambda el: self.generate_element_image(str(el.get("id") or "")),
+                worker=lambda el: self.generate_element_image(
+                    str(el.get("id") or ""),
+                    width=resolved_image_width,
+                    height=resolved_image_height,
+                    use_reference=resolved_element_use_reference,
+                    reference_mode=resolved_element_reference_mode,
+                ),
             )
             result["stages"]["elements"] = elem_results
 
@@ -3192,7 +4097,11 @@ class StudioService:
                 stage_limit=image_max_concurrency,
                 get_item_id=lambda shot_item: str(shot_item.get("id") or ""),
                 get_item_name=lambda shot_item: str(shot_item.get("name") or shot_item.get("id") or "未命名镜头"),
-                worker=lambda shot_item: self.generate_shot_frame(str(shot_item.get("id") or "")),
+                worker=lambda shot_item: self.generate_shot_frame(
+                    str(shot_item.get("id") or ""),
+                    width=resolved_image_width,
+                    height=resolved_image_height,
+                ),
             )
             result["stages"]["frames"] = frame_results
 
@@ -3206,7 +4115,11 @@ class StudioService:
                 stage_limit=image_max_concurrency,
                 get_item_id=lambda shot_item: str(shot_item.get("id") or ""),
                 get_item_name=lambda shot_item: str(shot_item.get("name") or shot_item.get("id") or "未命名镜头"),
-                worker=lambda shot_item: self.generate_shot_key_frame(str(shot_item.get("id") or "")),
+                worker=lambda shot_item: self.generate_shot_key_frame(
+                    str(shot_item.get("id") or ""),
+                    width=resolved_image_width,
+                    height=resolved_image_height,
+                ),
             )
             result["stages"]["key_frames"] = key_frame_results
 
@@ -3232,7 +4145,11 @@ class StudioService:
                 ok = True
                 error_message: Optional[str] = None
                 try:
-                    r = await self.generate_shot_end_frame(shot["id"])
+                    r = await self.generate_shot_end_frame(
+                        shot["id"],
+                        width=resolved_image_width,
+                        height=resolved_image_height,
+                    )
                     end_frame_results.append(r)
                 except Exception as e:
                     ok = False

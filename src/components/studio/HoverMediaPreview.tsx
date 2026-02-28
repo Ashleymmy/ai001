@@ -191,7 +191,7 @@ export default function HoverMediaPreview({
                 style={{ maxWidth: previewDimensions.w, aspectRatio: `${previewDimensions.w} / ${previewDimensions.h}` }}
               >
                 {shot.start_image_url ? (
-                  <img src={shot.start_image_url} alt={shot.name || shot.id} className="absolute inset-0 w-full h-full object-cover" />
+                  <img src={shot.start_image_url} alt={shot.name || shot.id} className="absolute inset-0 w-full h-full object-contain bg-gray-900/70" />
                 ) : (
                   <div className="absolute inset-0 w-full h-full flex items-center justify-center text-gray-600">
                     <ImageIcon className="w-10 h-10" />
@@ -203,7 +203,7 @@ export default function HoverMediaPreview({
                     ref={videoRef}
                     key={`${shot.id}_${shot.video_url}`}
                     src={shot.video_url}
-                    className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
+                    className={`absolute inset-0 w-full h-full object-contain bg-gray-900/70 transition-opacity duration-300 ${
                       videoVisible ? 'opacity-100' : 'opacity-0'
                     }`}
                     muted
@@ -236,7 +236,7 @@ export default function HoverMediaPreview({
             {shot.end_image_url && (
               <div className="rounded-lg overflow-hidden border border-gray-800 bg-gray-900/70">
                 <div className="aspect-video w-full bg-gray-900/80">
-                  <img src={shot.end_image_url} alt={`${shot.name || '镜头'}-end`} className="w-full h-full object-cover" />
+                  <img src={shot.end_image_url} alt={`${shot.name || '镜头'}-end`} className="w-full h-full object-contain" />
                 </div>
               </div>
             )}

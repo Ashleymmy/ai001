@@ -73,7 +73,7 @@ export function ProviderSelect({
     setCustomExpanded(false)
   }
 
-  const presetProviders = providers.filter(p => p.id !== 'custom')
+  const presetProviders = providers
 
   return (
     <div className="relative" ref={dropdownRef}>

@@ -4,12 +4,16 @@
 
 import { create } from 'zustand'
 import {
+  authChangePassword,
   authGetConfig,
+  authForgotPassword,
   authLogin,
   authLogout,
   authMe,
   authRefresh,
   authRegister,
+  authResetPassword,
+  authUpdateMe,
   getStoredAccessToken,
   getStoredRefreshToken,
   getStoredWorkspaceId,
@@ -45,6 +49,10 @@ interface WorkspaceState {
   login: (email: string, password: string) => Promise<void>
   register: (name: string, email: string, password: string) => Promise<void>
   logout: () => Promise<void>
+  updateProfile: (payload: { name?: string; email?: string }) => Promise<void>
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>
+  forgotPassword: (email: string) => Promise<string>
+  resetPassword: (resetToken: string, newPassword: string) => Promise<void>
 
   setCurrentWorkspaceId: (workspaceId: string) => void
   refreshWorkspaces: () => Promise<void>
@@ -230,6 +238,72 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       })
     } catch (e) {
       const message = e instanceof Error ? e.message : '退出失败'
+      set({ loading: false, error: message })
+      throw e
+    }
+  },
+
+  updateProfile: async (payload) => {
+    set({ loading: true, error: null })
+    try {
+      const result = await authUpdateMe(payload)
+      const preferredWorkspace = get().currentWorkspaceId || getStoredWorkspaceId()
+      const workspaceId = pickWorkspaceId(result.workspaces, preferredWorkspace)
+      setStoredWorkspaceId(workspaceId)
+      set({
+        loading: false,
+        user: result.user,
+        workspaces: result.workspaces,
+        currentWorkspaceId: workspaceId,
+      })
+      if (workspaceId) {
+        await Promise.all([get().loadMembers(workspaceId), get().loadOkrs(workspaceId)])
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : '更新资料失败'
+      set({ loading: false, error: message })
+      throw e
+    }
+  },
+
+  changePassword: async (currentPassword, newPassword) => {
+    set({ loading: true, error: null })
+    try {
+      await authChangePassword({
+        current_password: currentPassword,
+        new_password: newPassword,
+      })
+      set({ loading: false })
+    } catch (e) {
+      const message = e instanceof Error ? e.message : '修改密码失败'
+      set({ loading: false, error: message })
+      throw e
+    }
+  },
+
+  forgotPassword: async (email) => {
+    set({ loading: true, error: null })
+    try {
+      const result = await authForgotPassword({ email })
+      set({ loading: false })
+      return String(result.reset_token || '')
+    } catch (e) {
+      const message = e instanceof Error ? e.message : '发送重置请求失败'
+      set({ loading: false, error: message })
+      throw e
+    }
+  },
+
+  resetPassword: async (resetToken, newPassword) => {
+    set({ loading: true, error: null })
+    try {
+      await authResetPassword({
+        reset_token: resetToken,
+        new_password: newPassword,
+      })
+      set({ loading: false })
+    } catch (e) {
+      const message = e instanceof Error ? e.message : '重置密码失败'
       set({ loading: false, error: message })
       throw e
     }

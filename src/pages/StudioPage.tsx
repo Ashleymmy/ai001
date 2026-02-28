@@ -17,6 +17,8 @@ import {
 } from '../services/api'
 import type {
   StudioEpisodeHistoryEntry,
+  StudioElementRenderMode,
+  StudioElementReferenceMode,
   StudioPromptBatchCheckItem,
 } from '../services/api'
 import type {
@@ -40,6 +42,14 @@ import HoverOverviewPanel from '../components/studio/HoverOverviewPanel'
 import SeriesOverview from '../components/studio/SeriesOverview'
 import ShotDetailPanel from '../components/studio/ShotDetailPanel'
 import StudioSettingsPanel from '../components/studio/StudioSettingsPanel'
+import DocumentUploadButton from '../components/studio/DocumentUploadButton'
+import CharacterSettingCardDialog from '../components/studio/CharacterSettingCardDialog'
+import {
+  STUDIO_IMAGE_RATIO_PRESETS,
+  isStudioImageRatioValue,
+  resolveStudioImageRatioPreset,
+  type StudioImageRatioValue,
+} from '../components/studio/imageRatio'
 
 type ServiceKey = 'llm' | 'image' | 'video' | 'tts'
 
@@ -111,6 +121,7 @@ const LAYOUT_SIDEBAR_COLLAPSED_KEY = 'studio.layout.sidebarCollapsed'
 const LAYOUT_DETAIL_PANEL_WIDTH_KEY = 'studio.layout.detailPanelWidth'
 const LAYOUT_DETAIL_PANEL_COLLAPSED_KEY = 'studio.layout.detailPanelCollapsed'
 const GENERATION_VIDEO_MODEL_AUDIO_KEY = 'studio.generation.videoModelAudio'
+const SHOT_IMAGE_RATIO_KEY = 'studio.shot.imageRatio'
 export type WorkbenchMode = 'longform' | 'short_video' | 'digital_human'
 
 type PromptFieldKey = 'prompt' | 'end_prompt' | 'video_prompt'
@@ -668,6 +679,7 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showCharacterConsole, setShowCharacterConsole] = useState(false)
+  const [showCharacterCard, setShowCharacterCard] = useState(false)
   const [showDigitalHumanConsole, setShowDigitalHumanConsole] = useState(false)
   const [showAgentExportDialog, setShowAgentExportDialog] = useState(false)
   const [showAgentImportDialog, setShowAgentImportDialog] = useState(false)
@@ -972,6 +984,7 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
     script: string
     description?: string
     visual_style?: string
+    series_bible?: string
     target_episode_count?: number
     episode_duration_seconds?: number
   }) => {
@@ -996,7 +1009,11 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
     await store.enhanceEpisode(id, mode)
   }, [ensureConfigReady, store])
 
-  const handleGenerateShotAsset = useCallback(async (shotId: string, stage: 'frame' | 'key_frame' | 'end_frame' | 'video' | 'audio') => {
+  const handleGenerateShotAsset = useCallback(async (
+    shotId: string,
+    stage: 'frame' | 'key_frame' | 'end_frame' | 'video' | 'audio',
+    options?: { width?: number; height?: number },
+  ) => {
     const required: ServiceKey[] =
       stage === 'frame' || stage === 'key_frame' || stage === 'end_frame' ? ['image'] : stage === 'video' ? ['video'] : ['tts']
     const ok = await ensureConfigReady(required)
@@ -1004,7 +1021,11 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
     await store.generateShotAsset(
       shotId,
       stage,
-      stage === 'video' ? { video_generate_audio: videoModelAudioEnabled } : undefined,
+      stage === 'video'
+        ? { video_generate_audio: videoModelAudioEnabled }
+        : stage === 'frame' || stage === 'key_frame' || stage === 'end_frame'
+          ? { width: options?.width, height: options?.height }
+          : undefined,
     )
   }, [ensureConfigReady, store, videoModelAudioEnabled])
 
@@ -1020,7 +1041,16 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
     })
   }, [ensureConfigReady, store])
 
-  const handleBatchGenerate = useCallback(async (episodeId: string, stages?: string[]) => {
+  const handleBatchGenerate = useCallback(async (
+    episodeId: string,
+    stages?: string[],
+    options?: {
+      image_width?: number
+      image_height?: number
+      element_use_reference?: boolean
+      element_reference_mode?: StudioElementReferenceMode
+    },
+  ) => {
     const defaultStages = videoModelAudioEnabled
       ? ['elements', 'frames', 'end_frames', 'videos']
       : ['elements', 'frames', 'end_frames', 'videos', 'audio']
@@ -1034,17 +1064,33 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
     await store.batchGenerate(
       episodeId,
       actualStages,
-      { video_generate_audio: videoModelAudioEnabled },
+      {
+        video_generate_audio: videoModelAudioEnabled,
+        image_width: options?.image_width,
+        image_height: options?.image_height,
+        element_use_reference: options?.element_use_reference,
+        element_reference_mode: options?.element_reference_mode,
+      },
     )
   }, [ensureConfigReady, store, videoModelAudioEnabled])
 
-  const handleBatchGenerateElementsForSeries = useCallback(async () => {
+  const handleBatchGenerateElementsForSeries = useCallback(async (options?: {
+    width?: number
+    height?: number
+    useReference?: boolean
+    referenceMode?: StudioElementReferenceMode
+  }) => {
     const targetEpisodeId = store.episodes[0]?.id
     if (!targetEpisodeId) {
       pushToast({ message: '当前系列尚未生成分幕，无法批量生成素材', code: 'series_has_no_episode' })
       return
     }
-    await handleBatchGenerate(targetEpisodeId, ['elements'])
+    await handleBatchGenerate(targetEpisodeId, ['elements'], {
+      image_width: options?.width,
+      image_height: options?.height,
+      element_use_reference: options?.useReference,
+      element_reference_mode: options?.referenceMode,
+    })
   }, [handleBatchGenerate, pushToast, store.episodes])
 
   const handleImportCharacterDocument = useCallback(async (
@@ -1084,7 +1130,10 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
     return result
   }, [ensureConfigReady, pushToast, store])
 
-  const handleShortVideoQuickPipeline = useCallback(async (episodeId: string) => {
+  const handleShortVideoQuickPipeline = useCallback(async (
+    episodeId: string,
+    options?: { image_width?: number; image_height?: number },
+  ) => {
     const required: ServiceKey[] = ['llm', 'image', 'video']
     if (!videoModelAudioEnabled) required.push('tts')
     const ok = await ensureConfigReady(required)
@@ -1096,7 +1145,11 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
     await store.batchGenerate(
       episodeId,
       videoModelAudioEnabled ? ['frames', 'videos'] : ['frames', 'videos', 'audio'],
-      { video_generate_audio: videoModelAudioEnabled },
+      {
+        video_generate_audio: videoModelAudioEnabled,
+        image_width: options?.image_width,
+        image_height: options?.image_height,
+      },
     )
   }, [ensureConfigReady, store, videoModelAudioEnabled])
 
@@ -1659,6 +1712,16 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
               角色台
             </button>
           )}
+          {store.currentSeries && (
+            <button
+              onClick={() => setShowCharacterCard(true)}
+              className="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-gray-700 bg-gray-800/70 text-gray-300 hover:bg-gray-800 hover:text-white text-xs transition-colors"
+              title="角色设定卡"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              角色卡
+            </button>
+          )}
           {workbenchMode === 'digital_human' && store.currentSeries && (
             <button
               onClick={() => setShowDigitalHumanConsole(true)}
@@ -1917,15 +1980,15 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
                 if (!store.currentEpisodeId) return
                 await store.updateEpisode(store.currentEpisodeId, updates)
               }}
-              onBatchGenerate={async (stages) => {
+              onBatchGenerate={async (stages, options) => {
                 if (!store.currentEpisodeId) return
-                await handleBatchGenerate(store.currentEpisodeId, stages)
+                await handleBatchGenerate(store.currentEpisodeId, stages, options)
               }}
               videoModelAudioEnabled={videoModelAudioEnabled}
               onVideoModelAudioEnabledChange={setVideoModelAudioEnabled}
-              onRunShortVideoQuickPipeline={async () => {
+              onRunShortVideoQuickPipeline={async (options) => {
                 if (!store.currentEpisodeId) return
-                await handleShortVideoQuickPipeline(store.currentEpisodeId)
+                await handleShortVideoQuickPipeline(store.currentEpisodeId, options)
               }}
               historyEntries={store.episodeHistory}
               historyLoading={store.historyLoading}
@@ -1949,9 +2012,14 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
                 if (!ok) return
                 await store.generateElementImage(elementId, options)
               }}
-              onBatchGenerateElementImages={async () => {
+              onBatchGenerateElementImages={async (options) => {
                 if (!store.currentEpisodeId) return
-                await handleBatchGenerate(store.currentEpisodeId, ['elements'])
+                await handleBatchGenerate(store.currentEpisodeId, ['elements'], {
+                  image_width: options?.width,
+                  image_height: options?.height,
+                  element_use_reference: options?.useReference,
+                  element_reference_mode: options?.referenceMode,
+                })
               }}
               exporting={exporting}
               bridgingAgent={bridgingAgent}
@@ -2062,6 +2130,19 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
           onImportDocument={handleImportCharacterDocument}
           onSplitCharacterByAge={handleSplitCharacterByAge}
           onClose={() => setShowCharacterConsole(false)}
+        />
+      )}
+
+      {showCharacterCard && store.currentSeries && (
+        <CharacterSettingCardDialog
+          series={store.currentSeries}
+          elements={store.sharedElements}
+          onUpdateElement={(id, updates) => store.updateElement(id, updates)}
+          onAddElement={(el) => store.addElement(store.currentSeriesId!, el)}
+          onDeleteElement={(id) => store.deleteElement(id)}
+          onGenerateElementImage={(id, opts) => store.generateElementImage(id, opts)}
+          generating={store.generating}
+          onClose={() => setShowCharacterCard(false)}
         />
       )}
 
@@ -2272,15 +2353,27 @@ function EpisodeWorkbench({
   onBack: () => void
   onPlan: () => void | Promise<void>
   onEnhance: (mode: 'refine' | 'expand') => void | Promise<void>
-  onGenerateAsset: (shotId: string, stage: 'frame' | 'key_frame' | 'end_frame' | 'video' | 'audio') => void | Promise<void>
+  onGenerateAsset: (
+    shotId: string,
+    stage: 'frame' | 'key_frame' | 'end_frame' | 'video' | 'audio',
+    options?: { width?: number; height?: number }
+  ) => void | Promise<void>
   onInpaintShot: (shotId: string, payload: { editPrompt: string; maskData?: string }) => void | Promise<void>
   onUpdateShot: (shotId: string, updates: Record<string, unknown>) => void | Promise<void>
   onReorderShots: (shotIds: string[]) => void | Promise<void>
   onUpdateEpisode: (updates: Record<string, unknown>) => void | Promise<void>
-  onBatchGenerate: (stages?: string[]) => void | Promise<void>
+  onBatchGenerate: (
+    stages?: string[],
+    options?: {
+      image_width?: number
+      image_height?: number
+      element_use_reference?: boolean
+      element_reference_mode?: StudioElementReferenceMode
+    }
+  ) => void | Promise<void>
   videoModelAudioEnabled: boolean
   onVideoModelAudioEnabledChange: (enabled: boolean) => void
-  onRunShortVideoQuickPipeline?: () => void | Promise<void>
+  onRunShortVideoQuickPipeline?: (options?: { image_width?: number; image_height?: number }) => void | Promise<void>
   historyEntries: StudioEpisodeHistoryEntry[]
   historyLoading: boolean
   historyRestoring: boolean
@@ -2294,9 +2387,23 @@ function EpisodeWorkbench({
   onDeleteElement: (elementId: string) => void | Promise<void>
   onGenerateElementImage: (
     elementId: string,
-    options?: { useReference?: boolean; referenceMode?: 'none' | 'light' | 'full' }
+    options?: {
+      useReference?: boolean
+      referenceMode?: StudioElementReferenceMode
+      width?: number
+      height?: number
+      renderMode?: StudioElementRenderMode
+      maxImages?: number
+      steps?: number
+      seed?: number
+    }
   ) => void | Promise<void>
-  onBatchGenerateElementImages: () => void | Promise<void>
+  onBatchGenerateElementImages: (options?: {
+    width?: number
+    height?: number
+    useReference?: boolean
+    referenceMode?: StudioElementReferenceMode
+  }) => void | Promise<void>
   exporting: boolean
   bridgingAgent: boolean
   planning: boolean
@@ -2324,6 +2431,15 @@ function EpisodeWorkbench({
   const [scriptDraft, setScriptDraft] = useState(episode.script_excerpt || '')
   const [detailPanelWidth, setDetailPanelWidth] = useState<number>(() => readStoredNumber(LAYOUT_DETAIL_PANEL_WIDTH_KEY, 320, 280, 540))
   const [detailPanelCollapsed, setDetailPanelCollapsed] = useState<boolean>(() => readStoredBoolean(LAYOUT_DETAIL_PANEL_COLLAPSED_KEY, false))
+  const [shotImageRatio, setShotImageRatio] = useState<StudioImageRatioValue>(() => {
+    if (typeof window === 'undefined') return '16:9'
+    try {
+      const raw = window.localStorage.getItem(SHOT_IMAGE_RATIO_KEY)
+      return raw && isStudioImageRatioValue(raw) ? raw : '16:9'
+    } catch {
+      return '16:9'
+    }
+  })
   const previewPanelDragRef = useRef<{
     startX: number
     startY: number
@@ -2356,6 +2472,14 @@ function EpisodeWorkbench({
     : 'min-h-0 border-b border-gray-800'
   const selectedHistoryEntry = historyEntries.find((entry) => entry.id === selectedHistoryId) || historyEntries[0]
   const selectedHistoryShots = Array.isArray(selectedHistoryEntry?.snapshot?.shots) ? selectedHistoryEntry?.snapshot?.shots || [] : []
+  const shotImageRatioPreset = useMemo(
+    () => resolveStudioImageRatioPreset(shotImageRatio, '16:9'),
+    [shotImageRatio],
+  )
+  const shotImageGenerationOptions = useMemo(
+    () => ({ width: shotImageRatioPreset.width, height: shotImageRatioPreset.height }),
+    [shotImageRatioPreset.height, shotImageRatioPreset.width],
+  )
   const historyDiff = useMemo(
     () => summarizeShotDiff(shots, selectedHistoryShots),
     [selectedHistoryShots, shots],
@@ -2487,6 +2611,15 @@ function EpisodeWorkbench({
   }, [detailPanelCollapsed])
 
   useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(SHOT_IMAGE_RATIO_KEY, shotImageRatio)
+    } catch {
+      // ignore layout persistence errors
+    }
+  }, [shotImageRatio])
+
+  useEffect(() => {
     const handlePointerMove = (event: MouseEvent) => {
       const resizing = detailPanelResizeRef.current
       if (!resizing) return
@@ -2576,7 +2709,7 @@ function EpisodeWorkbench({
   const runPromptHealthScan = useCallback(async () => {
     const items = shots.flatMap((shot, idx) => (
       PROMPT_FIELD_META.map((meta) => {
-        const value = String((shot as Record<string, unknown>)[meta.field] || '').trim()
+        const value = String((shot as unknown as Record<string, unknown>)[meta.field] || '').trim()
         if (!value) return null
         return {
           id: `${shot.id}::${meta.field}`,
@@ -2788,6 +2921,24 @@ function EpisodeWorkbench({
                 扩展
               </button>
               <label className="flex items-center gap-1.5 px-2 py-1 rounded bg-gray-900/70 border border-gray-800 text-[11px] text-gray-300">
+                <span>分镜比例</span>
+                <select
+                  value={shotImageRatio}
+                  onChange={(e) => {
+                    const next = e.target.value
+                    if (isStudioImageRatioValue(next)) setShotImageRatio(next)
+                  }}
+                  className="bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5 text-[11px] text-gray-200 focus:outline-none focus:border-purple-500"
+                  title="用于首帧/关键帧/尾帧生成"
+                >
+                  {STUDIO_IMAGE_RATIO_PRESETS.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.value}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-center gap-1.5 px-2 py-1 rounded bg-gray-900/70 border border-gray-800 text-[11px] text-gray-300">
                 <input
                   type="checkbox"
                   checked={videoModelAudioEnabled}
@@ -2796,7 +2947,10 @@ function EpisodeWorkbench({
                 音画同出（视频模型音轨）
               </label>
               <button
-                onClick={() => onBatchGenerate()}
+                onClick={() => onBatchGenerate(undefined, {
+                  image_width: shotImageGenerationOptions.width,
+                  image_height: shotImageGenerationOptions.height,
+                })}
                 disabled={generating}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium disabled:opacity-50 transition-colors"
               >
@@ -2825,14 +2979,23 @@ function EpisodeWorkbench({
             </button>
           ))}
           <button
-            onClick={() => onBatchGenerate(videoModelAudioEnabled ? ['frames', 'videos'] : ['frames', 'videos', 'audio'])}
+            onClick={() => onBatchGenerate(
+              videoModelAudioEnabled ? ['frames', 'videos'] : ['frames', 'videos', 'audio'],
+              {
+                image_width: shotImageGenerationOptions.width,
+                image_height: shotImageGenerationOptions.height,
+              },
+            )}
             disabled={planning || generating || shots.length <= 0}
             className="ml-auto text-[11px] px-2.5 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 disabled:opacity-40 transition-colors"
           >
             {videoModelAudioEnabled ? '快编生成（帧+视频音轨）' : '快编生成（帧+视频+音频）'}
           </button>
           <button
-            onClick={() => onRunShortVideoQuickPipeline?.()}
+            onClick={() => onRunShortVideoQuickPipeline?.({
+              image_width: shotImageGenerationOptions.width,
+              image_height: shotImageGenerationOptions.height,
+            })}
             disabled={planning || generating}
             className="text-[11px] px-2.5 py-1 rounded bg-purple-600 hover:bg-purple-500 text-white disabled:opacity-40 transition-colors"
           >
@@ -2891,8 +3054,8 @@ function EpisodeWorkbench({
                     setPreviewShotId(shot.id)
                     if (shot.id !== selectedShotId) setDetailPanelCollapsed(false)
                   }}
-                  onGenerateFrame={() => onGenerateAsset(shot.id, 'frame')}
-                  onGenerateEndFrame={() => onGenerateAsset(shot.id, 'end_frame')}
+                  onGenerateFrame={() => onGenerateAsset(shot.id, 'frame', shotImageGenerationOptions)}
+                  onGenerateEndFrame={() => onGenerateAsset(shot.id, 'end_frame', shotImageGenerationOptions)}
                   onGenerateVideo={() => onGenerateAsset(shot.id, 'video')}
                   onGenerateAudio={() => onGenerateAsset(shot.id, 'audio')}
                   generating={generating}
@@ -2919,7 +3082,12 @@ function EpisodeWorkbench({
               <ShotDetailPanel
                 shot={selectedShot!}
                 elements={elements}
-                onGenerateAsset={(stage) => onGenerateAsset(selectedShot!.id, stage)}
+                onGenerateAsset={(stage, options) => onGenerateAsset(selectedShot!.id, stage, options)}
+                imageGeneration={{
+                  ratioLabel: shotImageRatioPreset.value,
+                  width: shotImageRatioPreset.width,
+                  height: shotImageRatioPreset.height,
+                }}
                 onInpaint={(payload) => onInpaintShot(selectedShot!.id, payload)}
                 onUpdate={(updates) => onUpdateShot(selectedShot!.id, updates)}
                 onCollapse={() => setDetailPanelCollapsed(true)}
@@ -2945,7 +3113,12 @@ function EpisodeWorkbench({
           <ShotDetailPanel
             shot={selectedShot!}
             elements={elements}
-            onGenerateAsset={(stage) => onGenerateAsset(selectedShot!.id, stage)}
+            onGenerateAsset={(stage, options) => onGenerateAsset(selectedShot!.id, stage, options)}
+            imageGeneration={{
+              ratioLabel: shotImageRatioPreset.value,
+              width: shotImageRatioPreset.width,
+              height: shotImageRatioPreset.height,
+            }}
             onInpaint={(payload) => onInpaintShot(selectedShot!.id, payload)}
             onUpdate={(updates) => onUpdateShot(selectedShot!.id, updates)}
             onCollapse={() => setDetailPanelCollapsed(true)}
@@ -3367,7 +3540,7 @@ function ShotCard({
           <img
             src={shot.start_image_url}
             alt={shot.name}
-            className="w-full h-full object-cover"
+            className="w-full h-full object-contain bg-gray-900/70"
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center text-gray-600">
@@ -3382,7 +3555,7 @@ function ShotCard({
         </div>
         {shot.end_image_url && (
           <div className="absolute bottom-1 left-1 w-12 h-8 rounded border border-white/30 overflow-hidden bg-black/40">
-            <img src={shot.end_image_url} alt="end-frame" className="w-full h-full object-cover" />
+            <img src={shot.end_image_url} alt="end-frame" className="w-full h-full object-contain bg-gray-900/70" />
           </div>
         )}
         {shot.video_url && (
@@ -4166,6 +4339,7 @@ function CreateSeriesDialog({
     script: string
     description?: string
     visual_style?: string
+    series_bible?: string
     target_episode_count?: number
     episode_duration_seconds?: number
   }) => void | Promise<void>
@@ -4183,6 +4357,7 @@ function CreateSeriesDialog({
   const [script, setScript] = useState('')
   const [description, setDescription] = useState('')
   const [visualStyle, setVisualStyle] = useState('')
+  const [seriesBible, setSeriesBible] = useState('')
   const [targetCount, setTargetCount] = useState(isShortVideo || isDigitalHuman ? 1 : 0)
   const [duration, setDuration] = useState(isShortVideo ? 30 : isDigitalHuman ? 45 : 90)
 
@@ -4193,6 +4368,7 @@ function CreateSeriesDialog({
       script: script.trim(),
       description: description.trim() || undefined,
       visual_style: visualStyle.trim() || undefined,
+      series_bible: seriesBible.trim() || undefined,
       target_episode_count: targetCount || undefined,
       episode_duration_seconds: duration || undefined,
     })
@@ -4215,7 +4391,13 @@ function CreateSeriesDialog({
           </div>
 
           <div>
-            <label className="text-sm text-gray-400 block mb-1">完整脚本 *</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-sm text-gray-400">完整脚本 *</label>
+              <DocumentUploadButton
+                onTextExtracted={(text) => setScript(text)}
+                label="上传脚本"
+              />
+            </div>
             <textarea
               className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-purple-500 resize-none"
               rows={isShortVideo ? 7 : 10}
@@ -4226,6 +4408,28 @@ function CreateSeriesDialog({
             <p className="text-xs text-gray-500 mt-1">
               {script.length} 字
             </p>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-sm text-gray-400">世界观 / 人物设定</label>
+              <DocumentUploadButton
+                onTextExtracted={(text) => setSeriesBible((prev) => prev ? prev + '\n\n' + text : text)}
+                label="上传设定文档"
+              />
+            </div>
+            <textarea
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-purple-500 resize-none"
+              rows={4}
+              placeholder="可选，粘贴或上传世界观设定、人物设定卡等文档..."
+              value={seriesBible}
+              onChange={(e) => setSeriesBible(e.target.value)}
+            />
+            {seriesBible && (
+              <p className="text-xs text-gray-500 mt-1">
+                {seriesBible.length} 字
+              </p>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -4239,7 +4443,13 @@ function CreateSeriesDialog({
               />
             </div>
             <div>
-              <label className="text-sm text-gray-400 block mb-1">视觉风格</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-sm text-gray-400">视觉风格</label>
+                <DocumentUploadButton
+                  onTextExtracted={(text) => setVisualStyle(text)}
+                  label="上传画风"
+                />
+              </div>
               <input
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
                 placeholder="例如：吉卜力2D / 电影级写实"

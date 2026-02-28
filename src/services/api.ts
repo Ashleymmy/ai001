@@ -69,7 +69,7 @@ const studioApi = axios.create({
   timeout: 600000
 })
 
-function attachRuntimeContext(config: { headers?: Record<string, unknown> }) {
+function attachRuntimeContext<T extends { headers?: Record<string, unknown> }>(config: T): T {
   const token = getStoredAccessToken()
   const workspaceId = getStoredWorkspaceId()
   const headers = (config.headers || {}) as Record<string, unknown>
@@ -383,6 +383,17 @@ export async function uploadFiles(files: File[]): Promise<UploadResult[]> {
     }
   }
   return results
+}
+
+// 解析文档文件（txt/md/docx/pdf）为文本，不保存到磁盘
+export async function parseDocument(file: File): Promise<{ text: string; filename: string }> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const response = await api.post('/api/studio/parse-document', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 60000,
+  })
+  return response.data
 }
 
 // 单独生成图像
@@ -2060,6 +2071,11 @@ export interface WorkspaceUndoRedoResult {
   head_index?: number
 }
 
+export interface CollabAuthContext {
+  user: CollabUser
+  workspaces: WorkspaceSummary[]
+}
+
 export async function authGetConfig(): Promise<CollabAuthConfig> {
   const response = await api.get('/api/auth/config')
   return response.data as CollabAuthConfig
@@ -2110,6 +2126,40 @@ export async function authMe(): Promise<{
 }> {
   const response = await api.get('/api/auth/me')
   return response.data
+}
+
+export async function authUpdateMe(payload: {
+  name?: string
+  email?: string
+}): Promise<CollabAuthContext> {
+  const response = await api.patch('/api/auth/me', payload)
+  return response.data as CollabAuthContext
+}
+
+export async function authChangePassword(payload: {
+  current_password: string
+  new_password: string
+}): Promise<{ ok: boolean }> {
+  const response = await api.post('/api/auth/change-password', payload)
+  return response.data as { ok: boolean }
+}
+
+export async function authForgotPassword(payload: {
+  email: string
+}): Promise<{
+  ok: boolean
+  reset_token?: string
+}> {
+  const response = await api.post('/api/auth/forgot-password', payload)
+  return response.data as { ok: boolean; reset_token?: string }
+}
+
+export async function authResetPassword(payload: {
+  reset_token: string
+  new_password: string
+}): Promise<{ ok: boolean }> {
+  const response = await api.post('/api/auth/reset-password', payload)
+  return response.data as { ok: boolean }
 }
 
 export async function workspaceList(): Promise<WorkspaceSummary[]> {
@@ -2852,7 +2902,7 @@ export async function studioAddElement(
 
 export async function studioUpdateElement(
   elementId: string,
-  updates: Partial<Pick<StudioElement, 'name' | 'type' | 'description' | 'voice_profile' | 'is_favorite' | 'image_url' | 'reference_images'>>
+  updates: Partial<Pick<StudioElement, 'name' | 'type' | 'description' | 'voice_profile' | 'is_favorite' | 'image_url' | 'image_history' | 'reference_images'>>
 ): Promise<StudioElement> {
   const response = await api.put(`/api/studio/elements/${elementId}`, updates)
   return response.data
@@ -2895,14 +2945,33 @@ export async function studioSaveDigitalHumanProfiles(
   return (response.data?.profiles || []) as StudioDigitalHumanProfile[]
 }
 
+export type StudioElementReferenceMode = 'none' | 'light' | 'full'
+export type StudioElementRenderMode = 'auto' | 'storybook' | 'comic'
+
+export interface StudioGenerateElementImageOptions {
+  use_reference?: boolean
+  reference_mode?: StudioElementReferenceMode
+  width?: number
+  height?: number
+  render_mode?: StudioElementRenderMode
+  max_images?: number
+  steps?: number
+  seed?: number
+}
+
 export async function studioGenerateElementImage(
   elementId: string,
-  options?: { use_reference?: boolean; reference_mode?: 'none' | 'light' | 'full'; width?: number; height?: number }
+  options?: StudioGenerateElementImageOptions
 ): Promise<{
   element_id: string
   image_url: string
+  generated_urls?: string[]
+  generated_count?: number
+  render_mode_applied?: StudioElementRenderMode
 }> {
-  const response = await api.post(`/api/studio/elements/${elementId}/generate-image`, options || {})
+  const response = await studioApi.post(`/api/studio/elements/${elementId}/generate-image`, options || {}, {
+    timeout: 600000,
+  })
   return response.data
 }
 
@@ -3002,6 +3071,10 @@ export interface StudioBatchParallelConfig {
 
 export interface StudioBatchGenerateOptions {
   video_generate_audio?: boolean
+  image_width?: number
+  image_height?: number
+  element_use_reference?: boolean
+  element_reference_mode?: StudioElementReferenceMode
 }
 
 export async function studioBatchGenerate(
@@ -3014,6 +3087,10 @@ export async function studioBatchGenerate(
     stages: stages || ['elements', 'frames', 'key_frames', 'end_frames', 'videos', 'audio'],
     parallel: parallel || undefined,
     video_generate_audio: options?.video_generate_audio,
+    image_width: options?.image_width,
+    image_height: options?.image_height,
+    element_use_reference: options?.element_use_reference,
+    element_reference_mode: options?.element_reference_mode,
   })
   return response.data
 }
@@ -3041,6 +3118,10 @@ export function studioBatchGenerateStream(
   if (parallel?.video_max_concurrency) query.set('video_max_concurrency', String(parallel.video_max_concurrency))
   if (parallel?.global_max_concurrency) query.set('global_max_concurrency', String(parallel.global_max_concurrency))
   if (typeof options?.video_generate_audio === 'boolean') query.set('video_generate_audio', options.video_generate_audio ? 'true' : 'false')
+  if (typeof options?.image_width === 'number' && options.image_width > 0) query.set('image_width', String(Math.round(options.image_width)))
+  if (typeof options?.image_height === 'number' && options.image_height > 0) query.set('image_height', String(Math.round(options.image_height)))
+  if (typeof options?.element_use_reference === 'boolean') query.set('element_use_reference', options.element_use_reference ? 'true' : 'false')
+  if (options?.element_reference_mode) query.set('element_reference_mode', options.element_reference_mode)
 
   const url = `${API_BASE}/api/studio/episodes/${episodeId}/batch-generate-stream${query.toString() ? `?${query.toString()}` : ''}`
   const eventSource = new EventSource(url)

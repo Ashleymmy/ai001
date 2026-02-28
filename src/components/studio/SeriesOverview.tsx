@@ -3,7 +3,7 @@
  * 从 StudioPage.tsx 中提取，负责展示系列信息、项目统计、分集卡片、共享元素库和世界观设定。
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import {
   Plus, Users, MapPin, Package,
   Loader2, Trash2, ImageIcon,
@@ -12,12 +12,14 @@ import {
 } from 'lucide-react'
 import { studioGetSeriesStats } from '../../services/api'
 import type { StudioSeriesStats } from '../../services/api'
+import type { StudioElementRenderMode, StudioElementReferenceMode } from '../../services/api'
 import type {
   StudioSeries,
   StudioEpisode,
   StudioElement,
   StudioGenerationScope,
 } from '../../store/studioStore'
+import DocumentUploadButton from './DocumentUploadButton'
 import {
   StatusDot,
   getEpisodeStatusText,
@@ -28,6 +30,12 @@ import HoverOverviewPanel from './HoverOverviewPanel'
 import ElementEditDialog from './ElementEditDialog'
 import ImageHistoryDialog from './ImageHistoryDialog'
 import ElementLibraryPanel from './ElementLibraryPanel'
+import {
+  STUDIO_IMAGE_RATIO_PRESETS,
+  isStudioImageRatioValue,
+  resolveStudioImageSizeByRatio,
+  type StudioImageRatioValue,
+} from './imageRatio'
 
 // ── helpers only used by SeriesOverview ──────────────────────
 
@@ -101,9 +109,23 @@ export default function SeriesOverview({
   onDeleteElement: (elementId: string) => void | Promise<void>
   onGenerateElementImage: (
     elementId: string,
-    options?: { useReference?: boolean; referenceMode?: 'none' | 'light' | 'full' }
+    options?: {
+      useReference?: boolean
+      referenceMode?: StudioElementReferenceMode
+      width?: number
+      height?: number
+      renderMode?: StudioElementRenderMode
+      maxImages?: number
+      steps?: number
+      seed?: number
+    }
   ) => void | Promise<void>
-  onBatchGenerateElementImages?: () => void | Promise<void>
+  onBatchGenerateElementImages?: (options?: {
+    width?: number
+    height?: number
+    useReference?: boolean
+    referenceMode?: StudioElementReferenceMode
+  }) => void | Promise<void>
   onExportAssets: () => void | Promise<void>
   onExportVideo: () => void | Promise<void>
   exporting: boolean
@@ -122,7 +144,21 @@ export default function SeriesOverview({
   const [showElementDialog, setShowElementDialog] = useState(false)
   const [editingElement, setEditingElement] = useState<StudioElement | null>(null)
   const [historyElement, setHistoryElement] = useState<StudioElement | null>(null)
+  const [historyDeletingUrl, setHistoryDeletingUrl] = useState<string | null>(null)
   const [characterRefModeMap, setCharacterRefModeMap] = useState<Record<string, 'none' | 'light' | 'full'>>({})
+  const [elementImageRatio, setElementImageRatio] = useState<StudioImageRatioValue>(() => {
+    if (typeof window === 'undefined') return '1:1'
+    try {
+      const raw = window.localStorage.getItem('studio.elementLibrary.imageRatio')
+      return raw && isStudioImageRatioValue(raw) ? raw : '1:1'
+    } catch {
+      return '1:1'
+    }
+  })
+  const elementImageRatioPreset = useMemo(
+    () => resolveStudioImageSizeByRatio(elementImageRatio, 2048, '1:1'),
+    [elementImageRatio],
+  )
 
   useEffect(() => {
     setBibleDraft(series.series_bible || '')
@@ -149,7 +185,79 @@ export default function SeriesOverview({
 
   const getCharacterRefMode = (element: StudioElement): 'none' | 'light' | 'full' => {
     if (element.type !== 'character') return 'none'
-    return characterRefModeMap[element.id] || 'light'
+    return characterRefModeMap[element.id] || 'none'
+  }
+
+  const persistElementImageRatio = (next: StudioImageRatioValue) => {
+    setElementImageRatio(next)
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem('studio.elementLibrary.imageRatio', next)
+    } catch {
+      // ignore local persistence errors
+    }
+  }
+
+  const normalizeImageList = (value: unknown): string[] => {
+    if (!Array.isArray(value)) return []
+    return value
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+  }
+
+  const buildElementImageDeleteUpdates = (element: StudioElement, targetUrl: string): Record<string, unknown> => {
+    const target = String(targetUrl || '').trim()
+    if (!target) return {}
+
+    const current = String(element.image_url || '').trim()
+    const history = normalizeImageList(element.image_history)
+    const refs = normalizeImageList(element.reference_images)
+    const filteredHistory = history.filter((url) => url !== target)
+    const filteredRefs = refs.filter((url) => url !== target)
+    const updates: Record<string, unknown> = {}
+
+    if (filteredHistory.length !== history.length) {
+      updates.image_history = filteredHistory
+    }
+    if (filteredRefs.length !== refs.length) {
+      updates.reference_images = filteredRefs
+    }
+
+    if (current === target) {
+      const nextHistory = filteredHistory.slice()
+      let nextCurrent = ''
+      if (nextHistory.length > 0) {
+        nextCurrent = nextHistory[nextHistory.length - 1]
+        const nextCurrentIndex = nextHistory.lastIndexOf(nextCurrent)
+        if (nextCurrentIndex >= 0) nextHistory.splice(nextCurrentIndex, 1)
+      }
+      updates.image_url = nextCurrent
+      updates.image_history = nextHistory
+    }
+    return updates
+  }
+
+  const handleDeleteElementImage = async (element: StudioElement, targetUrl: string) => {
+    const updates = buildElementImageDeleteUpdates(element, targetUrl)
+    if (Object.keys(updates).length <= 0) return
+    setHistoryDeletingUrl(targetUrl)
+    try {
+      await Promise.resolve(onUpdateElement(element.id, updates))
+      if (historyElement && historyElement.id === element.id) {
+        setHistoryElement({
+          ...historyElement,
+          image_url: typeof updates.image_url === 'string' ? updates.image_url : historyElement.image_url,
+          image_history: Array.isArray(updates.image_history)
+            ? updates.image_history as string[]
+            : (historyElement.image_history || []),
+          reference_images: Array.isArray(updates.reference_images)
+            ? updates.reference_images as string[]
+            : (historyElement.reference_images || []),
+        })
+      }
+    } finally {
+      setHistoryDeletingUrl(null)
+    }
   }
 
   return (
@@ -349,6 +457,21 @@ export default function SeriesOverview({
                 <Star className="w-3 h-3" />
                 收藏
               </button>
+              <select
+                value={elementImageRatio}
+                onChange={(e) => {
+                  const next = e.target.value
+                  if (isStudioImageRatioValue(next)) persistElementImageRatio(next)
+                }}
+                className="px-2 py-1 rounded text-xs bg-gray-800 border border-gray-700 text-gray-300 focus:outline-none focus:border-purple-500"
+                title="素材生成画面比例"
+              >
+                {STUDIO_IMAGE_RATIO_PRESETS.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.value}
+                  </option>
+                ))}
+              </select>
               <button
                 onClick={() => setShowElementLibrary(true)}
                 className="px-2 py-1 rounded text-xs bg-gray-800 hover:bg-gray-700 text-gray-300"
@@ -418,11 +541,20 @@ export default function SeriesOverview({
                   </p>
                 )}
                 {el.image_url && (
-                  <img
-                    src={el.image_url}
-                    alt={el.name}
-                    className="w-full h-24 object-cover rounded mt-2"
-                  />
+                  <div className="relative mt-2">
+                    <img
+                      src={el.image_url}
+                      alt={el.name}
+                      className="w-full h-24 object-contain bg-gray-900/60 rounded"
+                    />
+                    <button
+                      onClick={() => handleDeleteElementImage(el, el.image_url)}
+                      className="absolute top-1 right-1 p-1 rounded bg-black/60 hover:bg-black/80 text-red-300 hover:text-red-200 transition-colors"
+                      title="删除当前图片"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
                 )}
                 <div className="mt-2 flex items-center gap-2 flex-wrap">
                   {el.type === 'character' && (
@@ -447,6 +579,8 @@ export default function SeriesOverview({
                       onGenerateElementImage(el.id, {
                         useReference: el.type === 'character' && mode !== 'none',
                         referenceMode: el.type === 'character' ? mode : 'none',
+                        width: elementImageRatioPreset.width,
+                        height: elementImageRatioPreset.height,
                       })
                     }}
                     disabled={generating}
@@ -471,7 +605,7 @@ export default function SeriesOverview({
                     <div className="rounded-lg overflow-hidden border border-gray-800 bg-gray-900/70">
                       <div className="aspect-video w-full bg-gray-900/80">
                         {el.image_url ? (
-                          <img src={el.image_url} alt={el.name} className="w-full h-full object-cover" />
+                          <img src={el.image_url} alt={el.name} className="w-full h-full object-contain" />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center text-gray-600">
                             <ImageIcon className="w-10 h-10" />
@@ -528,6 +662,10 @@ export default function SeriesOverview({
                 </button>
               ) : (
                 <>
+                  <DocumentUploadButton
+                    onTextExtracted={(text) => setBibleDraft((prev) => prev ? prev + '\n\n' + text : text)}
+                    label="上传文档"
+                  />
                   <button
                     onClick={saveBible}
                     className="text-xs px-2 py-1 rounded bg-purple-600 hover:bg-purple-500 text-white"
@@ -599,6 +737,8 @@ export default function SeriesOverview({
             onUpdateElement(historyElement.id, { image_url: url })
             setHistoryElement(null)
           }}
+          onDelete={(url) => handleDeleteElementImage(historyElement, url)}
+          deletingUrl={historyDeletingUrl}
         />
       )}
 

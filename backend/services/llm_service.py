@@ -54,6 +54,10 @@ PROVIDER_CONFIGS = {
     "doubao": {
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
         "default_model": "doubao-pro-4k"
+    },
+    "custom": {
+        "base_url": "https://api.openai.com/v1",
+        "default_model": "gpt-4o-mini"
     }
 }
 

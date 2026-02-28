@@ -20,6 +20,8 @@ import type {
   StudioCharacterSplitResult,
   StudioBatchGenerateStreamEvent,
   StudioEpisodeHistoryEntry,
+  StudioElementRenderMode,
+  StudioElementReferenceMode,
 } from '../services/api'
 
 export type { StudioSeries, StudioEpisode, StudioElement, StudioShot, StudioEpisodeElement }
@@ -262,7 +264,16 @@ interface StudioState {
   ) => Promise<StudioCharacterSplitResult | null>
   generateElementImage: (
     elementId: string,
-    options?: { useReference?: boolean; referenceMode?: 'none' | 'light' | 'full'; width?: number; height?: number }
+    options?: {
+      useReference?: boolean
+      referenceMode?: StudioElementReferenceMode
+      width?: number
+      height?: number
+      renderMode?: StudioElementRenderMode
+      maxImages?: number
+      steps?: number
+      seed?: number
+    }
   ) => Promise<void>
 
   updateShot: (shotId: string, updates: Record<string, unknown>) => Promise<void>
@@ -270,7 +281,7 @@ interface StudioState {
   generateShotAsset: (
     shotId: string,
     stage: 'frame' | 'key_frame' | 'end_frame' | 'video' | 'audio',
-    options?: { video_generate_audio?: boolean }
+    options?: { video_generate_audio?: boolean; width?: number; height?: number }
   ) => Promise<void>
   inpaintShotFrame: (shotId: string, params: { edit_prompt: string; mask_data?: string; width?: number; height?: number }) => Promise<void>
   reorderShots: (episodeId: string, shotIds: string[]) => Promise<void>
@@ -289,7 +300,13 @@ interface StudioState {
   batchGenerate: (
     episodeId: string,
     stages?: string[],
-    options?: { video_generate_audio?: boolean }
+    options?: {
+      video_generate_audio?: boolean
+      image_width?: number
+      image_height?: number
+      element_use_reference?: boolean
+      element_reference_mode?: StudioElementReferenceMode
+    }
   ) => Promise<void>
   retryFailedOperation: (operationId: string) => Promise<void>
   dismissFailedOperation: (operationId: string) => void
@@ -890,7 +907,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const parsed = queueOperationFailure(set, e, {
         key: `import_character_doc:${seriesId}`,
         title: '导入角色文档',
-        retryTask: () => get().importCharacterDocument(seriesId, documentText, options),
+        retryTask: () => get().importCharacterDocument(seriesId, documentText, options).then(() => {}),
       })
       set({
         generating: false,
@@ -934,7 +951,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const parsed = queueOperationFailure(set, e, {
         key: `split_character_by_age:${elementId}`,
         title: '角色阶段拆分',
-        retryTask: () => get().splitCharacterByAge(elementId, options),
+        retryTask: () => get().splitCharacterByAge(elementId, options).then(() => {}),
       })
       set({
         generating: false,
@@ -966,6 +983,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           reference_mode: options?.referenceMode,
           width: options?.width,
           height: options?.height,
+          render_mode: options?.renderMode,
+          max_images: options?.maxImages,
+          steps: options?.steps,
+          seed: options?.seed,
         }),
       )
       const seriesId = get().currentSeriesId
@@ -1058,7 +1079,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       } else if (stage === 'frame' || stage === 'end_frame' || stage === 'key_frame') {
         await enqueueImageGeneration(
           stage === 'end_frame' ? `镜头尾帧: ${shotId}` : stage === 'key_frame' ? `镜头关键帧: ${shotId}` : `镜头首帧: ${shotId}`,
-          () => api.studioGenerateShotAsset(shotId, { stage }),
+          () => api.studioGenerateShotAsset(shotId, {
+            stage,
+            width: options?.width,
+            height: options?.height,
+          }),
         )
       } else {
         await api.studioGenerateShotAsset(shotId, { stage })

@@ -8,6 +8,7 @@ import { getSavedSettings, updateSettings as apiUpdateSettings } from '../servic
 
 // 预设的模型提供商
 export const LLM_PROVIDERS = [
+  { id: 'custom', name: '自定义 (OpenAI 兼容)', baseUrl: '', models: [] },
   { id: 'qwen', name: '通义千问', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', models: ['qwen-plus', 'qwen-turbo', 'qwen-max'] },
   { id: 'openai', name: 'OpenAI (原生SDK)', baseUrl: 'https://api.openai.com/v1', models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'] },
   { id: 'openrouter', name: 'OpenRouter (中转/聚合)', baseUrl: 'https://openrouter.ai/api/v1', models: ['openai/gpt-4o-mini', 'anthropic/claude-3.5-sonnet', 'google/gemini-2.0-flash-001'] },
@@ -21,7 +22,6 @@ export const LLM_PROVIDERS = [
   { id: 'yi', name: '零一万物', baseUrl: 'https://api.lingyiwanwu.com/v1', models: ['yi-large', 'yi-medium', 'yi-spark'] },
   { id: 'doubao', name: '豆包(字节)', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', models: [] },
   { id: 'claude', name: 'Claude (via Proxy)', baseUrl: '', models: ['claude-3-5-sonnet-20241022', 'claude-3-opus-20240229'] },
-  { id: 'custom', name: '自定义', baseUrl: '', models: [] }
 ]
 
 export const IMAGE_PROVIDERS = [

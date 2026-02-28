@@ -8,6 +8,7 @@ import type {
   StudioElement,
 } from '../../store/studioStore'
 import { hasMultiAgeSignals } from './ElementEditDialog'
+import { parseDocument } from '../../services/api'
 
 function CharacterDesignConsoleDialog({
   series,
@@ -59,9 +60,23 @@ function CharacterDesignConsoleDialog({
   const handlePickFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
-    const text = await file.text()
-    setDocText(text)
-    setDocFileName(file.name)
+    event.target.value = ''
+    const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase()
+    try {
+      let text: string
+      if (ext === '.txt' || ext === '.md' || ext === '.markdown') {
+        text = await file.text()
+      } else {
+        // docx/pdf 走后端解析
+        const result = await parseDocument(file)
+        text = result.text
+      }
+      setDocText(text)
+      setDocFileName(file.name)
+    } catch (err) {
+      console.error('文档解析失败:', err)
+      setDocFileName(file.name + '（解析失败）')
+    }
   }
 
   const handleImport = async () => {
@@ -150,10 +165,10 @@ function CharacterDesignConsoleDialog({
                 <div className="flex flex-wrap items-center gap-2">
                   <label className="text-xs text-gray-300 inline-flex items-center gap-2 px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 cursor-pointer">
                     <FileText className="w-3.5 h-3.5" />
-                    上传角色文档（txt/md）
+                    上传角色文档（txt/md/docx/pdf）
                     <input
                       type="file"
-                      accept=".txt,.md,.markdown,text/plain,text/markdown"
+                      accept=".txt,.md,.markdown,.docx,.pdf"
                       className="hidden"
                       onChange={handlePickFile}
                     />

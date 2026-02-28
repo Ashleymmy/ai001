@@ -2,7 +2,7 @@
  * 功能模块：Studio 组件模块，图片历史对话框（ImageHistoryDialog）
  */
 
-import { X } from 'lucide-react'
+import { Trash2, X } from 'lucide-react'
 
 export default function ImageHistoryDialog({
   title,
@@ -10,12 +10,16 @@ export default function ImageHistoryDialog({
   history,
   onClose,
   onApply,
+  onDelete,
+  deletingUrl,
 }: {
   title: string
   current: string
   history: string[]
   onClose: () => void
   onApply: (url: string) => void
+  onDelete?: (url: string, isCurrent: boolean) => void | Promise<void>
+  deletingUrl?: string | null
 }) {
   const list = [current, ...history.slice().reverse()].filter((url, idx, arr) => !!url && arr.indexOf(url) === idx)
 
@@ -30,20 +34,41 @@ export default function ImageHistoryDialog({
         </div>
         <div className="p-4 grid grid-cols-2 md:grid-cols-3 gap-3 overflow-y-auto max-h-[78vh]">
           {list.map((url, idx) => (
-            <button
+            <div
               key={`${url}_${idx}`}
-              onClick={() => onApply(url)}
-              className={`text-left rounded-lg border overflow-hidden ${
+              className={`rounded-lg border overflow-hidden ${
                 url === current ? 'border-purple-500' : 'border-gray-800 hover:border-purple-600'
               }`}
             >
-              <div className="aspect-video bg-gray-800">
-                <img src={url} alt={`history-${idx}`} className="w-full h-full object-cover" />
+              <button
+                onClick={() => onApply(url)}
+                className="w-full text-left"
+              >
+                <div className="aspect-video bg-gray-800">
+                  <img src={url} alt={`history-${idx}`} className="w-full h-full object-cover" />
+                </div>
+              </button>
+              <div className="px-2 py-1.5 text-xs text-gray-300 flex items-center justify-between gap-2">
+                <span>{idx === 0 ? '当前' : `历史 #${idx}`}</span>
+                {onDelete && (
+                  <button
+                    onClick={() => onDelete(url, url === current)}
+                    disabled={deletingUrl === url}
+                    className="text-[11px] inline-flex items-center gap-1 text-red-300 hover:text-red-200 disabled:opacity-50"
+                    title="删除该图片"
+                  >
+                    {deletingUrl === url ? (
+                      '删除中...'
+                    ) : (
+                      <>
+                        <Trash2 className="w-3 h-3" />
+                        删除
+                      </>
+                    )}
+                  </button>
+                )}
               </div>
-              <div className="px-2 py-1 text-xs text-gray-300">
-                {idx === 0 ? '当前' : `历史 #${idx}`}
-              </div>
-            </button>
+            </div>
           ))}
         </div>
       </div>

@@ -4,6 +4,7 @@
 
 import { useState } from 'react'
 import type { StudioElement } from '../../store/studioStore'
+import DocumentUploadButton from './DocumentUploadButton'
 
 export const MULTI_AGE_SIGNAL_KEYWORDS = [
   '幼年', '童年', '少年', '青年', '中年', '老年', '晚年',
@@ -75,7 +76,13 @@ export default function ElementEditDialog({
             </select>
           </div>
           <div>
-            <label className="text-xs text-gray-500 block mb-1">描述</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs text-gray-500">描述</label>
+              <DocumentUploadButton
+                onTextExtracted={(text) => setDescription(text)}
+                label="上传描述"
+              />
+            </div>
             <textarea
               rows={4}
               value={description}

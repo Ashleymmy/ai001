@@ -1827,6 +1827,65 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
     }
 
 
+@app.post("/api/studio/parse-document")
+async def studio_parse_document(file: UploadFile = File(...)):
+    """解析文档文件并返回提取的文本内容（不保存到磁盘）"""
+    content = await file.read()
+    ext = os.path.splitext(file.filename or '')[1].lower()
+    text_content = None
+
+    if ext in ['.txt', '.md', '.markdown']:
+        try:
+            import codecs
+            if content.startswith(codecs.BOM_UTF8):
+                text_content = content.decode('utf-8-sig')
+            elif content.startswith(codecs.BOM_UTF16_LE) or content.startswith(codecs.BOM_UTF16_BE):
+                text_content = content.decode('utf-16')
+            else:
+                try:
+                    text_content = content.decode('utf-8')
+                except UnicodeDecodeError:
+                    try:
+                        text_content = content.decode('gb18030')
+                    except UnicodeDecodeError:
+                        try:
+                            text_content = content.decode('gbk')
+                        except UnicodeDecodeError:
+                            text_content = content.decode('utf-8', errors='replace')
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"文本文件解码失败: {e}")
+    elif ext == '.docx':
+        try:
+            from docx import Document as DocxDocument
+            from io import BytesIO
+            doc = DocxDocument(BytesIO(content))
+            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+            text_content = '\n'.join(paragraphs)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Word 文档解析失败: {e}")
+    elif ext == '.pdf':
+        try:
+            from PyPDF2 import PdfReader
+            from io import BytesIO
+            reader = PdfReader(BytesIO(content))
+            pages_text = []
+            for page in reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    pages_text.append(page_text)
+            text_content = '\n\n'.join(pages_text)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"PDF 文档解析失败: {e}")
+    else:
+        raise HTTPException(status_code=400, detail=f"不支持的文件格式: {ext}，支持 .txt/.md/.docx/.pdf")
+
+    if text_content is None:
+        text_content = ""
+
+    print(f"[ParseDocument] 解析文档: {file.filename} ({ext}), 提取 {len(text_content)} 字符")
+    return {"text": text_content, "filename": file.filename}
+
+
 @app.get("/api/uploads/{category}/{filename}")
 async def get_uploaded_file(category: str, filename: str):
     """获取上传的文件"""
@@ -5802,6 +5861,25 @@ class AuthRefreshRequest(BaseModel):
     refresh_token: str
 
 
+class AuthProfileUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+
+
+class AuthChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class AuthForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class AuthResetPasswordRequest(BaseModel):
+    reset_token: str
+    new_password: str
+
+
 class WorkspaceCreateRequest(BaseModel):
     name: str
 
@@ -5903,6 +5981,66 @@ async def collab_me(
     user = _collab_get_current_user(request, authorization, required=AUTH_REQUIRED)
     workspaces = _collab_ensure_service_ready().list_workspaces(user["id"])
     return {"user": user, "workspaces": workspaces}
+
+
+@app.patch("/api/auth/me")
+async def collab_update_me(
+    req: AuthProfileUpdateRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    user = _collab_get_current_user(request, authorization, required=True)
+    service = _collab_ensure_service_ready()
+    try:
+        updated = service.update_user_profile(
+            str(user.get("id") or ""),
+            name=req.name,
+            email=req.email,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    workspaces = service.list_workspaces(updated["id"])
+    return {"user": updated, "workspaces": workspaces}
+
+
+@app.post("/api/auth/change-password")
+async def collab_change_password(
+    req: AuthChangePasswordRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    user = _collab_get_current_user(request, authorization, required=True)
+    service = _collab_ensure_service_ready()
+    try:
+        service.change_password(
+            str(user.get("id") or ""),
+            req.current_password,
+            req.new_password,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.post("/api/auth/forgot-password")
+async def collab_forgot_password(req: AuthForgotPasswordRequest):
+    service = _collab_ensure_service_ready()
+    reset_token = service.create_password_reset_token(req.email)
+    expose = os.getenv("COLLAB_EXPOSE_RESET_TOKEN", "").strip().lower() in {"1", "true", "yes", "on"}
+    payload: Dict[str, Any] = {"ok": True}
+    if reset_token and (expose or not AUTH_REQUIRED):
+        payload["reset_token"] = reset_token
+    return payload
+
+
+@app.post("/api/auth/reset-password")
+async def collab_reset_password(req: AuthResetPasswordRequest):
+    service = _collab_ensure_service_ready()
+    try:
+        service.reset_password_by_token(req.reset_token, req.new_password)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
 
 
 @app.get("/api/workspaces")
@@ -6404,6 +6542,7 @@ class StudioElementUpdateRequest(BaseModel):
     voice_profile: Optional[str] = None
     is_favorite: Optional[int] = None
     image_url: Optional[str] = None
+    image_history: Optional[List[str]] = None
     reference_images: Optional[List[str]] = None
 
 
@@ -6452,6 +6591,10 @@ class StudioBatchGenerateRequest(BaseModel):
     stages: List[str] = ["elements", "frames", "key_frames", "end_frames", "videos", "audio"]
     parallel: Optional[Dict[str, Any]] = None
     video_generate_audio: Optional[bool] = None
+    image_width: Optional[int] = Field(None, ge=128, le=4096)
+    image_height: Optional[int] = Field(None, ge=128, le=4096)
+    element_use_reference: Optional[bool] = None
+    element_reference_mode: Optional[str] = "none"
 
 
 class StudioReorderShotsRequest(BaseModel):
@@ -6463,6 +6606,10 @@ class StudioElementGenerateImageRequest(BaseModel):
     height: Optional[int] = None
     use_reference: bool = False
     reference_mode: str = "none"
+    render_mode: str = "auto"  # auto / storybook / comic
+    max_images: int = Field(1, ge=1, le=15)
+    steps: Optional[int] = Field(None, ge=10, le=60)
+    seed: Optional[int] = None
 
 
 class StudioCharacterDocImportRequest(BaseModel):
@@ -6574,6 +6721,7 @@ def _studio_raise_from_exception(e: Exception) -> None:
         raise e
     if isinstance(e, StudioServiceError):
         code = e.error_code or "studio_error"
+        print(f"[Studio] StudioServiceError: code={code}, msg={e.message}")
         status = 400 if code in {
             "episode_not_found",
             "series_not_found",
@@ -6586,8 +6734,14 @@ def _studio_raise_from_exception(e: Exception) -> None:
             "config_missing_video",
             "config_missing_tts",
             "invalid_inpaint_prompt",
+            "context_length_exceeded",
+            "character_doc_too_short",
+            "character_doc_parse_failed",
         } else 500
         raise HTTPException(status, e.to_payload())
+    import traceback
+    print(f"[Studio] 未处理异常: {type(e).__name__}: {e}")
+    traceback.print_exc()
     _studio_raise(500, str(e), "studio_internal_error")
 
 
@@ -7975,10 +8129,14 @@ async def studio_generate_element_image(
         payload = req or StudioElementGenerateImageRequest()
         return await service.generate_element_image(
             element_id=element_id,
-            width=payload.width or 1024,
-            height=payload.height or 1024,
+            width=payload.width or 2048,
+            height=payload.height or 2048,
             use_reference=bool(payload.use_reference),
             reference_mode=payload.reference_mode or "none",
+            render_mode=payload.render_mode or "auto",
+            max_images=payload.max_images or 1,
+            steps=payload.steps or 28,
+            seed=payload.seed,
         )
     except Exception as e:
         _studio_raise_from_exception(e)
@@ -7993,6 +8151,10 @@ async def studio_batch_generate_stream(
     stages: Optional[str] = Query(None),
     workspace_id: Optional[str] = Query(None),
     video_generate_audio: Optional[bool] = Query(None),
+    image_width: Optional[int] = Query(None, ge=128, le=4096),
+    image_height: Optional[int] = Query(None, ge=128, le=4096),
+    element_use_reference: Optional[bool] = Query(None),
+    element_reference_mode: Optional[str] = Query("none"),
     image_max_concurrency: Optional[int] = Query(None, ge=1, le=12),
     video_max_concurrency: Optional[int] = Query(None, ge=1, le=8),
     global_max_concurrency: Optional[int] = Query(None, ge=1, le=16),
@@ -8046,6 +8208,10 @@ async def studio_batch_generate_stream(
                 stages=stage_list,
                 parallel=parallel_cfg,
                 video_generate_audio=video_generate_audio,
+                image_width=image_width,
+                image_height=image_height,
+                element_use_reference=element_use_reference,
+                element_reference_mode=element_reference_mode or "none",
                 progress_callback=on_progress,
             )
         )
@@ -8113,6 +8279,10 @@ async def studio_batch_generate(
             stages=req.stages,
             parallel=req.parallel,
             video_generate_audio=req.video_generate_audio,
+            image_width=req.image_width,
+            image_height=req.image_height,
+            element_use_reference=req.element_use_reference,
+            element_reference_mode=req.element_reference_mode or "none",
         )
     except Exception as e:
         _studio_raise_from_exception(e)

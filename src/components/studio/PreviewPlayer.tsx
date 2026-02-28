@@ -362,7 +362,7 @@ export default function PreviewPlayer({
               <img
                 src={current.start_image_url}
                 alt={current.name || current.id}
-                className="absolute inset-0 w-full h-full object-cover"
+                className="absolute inset-0 w-full h-full object-contain bg-gray-900/70"
               />
             ) : (
               <div className="absolute inset-0 w-full h-full flex items-center justify-center text-gray-600">
@@ -372,7 +372,7 @@ export default function PreviewPlayer({
             <video
               ref={videoRef0}
               src={videoSlots[0].src || undefined}
-              className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-150 ${
+              className={`absolute inset-0 w-full h-full object-contain bg-gray-900/70 transition-opacity duration-150 ${
                 activeVideoSlot === 0 && videoSlots[0].shotId === current.id ? 'opacity-100' : 'opacity-0'
               }`}
               preload="auto"
@@ -384,7 +384,7 @@ export default function PreviewPlayer({
             <video
               ref={videoRef1}
               src={videoSlots[1].src || undefined}
-              className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-150 ${
+              className={`absolute inset-0 w-full h-full object-contain bg-gray-900/70 transition-opacity duration-150 ${
                 activeVideoSlot === 1 && videoSlots[1].shotId === current.id ? 'opacity-100' : 'opacity-0'
               }`}
               preload="auto"
@@ -398,7 +398,7 @@ export default function PreviewPlayer({
           <img
             src={current.start_image_url}
             alt={current.name || current.id}
-            className="w-full h-full object-cover"
+            className="w-full h-full object-contain bg-gray-900/70"
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center text-gray-600">

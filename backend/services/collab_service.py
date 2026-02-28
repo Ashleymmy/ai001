@@ -143,6 +143,15 @@ class CollabService:
                     created_at  TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS password_resets (
+                    id          TEXT PRIMARY KEY,
+                    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    token_hash  TEXT NOT NULL UNIQUE,
+                    expires_at  INTEGER NOT NULL,
+                    used_at     INTEGER DEFAULT 0,
+                    created_at  TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS okr_objectives (
                     id            TEXT PRIMARY KEY,
                     workspace_id  TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -220,6 +229,7 @@ class CollabService:
                 CREATE INDEX IF NOT EXISTS idx_journal_scope ON operation_journal(workspace_id, project_scope, seq);
                 CREATE INDEX IF NOT EXISTS idx_episode_assignments_workspace ON episode_assignments(workspace_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_episode_assignments_assignee ON episode_assignments(workspace_id, assigned_to, status);
+                CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets(user_id, created_at DESC);
                 """
             )
             self._migrate_schema(conn)
@@ -267,6 +277,19 @@ class CollabService:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_episode_assignments_workspace ON episode_assignments(workspace_id, updated_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_episode_assignments_assignee ON episode_assignments(workspace_id, assigned_to, status)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS password_resets (
+                id          TEXT PRIMARY KEY,
+                user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                token_hash  TEXT NOT NULL UNIQUE,
+                expires_at  INTEGER NOT NULL,
+                used_at     INTEGER DEFAULT 0,
+                created_at  TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets(user_id, created_at DESC)")
 
     @staticmethod
     def _row_to_dict(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
@@ -369,6 +392,172 @@ class CollabService:
             return self._row_to_dict(row)
         finally:
             conn.close()
+
+    def update_user_profile(
+        self,
+        user_id: str,
+        *,
+        name: Optional[str] = None,
+        email: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        user = self.get_user_by_id(user_id)
+        if not user:
+            raise ValueError("user not found")
+
+        updates: Dict[str, Any] = {}
+        if name is not None:
+            normalized_name = str(name or "").strip()
+            if not normalized_name:
+                raise ValueError("name required")
+            updates["name"] = normalized_name
+
+        if email is not None:
+            normalized_email = str(email or "").strip().lower()
+            if not normalized_email:
+                raise ValueError("email required")
+            if "@" not in normalized_email:
+                raise ValueError("email invalid")
+            existing = self.get_user_by_email(normalized_email)
+            if existing and str(existing.get("id") or "") != user_id:
+                raise ValueError("email already exists")
+            updates["email"] = normalized_email
+
+        if not updates:
+            return user
+
+        now = _now_iso()
+        clauses = []
+        values: List[Any] = []
+        for key in ("name", "email"):
+            if key in updates:
+                clauses.append(f"{key}=?")
+                values.append(updates[key])
+        clauses.append("updated_at=?")
+        values.append(now)
+        values.append(user_id)
+
+        conn = self._connect()
+        try:
+            conn.execute(
+                f"UPDATE users SET {', '.join(clauses)} WHERE id=?",
+                tuple(values),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        updated = self.get_user_by_id(user_id)
+        if not updated:
+            raise ValueError("user update failed")
+        return updated
+
+    def change_password(self, user_id: str, current_password: str, new_password: str) -> None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT id, password_hash FROM users WHERE id=?",
+                (user_id,),
+            ).fetchone()
+            user = self._row_to_dict(row)
+            if not user:
+                raise ValueError("user not found")
+            if not _verify_password(current_password or "", str(user.get("password_hash") or "")):
+                raise ValueError("current password invalid")
+            if len(new_password or "") < 6:
+                raise ValueError("new password too short")
+            if _verify_password(new_password, str(user.get("password_hash") or "")):
+                raise ValueError("new password must differ from current password")
+
+            now = _now_iso()
+            now_ts = _now_ts()
+            conn.execute(
+                "UPDATE users SET password_hash=?, updated_at=? WHERE id=?",
+                (_hash_password(new_password), now, user_id),
+            )
+            conn.execute(
+                "UPDATE refresh_tokens SET revoked_at=? WHERE user_id=? AND (revoked_at IS NULL OR revoked_at=0)",
+                (now_ts, user_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def create_password_reset_token(self, email: str, ttl_seconds: int = 1800) -> Optional[str]:
+        user = self.get_user_by_email(email)
+        if not user:
+            return None
+        user_id = str(user.get("id") or "")
+        if not user_id:
+            return None
+
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        now = _now_iso()
+        expires_at = _now_ts() + max(300, int(ttl_seconds or 0))
+
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT INTO password_resets (id, user_id, token_hash, expires_at, used_at, created_at) VALUES (?,?,?,?,?,?)",
+                (_gen_id("pwd"), user_id, token_hash, expires_at, 0, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return raw_token
+
+    def reset_password_by_token(self, reset_token: str, new_password: str) -> Dict[str, Any]:
+        token = str(reset_token or "").strip()
+        if not token:
+            raise ValueError("reset token required")
+        if len(new_password or "") < 6:
+            raise ValueError("new password too short")
+
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        now_ts = _now_ts()
+        row: Optional[Dict[str, Any]] = None
+        conn = self._connect()
+        try:
+            result = conn.execute(
+                "SELECT * FROM password_resets WHERE token_hash=?",
+                (token_hash,),
+            ).fetchone()
+            row = self._row_to_dict(result)
+            if not row:
+                raise ValueError("reset token invalid")
+            if int(row.get("used_at") or 0) > 0:
+                raise ValueError("reset token already used")
+            if int(row.get("expires_at") or 0) <= now_ts:
+                raise ValueError("reset token expired")
+
+            user_id = str(row.get("user_id") or "")
+            user_row = conn.execute("SELECT password_hash FROM users WHERE id=?", (user_id,)).fetchone()
+            user_data = self._row_to_dict(user_row)
+            if not user_data:
+                raise ValueError("user not found")
+            if _verify_password(new_password, str(user_data.get("password_hash") or "")):
+                raise ValueError("new password must differ from current password")
+
+            conn.execute(
+                "UPDATE users SET password_hash=?, updated_at=? WHERE id=?",
+                (_hash_password(new_password), _now_iso(), user_id),
+            )
+            conn.execute(
+                "UPDATE password_resets SET used_at=? WHERE id=?",
+                (now_ts, row["id"]),
+            )
+            conn.execute(
+                "UPDATE refresh_tokens SET revoked_at=? WHERE user_id=? AND (revoked_at IS NULL OR revoked_at=0)",
+                (now_ts, user_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        user = self.get_user_by_id(str((row or {}).get("user_id") or ""))
+        if not user:
+            raise ValueError("user not found")
+        return user
 
     def ensure_local_dev_user(self) -> Dict[str, Any]:
         existing = self.get_user_by_email("local@dev.local")
