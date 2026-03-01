@@ -222,7 +222,7 @@ export default function ShortVideoWorkbenchPage() {
 
   const handleBatchGenerate = useCallback(async () => {
     if (!store.currentEpisodeId) return
-    const stages = ['elements', 'frames', 'end_frames', 'videos', 'audio']
+    const stages = ['elements', 'frames', 'key_frames', 'end_frames', 'videos', 'audio']
     const ok = await ensureConfigReady(['image', 'video', 'tts'])
     if (!ok) return
     await store.batchGenerate(store.currentEpisodeId, stages)

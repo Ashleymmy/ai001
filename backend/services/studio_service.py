@@ -1293,6 +1293,7 @@ class StudioService:
         candidates = [
             str(prompt_text or ""),
             str(shot.get("prompt") or ""),
+            str(shot.get("key_frame_prompt") or ""),
             str(shot.get("end_prompt") or ""),
             str(shot.get("video_prompt") or ""),
             str(shot.get("description") or ""),
@@ -2859,10 +2860,11 @@ class StudioService:
                     "segment_name": seg_name,
                     "sort_order": sort_order,
                     "name": shot.get("name", ""),
-                    "shot_type": shot.get("type", "standard"),
+                    "type": shot.get("type", "standard"),
                     "duration": shot.get("duration", 6.0),
                     "description": shot.get("description", ""),
                     "prompt": shot.get("prompt", ""),
+                    "key_frame_prompt": shot.get("key_frame_prompt", shot.get("prompt", "")),
                     "end_prompt": shot.get("end_prompt", ""),
                     "video_prompt": shot.get("video_prompt", ""),
                     "narration": shot.get("narration", ""),
@@ -2873,11 +2875,6 @@ class StudioService:
                     "emotion": shot.get("emotion", ""),
                     "emotion_intensity": shot.get("emotion_intensity", 0),
                 })
-
-        # 清空已有镜头再写入
-        existing = self.storage.get_shots(episode_id)
-        for s in existing:
-            self.storage.delete_shot(s["id"])
 
         created_shots = self.storage.bulk_add_shots(episode_id, shots_data)
         print(f"[Studio] 第 {act_num} 集规划完成，共 {len(created_shots)} 个镜头")
@@ -2982,7 +2979,7 @@ class StudioService:
                 continue
             updates = {}
             for field in ("description", "prompt", "end_prompt", "video_prompt", "narration", "dialogue_script", "duration",
-                          "shot_size", "camera_angle", "camera_movement", "emotion", "emotion_intensity"):
+                          "shot_size", "camera_angle", "camera_movement", "emotion", "emotion_intensity", "key_frame_prompt"):
                 if field in sp:
                     updates[field] = sp[field]
             if updates:
@@ -3011,6 +3008,7 @@ class StudioService:
                     duration=shot_data.get("duration", 5.0),
                     description=shot_data.get("description", ""),
                     prompt=shot_data.get("prompt", ""),
+                    end_prompt=shot_data.get("end_prompt", ""),
                     video_prompt=shot_data.get("video_prompt", ""),
                     narration=shot_data.get("narration", ""),
                     dialogue_script=shot_data.get("dialogue_script", ""),
@@ -3019,6 +3017,7 @@ class StudioService:
                     camera_movement=shot_data.get("camera_movement", ""),
                     emotion=shot_data.get("emotion", ""),
                     emotion_intensity=int(shot_data.get("emotion_intensity", 0) or 0),
+                    key_frame_prompt=shot_data.get("key_frame_prompt", shot_data.get("prompt", "")),
                 )
                 ordered_ids.insert(insert_at, created["id"])
                 added_count += 1
@@ -3853,7 +3852,7 @@ class StudioService:
     ) -> Dict[str, Any]:
         """批量生成单集资产
 
-        stages 可包含: "elements", "frames", "end_frames", "videos", "audio"
+        stages 可包含: "elements", "frames", "key_frames", "end_frames", "videos", "audio"
         默认全部执行。
         """
         if stages is None:
@@ -3922,7 +3921,11 @@ class StudioService:
         if "frames" in stages:
             precomputed_totals["frames"] = len([shot for shot in initial_shots if not shot.get("start_image_url")])
         if "key_frames" in stages:
-            precomputed_totals["key_frames"] = len([shot for shot in initial_shots if shot.get("key_frame_prompt") and not shot.get("key_frame_url")])
+            precomputed_totals["key_frames"] = len([
+                shot for shot in initial_shots
+                if (shot.get("key_frame_prompt") or shot.get("prompt") or shot.get("description"))
+                and not shot.get("key_frame_url")
+            ])
         if "end_frames" in stages:
             precomputed_totals["end_frames"] = len([shot for shot in initial_shots if shot.get("end_prompt") and not shot.get("end_image_url")])
         if "videos" in stages:
@@ -4108,7 +4111,11 @@ class StudioService:
         # 2.3) 生成关键帧
         if "key_frames" in stages:
             shots = self.storage.get_shots(episode_id)
-            key_frame_targets = [shot for shot in shots if shot.get("key_frame_prompt") and not shot.get("key_frame_url")]
+            key_frame_targets = [
+                shot for shot in shots
+                if (shot.get("key_frame_prompt") or shot.get("prompt") or shot.get("description"))
+                and not shot.get("key_frame_url")
+            ]
             key_frame_results = await run_stage_concurrent(
                 stage="key_frames",
                 items=key_frame_targets,

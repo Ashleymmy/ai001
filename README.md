@@ -7,6 +7,7 @@
 - 🎬 **智能分镜生成** - AI 自动分析剧本，生成完整分镜方案
 - 🎨 **角色设计** - 自动生成角色设计图，保持风格统一
 - 🖼️ **起始帧生成** - 为每个镜头生成高质量起始帧
+- 🔑 **关键帧生成** - 支持关键动作时刻的关键帧单独生成
 - 🎥 **视频生成** - 将静态画面转化为动态视频
 - 📦 **项目管理** - 完整的项目保存、加载、导出功能
 - 🤖 **Agent 助手** - YuanYuan AI 助手全程指导创作
@@ -108,9 +109,20 @@ ai001/
 **重要：保护你的 API Key**
 
 - ✅ `settings.local.yaml` 和 `custom_providers.local.yaml` 已添加到 `.gitignore`
+- ✅ `studio.settings.local.yaml` 和 `module.settings.local.yaml` 已添加到 `.gitignore`
+- ✅ `backend/data/studio.db` 已添加到 `.gitignore`
 - ✅ 不会被提交到 Git 仓库
 - ✅ 使用 `.example` 文件作为配置模板
 - ⚠️ 永远不要将包含真实 API Key 的文件提交到公开仓库
+
+## 🧩 Studio 最近更新（2026-03-01）
+
+- ✅ 批量生成阶段支持并默认包含 `key_frames`（长篇工作台/短视频工作台）
+- ✅ 修复分镜规划镜头类型字段写入不一致（`type` 持久化）
+- ✅ 修复历史回滚对镜头高级字段（景别/机位/运镜/情绪/关键帧）的恢复缺失
+- ✅ Studio 批量生成 `POST /api/studio/episodes/{episode_id}/batch-generate` 增加阶段合法性校验
+- ✅ Studio 设置与配置检查接口增加工作区权限校验
+- ✅ Studio 与 Agent 的导入导出接口增加工作区权限校验
 
 ## 🛠️ 技术栈
 

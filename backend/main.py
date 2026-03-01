@@ -8273,10 +8273,21 @@ async def studio_batch_generate(
             episode_id=episode_id,
             authorization=authorization,
         )
+    default_stages = ["elements", "frames", "key_frames", "end_frames", "videos", "audio"]
+    stage_list = [str(s or "").strip() for s in (req.stages or []) if str(s or "").strip()] or default_stages
+    allowed_stages = set(default_stages)
+    invalid_stages = [s for s in stage_list if s not in allowed_stages]
+    if invalid_stages:
+        _studio_raise(
+            400,
+            f"无效的生成阶段: {', '.join(invalid_stages)}",
+            "invalid_generation_stage",
+            {"invalid_stages": invalid_stages, "allowed_stages": default_stages},
+        )
     try:
         return await service.batch_generate_episode(
             episode_id,
-            stages=req.stages,
+            stages=stage_list,
             parallel=req.parallel,
             video_generate_audio=req.video_generate_audio,
             image_width=req.image_width,
@@ -8358,7 +8369,16 @@ async def studio_restore_episode_history(
 # --- Studio 设置 ---
 
 @app.get("/api/studio/settings")
-async def studio_get_settings():
+async def studio_get_settings(
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+    if AUTH_REQUIRED and not resolved_workspace_id:
+        _studio_raise(400, "读取 Studio 设置必须指定 workspace_id", "workspace_required")
+    if resolved_workspace_id and (AUTH_REQUIRED or workspace_id):
+        _collab_require_workspace_role(request, resolved_workspace_id, "viewer", authorization)
     return studio_current_settings or {}
 
 
@@ -8403,9 +8423,19 @@ async def studio_get_prompt_templates_defaults():
 
 
 @app.put("/api/studio/settings")
-async def studio_save_settings(req: StudioSettingsRequest):
+async def studio_save_settings(
+    req: StudioSettingsRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
     global studio_current_settings
     service = _studio_ensure_service_ready()
+    resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+    if AUTH_REQUIRED and not resolved_workspace_id:
+        _studio_raise(400, "保存 Studio 设置必须指定 workspace_id", "workspace_required")
+    if resolved_workspace_id and (AUTH_REQUIRED or workspace_id):
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
 
     new_settings = {k: v for k, v in req.model_dump().items() if v is not None}
     if "custom_prompts" in new_settings:
@@ -8473,7 +8503,16 @@ async def studio_prompt_optimize(req: StudioPromptOptimizeRequest):
 
 
 @app.get("/api/studio/config-check")
-async def studio_config_check():
+async def studio_config_check(
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+    if AUTH_REQUIRED and not resolved_workspace_id:
+        _studio_raise(400, "读取 Studio 配置检查必须指定 workspace_id", "workspace_required")
+    if resolved_workspace_id and (AUTH_REQUIRED or workspace_id):
+        _collab_require_workspace_role(request, resolved_workspace_id, "viewer", authorization)
     service = _studio_ensure_service_ready()
     return service.check_config()
 
@@ -8483,7 +8522,10 @@ async def studio_config_check():
 @app.post("/api/studio/episodes/{episode_id}/export-to-agent")
 async def studio_export_episode_to_agent(
     episode_id: str,
+    request: Request,
     req: Optional[StudioExportToAgentRequest] = None,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
 ):
     service = _studio_ensure_service_ready()
     payload = req or StudioExportToAgentRequest()
@@ -8494,6 +8536,15 @@ async def studio_export_episode_to_agent(
     series = service.storage.get_series(episode["series_id"])
     if not series:
         _studio_raise(404, "系列不存在", "series_not_found", {"series_id": episode["series_id"]})
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_episode_write_access(
+            request=request,
+            workspace_id=resolved_workspace_id,
+            episode_id=episode_id,
+            authorization=authorization,
+        )
 
     shots = service.storage.get_shots(episode_id)
     episode_elements = service.storage.get_episode_elements(episode_id)
@@ -8723,11 +8774,24 @@ async def studio_export_episode_to_agent(
 async def studio_import_episode_from_agent(
     episode_id: str,
     req: StudioImportFromAgentRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
 ):
     service = _studio_ensure_service_ready()
     episode = service.storage.get_episode(episode_id)
     if not episode:
         _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+    series = service.storage.get_series(str(episode.get("series_id") or ""))
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_episode_write_access(
+            request=request,
+            workspace_id=resolved_workspace_id,
+            episode_id=episode_id,
+            authorization=authorization,
+        )
 
     project_id = _studio_pick_agent_project_id(req)
     project = storage.get_agent_project(project_id)
@@ -8863,14 +8927,30 @@ async def studio_import_episode_from_agent(
 @app.post("/api/studio/episodes/{episode_id}/export")
 async def studio_export_episode(
     episode_id: str,
+    request: Request,
     mode: str = Query("assets"),
     resolution: str = Query("720p"),
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
 ):
     service = _studio_ensure_service_ready()
     if mode not in {"assets", "video"}:
         _studio_raise(400, "导出模式无效", "invalid_export_mode", {"mode": mode})
     if resolution not in {"720p", "1080p"}:
         _studio_raise(400, "分辨率参数无效", "invalid_export_resolution", {"resolution": resolution})
+    episode = service.storage.get_episode(episode_id)
+    if not episode:
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
+    series = service.storage.get_series(str(episode.get("series_id") or ""))
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"episode_id": episode_id})
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+    effective_workspace_id = series_workspace or resolved_workspace_id
+    if effective_workspace_id and (AUTH_REQUIRED or resolved_workspace_id):
+        _collab_require_workspace_role(request, effective_workspace_id, "viewer", authorization)
+    if resolved_workspace_id and series_workspace and resolved_workspace_id != series_workspace:
+        _studio_raise(404, "集不存在", "episode_not_found", {"episode_id": episode_id})
 
     exporter = StudioExportService(service.storage)
     try:
@@ -8899,14 +8979,27 @@ async def studio_export_episode(
 @app.post("/api/studio/series/{series_id}/export")
 async def studio_export_series(
     series_id: str,
+    request: Request,
     mode: str = Query("assets"),
     resolution: str = Query("720p"),
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
 ):
     service = _studio_ensure_service_ready()
     if mode not in {"assets", "video"}:
         _studio_raise(400, "导出模式无效", "invalid_export_mode", {"mode": mode})
     if resolution not in {"720p", "1080p"}:
         _studio_raise(400, "分辨率参数无效", "invalid_export_resolution", {"resolution": resolution})
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    series_workspace = str((series or {}).get("workspace_id") or "").strip()
+    resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+    effective_workspace_id = series_workspace or resolved_workspace_id
+    if effective_workspace_id and (AUTH_REQUIRED or resolved_workspace_id):
+        _collab_require_workspace_role(request, effective_workspace_id, "viewer", authorization)
+    if resolved_workspace_id and series_workspace and resolved_workspace_id != series_workspace:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
 
     exporter = StudioExportService(service.storage)
     try:

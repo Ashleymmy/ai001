@@ -34,7 +34,10 @@ backend/uploads/
 
 # Sensitive data - API Keys and Settings
 backend/data/settings.local.yaml
+backend/data/studio.settings.local.yaml
+backend/data/module.settings.local.yaml
 backend/data/custom_providers.local.yaml
+backend/data/studio.db
 backend/data/agent_projects/
 backend/outputs/
 

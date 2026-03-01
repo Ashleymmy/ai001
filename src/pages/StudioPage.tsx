@@ -337,6 +337,7 @@ export function getEpisodeStatusBadgeClass(status: string): string {
 function getGenerationStageText(stage: StudioGenerationStage): string {
   if (stage === 'generating_elements') return '生成元素图中'
   if (stage === 'generating_frames') return '生成起始帧中'
+  if (stage === 'generating_key_frames') return '生成关键帧中'
   if (stage === 'generating_end_frames') return '生成尾帧中'
   if (stage === 'generating_videos') return '生成视频中'
   if (stage === 'generating_audio') return '生成音频中'
@@ -1052,11 +1053,11 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
     },
   ) => {
     const defaultStages = videoModelAudioEnabled
-      ? ['elements', 'frames', 'end_frames', 'videos']
-      : ['elements', 'frames', 'end_frames', 'videos', 'audio']
+      ? ['elements', 'frames', 'key_frames', 'end_frames', 'videos']
+      : ['elements', 'frames', 'key_frames', 'end_frames', 'videos', 'audio']
     const actualStages = stages && stages.length > 0 ? stages : defaultStages
     const required = new Set<ServiceKey>()
-    if (actualStages.includes('elements') || actualStages.includes('frames') || actualStages.includes('end_frames')) required.add('image')
+    if (actualStages.includes('elements') || actualStages.includes('frames') || actualStages.includes('key_frames') || actualStages.includes('end_frames')) required.add('image')
     if (actualStages.includes('videos')) required.add('video')
     if (actualStages.includes('audio')) required.add('tts')
     const ok = await ensureConfigReady(Array.from(required))
