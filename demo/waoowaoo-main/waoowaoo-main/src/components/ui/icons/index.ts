@@ -1,5 +1,0 @@
-export { AppIcon, type AppIconProps } from './AppIcon'
-export { iconRegistry, type AppIconName } from './registry'
-export { IconGradientDefs } from './custom'
-export { RatioPreviewIcon, type RatioPreviewIconProps } from './RatioPreviewIcon'
-export type { LucideIcon } from 'lucide-react'
