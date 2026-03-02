@@ -153,12 +153,69 @@ CREATE TABLE IF NOT EXISTS digital_human_profiles (
     updated_at      TEXT NOT NULL
 );
 
+-- 角色提示词档案（从 shared_elements 的 character 自动生成）
+CREATE TABLE IF NOT EXISTS kb_character_cards (
+    id TEXT PRIMARY KEY,
+    element_id TEXT,
+    appearance_tokens TEXT DEFAULT '{}',
+    costume_tokens TEXT DEFAULT '{}',
+    expression_tokens TEXT DEFAULT '{}',
+    signature_poses TEXT DEFAULT '{}',
+    negative_prompts TEXT DEFAULT '',
+    version INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- 情绪氛围预制包
+CREATE TABLE IF NOT EXISTS kb_mood_packs (
+    id TEXT PRIMARY KEY,
+    series_id TEXT DEFAULT '',
+    mood_key TEXT NOT NULL,
+    color_tokens TEXT DEFAULT '',
+    line_style_tokens TEXT DEFAULT '',
+    effect_tokens TEXT DEFAULT '',
+    combined_prompt TEXT DEFAULT '',
+    is_builtin INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- 场景提示词档案（从 shared_elements 的 scene 自动生成）
+CREATE TABLE IF NOT EXISTS kb_scene_cards (
+    id TEXT PRIMARY KEY,
+    element_id TEXT,
+    base_tokens TEXT DEFAULT '',
+    time_variants TEXT DEFAULT '{}',
+    negative_prompts TEXT DEFAULT '',
+    version INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- 世界观提示词词典
+CREATE TABLE IF NOT EXISTS kb_world_bible (
+    id TEXT PRIMARY KEY,
+    series_id TEXT DEFAULT '',
+    art_style TEXT DEFAULT '',
+    era TEXT DEFAULT '',
+    color_palette TEXT DEFAULT '',
+    recurring_motifs TEXT DEFAULT '',
+    forbidden_elements TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_volumes_series ON volumes(series_id, volume_number);
 CREATE INDEX IF NOT EXISTS idx_episodes_series ON episodes(series_id);
 CREATE INDEX IF NOT EXISTS idx_shared_elements_series ON shared_elements(series_id);
 CREATE INDEX IF NOT EXISTS idx_shots_episode ON shots(episode_id);
 CREATE INDEX IF NOT EXISTS idx_episode_elements_episode ON episode_elements(episode_id);
 CREATE INDEX IF NOT EXISTS idx_studio_history_episode ON studio_history(episode_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_kb_character_cards_element ON kb_character_cards(element_id);
+CREATE INDEX IF NOT EXISTS idx_kb_mood_packs_series ON kb_mood_packs(series_id, mood_key);
+CREATE INDEX IF NOT EXISTS idx_kb_scene_cards_element ON kb_scene_cards(element_id);
+CREATE INDEX IF NOT EXISTS idx_kb_world_bible_series ON kb_world_bible(series_id);
 """
 
 
@@ -259,7 +316,10 @@ class StudioStorage:
         for key in ("settings", "creative_brief", "image_history",
                      "reference_images", "appears_in_episodes",
                      "frame_history", "video_history", "visual_action",
-                     "snapshot_json", "style_anchor"):
+                     "snapshot_json", "style_anchor",
+                     "appearance_tokens", "costume_tokens",
+                     "expression_tokens", "signature_poses",
+                     "time_variants"):
             if key in d and isinstance(d[key], str):
                 try:
                     d[key] = json.loads(d[key])
@@ -1309,6 +1369,445 @@ class StudioStorage:
                 )
             conn.commit()
             return self.get_episode_elements(episode_id, _conn=conn)
+        finally:
+            conn.close()
+
+    # ==================================================================
+    # 知识库 - 角色提示词档案 (kb_character_cards) CRUD
+    # ==================================================================
+
+    def create_character_card(
+        self,
+        element_id: str = "",
+        appearance_tokens: Optional[Dict] = None,
+        costume_tokens: Optional[Dict] = None,
+        expression_tokens: Optional[Dict] = None,
+        signature_poses: Optional[Dict] = None,
+        negative_prompts: str = "",
+    ) -> Dict[str, Any]:
+        cid = _gen_id("kbcc_")
+        now = _now()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """INSERT INTO kb_character_cards
+                   (id, element_id, appearance_tokens, costume_tokens,
+                    expression_tokens, signature_poses, negative_prompts,
+                    version, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (cid, element_id,
+                 self._json_field(appearance_tokens or {}),
+                 self._json_field(costume_tokens or {}),
+                 self._json_field(expression_tokens or {}),
+                 self._json_field(signature_poses or {}),
+                 negative_prompts, 1, now, now),
+            )
+            conn.commit()
+            return self.get_character_card(cid, _conn=conn)  # type: ignore[return-value]
+        finally:
+            conn.close()
+
+    def get_character_card(
+        self, card_id: str, *, _conn: Optional[sqlite3.Connection] = None
+    ) -> Optional[Dict[str, Any]]:
+        conn = _conn or self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM kb_character_cards WHERE id=?", (card_id,)
+            ).fetchone()
+            return self._row_to_dict(row)
+        finally:
+            if _conn is None:
+                conn.close()
+
+    def get_character_card_by_element(self, element_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM kb_character_cards WHERE element_id=? ORDER BY version DESC LIMIT 1",
+                (element_id,),
+            ).fetchone()
+            return self._row_to_dict(row)
+        finally:
+            conn.close()
+
+    def list_character_cards(self) -> List[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM kb_character_cards ORDER BY updated_at DESC"
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]  # type: ignore[misc]
+        finally:
+            conn.close()
+
+    def update_character_card(
+        self, card_id: str, updates: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        allowed = {
+            "element_id", "appearance_tokens", "costume_tokens",
+            "expression_tokens", "signature_poses", "negative_prompts", "version",
+        }
+        fields: List[str] = []
+        values: List[Any] = []
+        for k, v in updates.items():
+            if k not in allowed:
+                continue
+            if k in ("appearance_tokens", "costume_tokens", "expression_tokens", "signature_poses"):
+                v = self._json_field(v)
+            fields.append(f"{k}=?")
+            values.append(v)
+        if not fields:
+            return self.get_character_card(card_id)
+        fields.append("updated_at=?")
+        values.append(_now())
+        values.append(card_id)
+        conn = self._connect()
+        try:
+            conn.execute(
+                f"UPDATE kb_character_cards SET {', '.join(fields)} WHERE id=?", values
+            )
+            conn.commit()
+            return self.get_character_card(card_id, _conn=conn)
+        finally:
+            conn.close()
+
+    def delete_character_card(self, card_id: str) -> bool:
+        conn = self._connect()
+        try:
+            cur = conn.execute("DELETE FROM kb_character_cards WHERE id=?", (card_id,))
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    # ==================================================================
+    # 知识库 - 情绪氛围预制包 (kb_mood_packs) CRUD
+    # ==================================================================
+
+    def create_mood_pack(
+        self,
+        mood_key: str,
+        series_id: str = "",
+        color_tokens: str = "",
+        line_style_tokens: str = "",
+        effect_tokens: str = "",
+        combined_prompt: str = "",
+        is_builtin: int = 1,
+    ) -> Dict[str, Any]:
+        mid = _gen_id("kbmp_")
+        now = _now()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """INSERT INTO kb_mood_packs
+                   (id, series_id, mood_key, color_tokens, line_style_tokens,
+                    effect_tokens, combined_prompt, is_builtin,
+                    created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (mid, series_id, mood_key, color_tokens, line_style_tokens,
+                 effect_tokens, combined_prompt, int(is_builtin), now, now),
+            )
+            conn.commit()
+            return self.get_mood_pack(mid, _conn=conn)  # type: ignore[return-value]
+        finally:
+            conn.close()
+
+    def get_mood_pack(
+        self, pack_id: str, *, _conn: Optional[sqlite3.Connection] = None
+    ) -> Optional[Dict[str, Any]]:
+        conn = _conn or self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM kb_mood_packs WHERE id=?", (pack_id,)
+            ).fetchone()
+            return self._row_to_dict(row)
+        finally:
+            if _conn is None:
+                conn.close()
+
+    def get_mood_packs_by_series(
+        self, series_id: str, mood_key: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            if mood_key:
+                rows = conn.execute(
+                    "SELECT * FROM kb_mood_packs WHERE (series_id=? OR series_id='') AND mood_key=? ORDER BY is_builtin DESC, updated_at DESC",
+                    (series_id, mood_key),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM kb_mood_packs WHERE series_id=? OR series_id='' ORDER BY mood_key, is_builtin DESC",
+                    (series_id,),
+                ).fetchall()
+            return [self._row_to_dict(r) for r in rows]  # type: ignore[misc]
+        finally:
+            conn.close()
+
+    def list_mood_packs(self, series_id: str = "") -> List[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            if series_id:
+                rows = conn.execute(
+                    "SELECT * FROM kb_mood_packs WHERE series_id=? OR series_id='' ORDER BY mood_key, is_builtin DESC",
+                    (series_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM kb_mood_packs ORDER BY mood_key, is_builtin DESC"
+                ).fetchall()
+            return [self._row_to_dict(r) for r in rows]  # type: ignore[misc]
+        finally:
+            conn.close()
+
+    def update_mood_pack(
+        self, pack_id: str, updates: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        allowed = {
+            "series_id", "mood_key", "color_tokens", "line_style_tokens",
+            "effect_tokens", "combined_prompt", "is_builtin",
+        }
+        fields: List[str] = []
+        values: List[Any] = []
+        for k, v in updates.items():
+            if k not in allowed:
+                continue
+            fields.append(f"{k}=?")
+            values.append(v)
+        if not fields:
+            return self.get_mood_pack(pack_id)
+        fields.append("updated_at=?")
+        values.append(_now())
+        values.append(pack_id)
+        conn = self._connect()
+        try:
+            conn.execute(
+                f"UPDATE kb_mood_packs SET {', '.join(fields)} WHERE id=?", values
+            )
+            conn.commit()
+            return self.get_mood_pack(pack_id, _conn=conn)
+        finally:
+            conn.close()
+
+    def delete_mood_pack(self, pack_id: str) -> bool:
+        conn = self._connect()
+        try:
+            cur = conn.execute("DELETE FROM kb_mood_packs WHERE id=?", (pack_id,))
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    # ==================================================================
+    # 知识库 - 场景提示词档案 (kb_scene_cards) CRUD
+    # ==================================================================
+
+    def create_scene_card(
+        self,
+        element_id: str = "",
+        base_tokens: str = "",
+        time_variants: Optional[Dict] = None,
+        negative_prompts: str = "",
+    ) -> Dict[str, Any]:
+        sid = _gen_id("kbsc_")
+        now = _now()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """INSERT INTO kb_scene_cards
+                   (id, element_id, base_tokens, time_variants,
+                    negative_prompts, version, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (sid, element_id, base_tokens,
+                 self._json_field(time_variants or {}),
+                 negative_prompts, 1, now, now),
+            )
+            conn.commit()
+            return self.get_scene_card(sid, _conn=conn)  # type: ignore[return-value]
+        finally:
+            conn.close()
+
+    def get_scene_card(
+        self, card_id: str, *, _conn: Optional[sqlite3.Connection] = None
+    ) -> Optional[Dict[str, Any]]:
+        conn = _conn or self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM kb_scene_cards WHERE id=?", (card_id,)
+            ).fetchone()
+            return self._row_to_dict(row)
+        finally:
+            if _conn is None:
+                conn.close()
+
+    def get_scene_card_by_element(self, element_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM kb_scene_cards WHERE element_id=? ORDER BY version DESC LIMIT 1",
+                (element_id,),
+            ).fetchone()
+            return self._row_to_dict(row)
+        finally:
+            conn.close()
+
+    def list_scene_cards(self) -> List[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM kb_scene_cards ORDER BY updated_at DESC"
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]  # type: ignore[misc]
+        finally:
+            conn.close()
+
+    def update_scene_card(
+        self, card_id: str, updates: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        allowed = {
+            "element_id", "base_tokens", "time_variants",
+            "negative_prompts", "version",
+        }
+        fields: List[str] = []
+        values: List[Any] = []
+        for k, v in updates.items():
+            if k not in allowed:
+                continue
+            if k == "time_variants":
+                v = self._json_field(v)
+            fields.append(f"{k}=?")
+            values.append(v)
+        if not fields:
+            return self.get_scene_card(card_id)
+        fields.append("updated_at=?")
+        values.append(_now())
+        values.append(card_id)
+        conn = self._connect()
+        try:
+            conn.execute(
+                f"UPDATE kb_scene_cards SET {', '.join(fields)} WHERE id=?", values
+            )
+            conn.commit()
+            return self.get_scene_card(card_id, _conn=conn)
+        finally:
+            conn.close()
+
+    def delete_scene_card(self, card_id: str) -> bool:
+        conn = self._connect()
+        try:
+            cur = conn.execute("DELETE FROM kb_scene_cards WHERE id=?", (card_id,))
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    # ==================================================================
+    # 知识库 - 世界观提示词词典 (kb_world_bible) CRUD
+    # ==================================================================
+
+    def create_world_bible(
+        self,
+        series_id: str = "",
+        art_style: str = "",
+        era: str = "",
+        color_palette: str = "",
+        recurring_motifs: str = "",
+        forbidden_elements: str = "",
+    ) -> Dict[str, Any]:
+        wid = _gen_id("kbwb_")
+        now = _now()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """INSERT INTO kb_world_bible
+                   (id, series_id, art_style, era, color_palette,
+                    recurring_motifs, forbidden_elements,
+                    created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (wid, series_id, art_style, era, color_palette,
+                 recurring_motifs, forbidden_elements, now, now),
+            )
+            conn.commit()
+            return self.get_world_bible(wid, _conn=conn)  # type: ignore[return-value]
+        finally:
+            conn.close()
+
+    def get_world_bible(
+        self, bible_id: str, *, _conn: Optional[sqlite3.Connection] = None
+    ) -> Optional[Dict[str, Any]]:
+        conn = _conn or self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM kb_world_bible WHERE id=?", (bible_id,)
+            ).fetchone()
+            return self._row_to_dict(row)
+        finally:
+            if _conn is None:
+                conn.close()
+
+    def get_world_bible_by_series(self, series_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM kb_world_bible WHERE series_id=? ORDER BY updated_at DESC LIMIT 1",
+                (series_id,),
+            ).fetchone()
+            return self._row_to_dict(row)
+        finally:
+            conn.close()
+
+    def list_world_bibles(self, series_id: str = "") -> List[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            if series_id:
+                rows = conn.execute(
+                    "SELECT * FROM kb_world_bible WHERE series_id=? ORDER BY updated_at DESC",
+                    (series_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM kb_world_bible ORDER BY updated_at DESC"
+                ).fetchall()
+            return [self._row_to_dict(r) for r in rows]  # type: ignore[misc]
+        finally:
+            conn.close()
+
+    def update_world_bible(
+        self, bible_id: str, updates: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        allowed = {
+            "series_id", "art_style", "era", "color_palette",
+            "recurring_motifs", "forbidden_elements",
+        }
+        fields: List[str] = []
+        values: List[Any] = []
+        for k, v in updates.items():
+            if k not in allowed:
+                continue
+            fields.append(f"{k}=?")
+            values.append(v)
+        if not fields:
+            return self.get_world_bible(bible_id)
+        fields.append("updated_at=?")
+        values.append(_now())
+        values.append(bible_id)
+        conn = self._connect()
+        try:
+            conn.execute(
+                f"UPDATE kb_world_bible SET {', '.join(fields)} WHERE id=?", values
+            )
+            conn.commit()
+            return self.get_world_bible(bible_id, _conn=conn)
+        finally:
+            conn.close()
+
+    def delete_world_bible(self, bible_id: str) -> bool:
+        conn = self._connect()
+        try:
+            cur = conn.execute("DELETE FROM kb_world_bible WHERE id=?", (bible_id,))
+            conn.commit()
+            return cur.rowcount > 0
         finally:
             conn.close()
 

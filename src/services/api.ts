@@ -3306,3 +3306,92 @@ export async function studioExportSeries(
   const filename = parseContentDispositionFilename(response.headers?.['content-disposition'], fallback)
   return { blob: response.data as Blob, filename }
 }
+
+// ===================== Knowledge Base API =====================
+
+export interface KBCharacterCard {
+  id: string
+  element_id: string
+  appearance_tokens: Record<string, string>
+  costume_tokens: Record<string, string[]>
+  expression_tokens: Record<string, string>
+  signature_poses: Record<string, string>
+  negative_prompts: string
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+export interface KBSceneCard {
+  id: string
+  element_id: string
+  base_tokens: string
+  time_variants: Record<string, string>
+  negative_prompts: string
+  version: number
+}
+
+export interface KBMoodPack {
+  mood_key: string
+  color_tokens: string
+  line_style_tokens: string
+  effect_tokens: string
+  combined_prompt: string
+  is_builtin: boolean
+}
+
+export interface KBWorldBible {
+  id: string
+  series_id: string
+  art_style: string
+  era: string
+  color_palette: string
+  recurring_motifs: string
+  forbidden_elements: string
+}
+
+export async function fetchKBCharacterCards(seriesId: string): Promise<KBCharacterCard[]> {
+  const { data } = await studioApi.get(`/api/studio/kb/character-cards/${seriesId}`, attachRuntimeContext({}))
+  return data.cards || []
+}
+
+export async function syncKBCharacterCard(elementId: string): Promise<KBCharacterCard> {
+  const { data } = await studioApi.post(`/api/studio/kb/character-cards/sync/${elementId}`, {}, attachRuntimeContext({}))
+  return data.card
+}
+
+export async function updateKBCharacterCard(cardId: string, updates: Partial<KBCharacterCard>): Promise<KBCharacterCard> {
+  const { data } = await studioApi.put(`/api/studio/kb/character-cards/${cardId}`, updates, attachRuntimeContext({}))
+  return data.card
+}
+
+export async function fetchKBSceneCards(seriesId: string): Promise<KBSceneCard[]> {
+  const { data } = await studioApi.get(`/api/studio/kb/scene-cards/${seriesId}`, attachRuntimeContext({}))
+  return data.cards || []
+}
+
+export async function syncKBSceneCard(elementId: string): Promise<KBSceneCard> {
+  const { data } = await studioApi.post(`/api/studio/kb/scene-cards/sync/${elementId}`, {}, attachRuntimeContext({}))
+  return data.card
+}
+
+export async function fetchKBMoodPacks(seriesId?: string): Promise<KBMoodPack[]> {
+  const url = seriesId ? `/api/studio/kb/mood-packs/${seriesId}` : '/api/studio/kb/mood-packs'
+  const { data } = await studioApi.get(url, attachRuntimeContext({}))
+  return data.packs || []
+}
+
+export async function fetchKBWorldBible(seriesId: string): Promise<KBWorldBible | null> {
+  const { data } = await studioApi.get(`/api/studio/kb/world-bible/${seriesId}`, attachRuntimeContext({}))
+  return data.bible || null
+}
+
+export async function updateKBWorldBible(seriesId: string, updates: Partial<KBWorldBible>): Promise<KBWorldBible> {
+  const { data } = await studioApi.put(`/api/studio/kb/world-bible/${seriesId}`, updates, attachRuntimeContext({}))
+  return data.bible
+}
+
+export async function syncAllKB(seriesId: string): Promise<{ synced_characters: number; synced_scenes: number }> {
+  const { data } = await studioApi.post(`/api/studio/kb/sync-all/${seriesId}`, {}, attachRuntimeContext({}))
+  return data
+}

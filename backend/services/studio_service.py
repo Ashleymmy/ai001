@@ -36,6 +36,10 @@ from .studio.constants import (
 )
 # Phase0-0.2: 激活帧级专业模板
 from .studio.prompt_templates import get_frame_system_prompt, get_frame_type_label
+# Phase1: 知识库 & 提示词组装引擎
+from .studio.knowledge_base import KnowledgeBase
+from .studio.prompt_assembler import PromptAssembler
+from .studio.mood_packs import get_mood_visual_prompt as _get_mood_visual_prompt
 from .llm_service import LLMService
 from .image_service import ImageService
 from .video_service import VideoService
@@ -89,6 +93,25 @@ class StudioService:
         self.tts_defaults: Dict[str, Any] = {}
         self.generation_defaults: Dict[str, Any] = {}
         self.custom_prompts: Dict[str, Dict[str, str]] = {}
+        # Phase 1: 知识库 & 提示词组装引擎
+        self._knowledge_base: Optional[KnowledgeBase] = None
+        self._prompt_assembler: Optional[PromptAssembler] = None
+        self._knowledge_base_enabled: bool = False
+
+    # ------------------------------------------------------------------
+    # Phase 1: 知识库 & 提示词组装引擎
+    # ------------------------------------------------------------------
+
+    def _get_or_create_prompt_assembler(self) -> PromptAssembler:
+        """惰性创建 PromptAssembler 实例（含 KnowledgeBase）。"""
+        if self._prompt_assembler is None:
+            if self._knowledge_base is None:
+                self._knowledge_base = KnowledgeBase(self.storage)
+            self._prompt_assembler = PromptAssembler(
+                self._knowledge_base,
+                default_style=str(self.generation_defaults.get("visual_style", "")),
+            )
+        return self._prompt_assembler
 
     # ------------------------------------------------------------------
     # 配置
@@ -103,6 +126,9 @@ class StudioService:
         self.tts = None
         self.tts_provider = "none"
         self.tts_defaults = {}
+        # Phase 1: 重置知识库/组装引擎缓存
+        self._knowledge_base = None
+        self._prompt_assembler = None
 
         # LLM
         llm_cfg = settings.get("llm") or {}
@@ -215,6 +241,10 @@ class StudioService:
         # 生成默认参数
         self.generation_defaults = settings.get("generation_defaults") or {}
         self.custom_prompts = normalize_custom_prompts(settings.get("custom_prompts"))
+
+        # Phase 1: 知识库启用开关
+        kb_cfg = settings.get("knowledge_base") or {}
+        self._knowledge_base_enabled = bool(kb_cfg.get("enabled", False))
 
     def check_config(self) -> Dict[str, Any]:
         """返回 Studio 工具链配置自检结果。"""
@@ -1271,6 +1301,89 @@ class StudioService:
 
         return "; ".join(parts)
 
+    # ------------------------------------------------------------------
+    # Phase 1: 知识库组装路径
+    # ------------------------------------------------------------------
+
+    def _build_shot_image_prompt_kb(
+        self,
+        shot: Dict[str, Any],
+        raw_prompt: str,
+        stage: str = "start_frame",
+    ) -> str:
+        """使用知识库 PromptAssembler 组装镜头图像提示词。
+
+        当 knowledge_base_enabled=True 时由 _build_shot_image_prompt 调用。
+        保留 Phase 0 的 stage 语义和规则约束，但用 KB 结构化词条替代
+        简易映射（EMOTION_VISUAL_HINTS → mood_packs, [SE_XXX] → KB tokens）。
+        """
+        episode_id = str(shot.get("episode_id") or "").strip()
+        assembler = self._get_or_create_prompt_assembler()
+
+        # 获取 series_id
+        series_id = ""
+        episode = self.storage.get_episode(episode_id) if episode_id else None
+        if episode:
+            series_id = str(episode.get("series_id") or "")
+
+        # 用 PromptAssembler 组装结构化提示词
+        prompt_field = "prompt"
+        if stage == "key_frame":
+            prompt_field = "key_frame_prompt"
+        elif stage == "end_frame":
+            prompt_field = "end_prompt"
+
+        # 覆盖 shot 的 prompt 字段为传入的 raw_prompt
+        shot_copy = dict(shot)
+        shot_copy[prompt_field] = raw_prompt
+        shot_copy["prompt"] = raw_prompt
+
+        kb_result = assembler.assemble_shot_prompt(
+            shot_copy,
+            series_id,
+            prompt_field=prompt_field,
+            stage=stage,
+        )
+        assembled_prompt = kb_result["prompt"]
+
+        # 保留 Phase 0 的视觉风格锚定和规则约束
+        style_anchor = self._get_series_visual_style_for_episode(episode_id, assembled_prompt) or "国风叙事动画插画风格"
+        base_rules = (
+            f"整体视觉风格：{style_anchor}。"
+            "保持与同系列素材一致的角色比例、线条语言、配色与材质；"
+            "这是单张关键帧构图，禁止四宫格/分屏/拼贴海报/漫画多格排版；"
+            "禁止写实照片风、3D渲染实拍质感、文字水印和字幕。"
+        )
+        digital_constraints = self._build_digital_human_constraints_for_episode(episode_id, assembled_prompt)
+
+        stage_clauses = {
+            "start_frame": "该画面用于镜头起始帧，展示动作发生前的初始静态状态。"
+                           "聚焦角色初始姿态和场景氛围，不含任何运动。",
+            "key_frame":   "该画面用于镜头关键帧，捕捉动作最激烈的高潮瞬间。"
+                           "强调动态张力、情绪表达顶点，可含动作模糊效果。",
+            "end_frame":   "该画面用于镜头尾帧，展示动作结束后的最终状态。"
+                           "保持与起始帧的叙事连续性，聚焦动作结果。",
+            "inpaint":     "在保持主体身份与场景连续性的前提下，只修改用户要求的局部区域。",
+        }
+        stage_clause = stage_clauses.get(stage, stage_clauses["start_frame"])
+
+        frame_template_hint = ""
+        if stage in ("start_frame", "key_frame", "end_frame"):
+            tmpl = get_frame_system_prompt(stage)
+            frame_template_hint = tmpl.format(visual_style=style_anchor)
+
+        if digital_constraints:
+            base_rules = f"{base_rules}\n{digital_constraints}"
+
+        parts = []
+        if assembled_prompt:
+            parts.append(assembled_prompt)
+        parts.append(f"{base_rules}{stage_clause}")
+        if frame_template_hint:
+            parts.append(f"--- 帧级专业指导 ---\n{frame_template_hint}")
+
+        return "\n".join(parts).strip()
+
     def _build_shot_image_prompt(
         self,
         shot: Dict[str, Any],
@@ -1278,6 +1391,11 @@ class StudioService:
         stage: str = "start_frame",
     ) -> str:
         episode_id = str(shot.get("episode_id") or "").strip()
+
+        # Phase 1: 知识库组装路径（启用时替代 Phase 0 逻辑）
+        if self._knowledge_base_enabled:
+            return self._build_shot_image_prompt_kb(shot, raw_prompt, stage)
+
         resolved_prompt = self._resolve_element_refs(raw_prompt, episode_id).strip()
         style_anchor = self._get_series_visual_style_for_episode(episode_id, resolved_prompt) or "国风叙事动画插画风格"
         base_rules = (
@@ -3613,7 +3731,7 @@ class StudioService:
             else:
                 raw_video_prompt = f"[Camera movement] {movement_label}"
 
-        # Phase0-0.4: 注入情绪氛围 - 优先使用英文视觉词
+        # Phase0-0.4 + Phase1: 注入情绪氛围 - KB启用时优先使用 mood_packs
         emotion = str(shot.get("emotion") or "").strip()
         emotion_intensity = shot.get("emotion_intensity", 0)
         if not isinstance(emotion_intensity, (int, float)):
@@ -3622,13 +3740,22 @@ class StudioService:
             except (ValueError, TypeError):
                 emotion_intensity = 0
         if emotion:
-            emotion_visual = self.EMOTION_VISUAL_HINTS.get(emotion, "")
+            emotion_visual = ""
+            # Phase 1: 知识库启用时使用 mood_packs 替代 EMOTION_VISUAL_HINTS
+            if self._knowledge_base_enabled:
+                assembler = self._get_or_create_prompt_assembler()
+                episode = self.storage.get_episode(str(shot.get("episode_id") or ""))
+                vid_series_id = str(episode.get("series_id") or "") if episode else ""
+                emotion_visual = assembler.inject_mood(emotion, series_id=vid_series_id)
             if not emotion_visual:
-                emotion_lower = emotion.lower()
-                for k, v in self.EMOTION_VISUAL_HINTS.items():
-                    if k.lower() == emotion_lower:
-                        emotion_visual = v
-                        break
+                # Phase 0 回退逻辑
+                emotion_visual = self.EMOTION_VISUAL_HINTS.get(emotion, "")
+                if not emotion_visual:
+                    emotion_lower = emotion.lower()
+                    for k, v in self.EMOTION_VISUAL_HINTS.items():
+                        if k.lower() == emotion_lower:
+                            emotion_visual = v
+                            break
             if emotion_visual:
                 raw_video_prompt = f"{raw_video_prompt}\n[Emotion visual cues] {emotion_visual}"
             else:

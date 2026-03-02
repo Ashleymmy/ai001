@@ -22,6 +22,13 @@ from services.studio_storage import StudioStorage
 from services.studio_service import StudioService, StudioServiceError
 from services.studio_export_service import StudioExportService
 from services.studio.prompt_sentinel import analyze_prompt_text, apply_prompt_suggestions
+from services.studio.knowledge_base import KnowledgeBase
+from services.studio.mood_packs import (
+    list_available_moods,
+    save_custom_mood_pack,
+    delete_custom_mood_pack,
+    list_custom_mood_packs,
+)
 from services.ws_manager import ws_manager
 from services.studio.prompts import build_default_custom_prompts, normalize_custom_prompts
 from services.collab_service import CollabService
@@ -6853,6 +6860,49 @@ class StudioImportFromAgentRequest(BaseModel):
         raise ValueError("project_id 不能为空")
 
 
+# ======================================================================
+# Phase 1: Knowledge Base Pydantic Models
+# ======================================================================
+
+class StudioKBCharacterCardUpdateRequest(BaseModel):
+    appearance_tokens: Optional[Dict[str, str]] = None
+    costume_tokens: Optional[Dict[str, str]] = None
+    expression_tokens: Optional[Dict[str, str]] = None
+    signature_poses: Optional[Dict[str, str]] = None
+    negative_prompts: Optional[str] = None
+
+
+class StudioKBSceneCardUpdateRequest(BaseModel):
+    base_tokens: Optional[str] = None
+    time_variants: Optional[Dict[str, str]] = None
+    negative_prompts: Optional[str] = None
+
+
+class StudioKBMoodPackCreateRequest(BaseModel):
+    mood_key: str
+    series_id: str = ""
+    color_tokens: str = ""
+    line_style_tokens: str = ""
+    effect_tokens: str = ""
+    combined_prompt: str = ""
+    label_zh: str = ""
+    label_en: str = ""
+
+
+class StudioKBWorldBibleUpdateRequest(BaseModel):
+    art_style: Optional[str] = None
+    era: Optional[str] = None
+    color_palette: Optional[str] = None
+    recurring_motifs: Optional[str] = None
+    forbidden_elements: Optional[str] = None
+
+
+class StudioKBAssemblePreviewRequest(BaseModel):
+    shot: Dict[str, Any]
+    series_id: str = ""
+    stage: str = "start_frame"
+
+
 def _studio_error_payload(
     detail: str,
     error_code: str,
@@ -9179,6 +9229,213 @@ async def studio_export_series(
         media_type=media_type,
         filename=os.path.basename(file_path),
     )
+
+
+# =====================================================================
+# Phase 1: Knowledge Base API Endpoints
+# =====================================================================
+
+from services.studio.knowledge_base import KnowledgeBase
+from services.studio.mood_packs import (
+    get_mood_pack, list_available_moods, get_mood_visual_prompt,
+    save_custom_mood_pack, delete_custom_mood_pack, BUILTIN_MOOD_PACKS,
+)
+
+
+def _kb_get_instance() -> KnowledgeBase:
+    """获取或创建 KnowledgeBase 实例"""
+    service = _studio_ensure_service_ready()
+    if service._knowledge_base is None:
+        service._knowledge_base = KnowledgeBase(service.storage)
+    return service._knowledge_base
+
+
+@app.get("/api/studio/kb/character-cards/{series_id}")
+async def kb_list_character_cards(series_id: str):
+    """获取系列下所有角色的知识库档案"""
+    service = _studio_ensure_service_ready()
+    elements = service.storage.get_shared_elements(series_id)
+    characters = [e for e in elements if e.get("type") == "character"]
+    cards = []
+    for ch in characters:
+        card = service.storage.get_character_card_by_element(ch["id"])
+        if card:
+            cards.append({**card, "element_name": ch.get("name", "")})
+    return {"cards": cards}
+
+
+@app.post("/api/studio/kb/character-cards/sync/{element_id}")
+async def kb_sync_character_card(element_id: str):
+    """从共享元素同步/生成角色提示词档案"""
+    kb = _kb_get_instance()
+    card = kb.sync_character_from_element(element_id)
+    if not card:
+        _studio_raise(404, "元素不存在或非角色类型", "element_not_found")
+    return {"card": card}
+
+
+class KBCharacterCardUpdate(BaseModel):
+    appearance_tokens: Optional[Dict[str, Any]] = None
+    costume_tokens: Optional[Dict[str, Any]] = None
+    expression_tokens: Optional[Dict[str, Any]] = None
+    signature_poses: Optional[Dict[str, Any]] = None
+    negative_prompts: Optional[str] = None
+
+
+@app.put("/api/studio/kb/character-cards/{card_id}")
+async def kb_update_character_card(card_id: str, body: KBCharacterCardUpdate):
+    """更新角色提示词档案"""
+    service = _studio_ensure_service_ready()
+    updates = {k: v for k, v in body.dict().items() if v is not None}
+    if not updates:
+        card = service.storage.get_character_card(card_id)
+        return {"card": card}
+    card = service.storage.update_character_card(card_id, updates)
+    if not card:
+        _studio_raise(404, "角色档案不存在", "card_not_found")
+    return {"card": card}
+
+
+@app.get("/api/studio/kb/scene-cards/{series_id}")
+async def kb_list_scene_cards(series_id: str):
+    """获取系列下所有场景的知识库档案"""
+    service = _studio_ensure_service_ready()
+    elements = service.storage.get_shared_elements(series_id)
+    scenes = [e for e in elements if e.get("type") == "scene"]
+    cards = []
+    for sc in scenes:
+        card = service.storage.get_scene_card_by_element(sc["id"])
+        if card:
+            cards.append({**card, "element_name": sc.get("name", "")})
+    return {"cards": cards}
+
+
+@app.post("/api/studio/kb/scene-cards/sync/{element_id}")
+async def kb_sync_scene_card(element_id: str):
+    """从共享元素同步/生成场景提示词档案"""
+    kb = _kb_get_instance()
+    card = kb.sync_scene_from_element(element_id)
+    if not card:
+        _studio_raise(404, "元素不存在或非场景类型", "element_not_found")
+    return {"card": card}
+
+
+class KBSceneCardUpdate(BaseModel):
+    base_tokens: Optional[str] = None
+    time_variants: Optional[Dict[str, Any]] = None
+    negative_prompts: Optional[str] = None
+
+
+@app.put("/api/studio/kb/scene-cards/{card_id}")
+async def kb_update_scene_card(card_id: str, body: KBSceneCardUpdate):
+    """更新场景提示词档案"""
+    service = _studio_ensure_service_ready()
+    updates = {k: v for k, v in body.dict().items() if v is not None}
+    card = service.storage.update_scene_card(card_id, updates)
+    if not card:
+        _studio_raise(404, "场景档案不存在", "card_not_found")
+    return {"card": card}
+
+
+@app.get("/api/studio/kb/mood-packs")
+async def kb_list_mood_packs():
+    """列出所有可用情绪氛围包（内置 + 自定义）"""
+    packs = list_available_moods()
+    return {"packs": packs}
+
+
+@app.get("/api/studio/kb/mood-packs/{series_id}")
+async def kb_list_mood_packs_for_series(series_id: str):
+    """列出系列专属情绪包（含内置）"""
+    service = _studio_ensure_service_ready()
+    builtin = list_available_moods()
+    custom_rows = service.storage.list_mood_packs(series_id)
+    custom = [dict(r) for r in custom_rows] if custom_rows else []
+    return {"packs": builtin, "custom": custom}
+
+
+class KBMoodPackCreate(BaseModel):
+    series_id: str
+    mood_key: str
+    color_tokens: str = ""
+    line_style_tokens: str = ""
+    effect_tokens: str = ""
+    combined_prompt: str = ""
+
+
+@app.post("/api/studio/kb/mood-packs")
+async def kb_create_mood_pack(body: KBMoodPackCreate):
+    """创建自定义情绪氛围包"""
+    service = _studio_ensure_service_ready()
+    pack = save_custom_mood_pack(
+        service.storage,
+        series_id=body.series_id,
+        mood_key=body.mood_key,
+        color_tokens=body.color_tokens,
+        line_style_tokens=body.line_style_tokens,
+        effect_tokens=body.effect_tokens,
+        combined_prompt=body.combined_prompt,
+    )
+    return {"pack": pack}
+
+
+@app.delete("/api/studio/kb/mood-packs/{pack_id}")
+async def kb_delete_mood_pack(pack_id: str):
+    """删除自定义情绪氛围包"""
+    service = _studio_ensure_service_ready()
+    ok = delete_custom_mood_pack(service.storage, pack_id)
+    return {"deleted": ok}
+
+
+@app.get("/api/studio/kb/world-bible/{series_id}")
+async def kb_get_world_bible(series_id: str):
+    """获取系列的世界观词典"""
+    service = _studio_ensure_service_ready()
+    bible = service.storage.get_world_bible_by_series(series_id)
+    return {"bible": bible}
+
+
+class KBWorldBibleUpdate(BaseModel):
+    art_style: Optional[str] = None
+    era: Optional[str] = None
+    color_palette: Optional[str] = None
+    recurring_motifs: Optional[str] = None
+    forbidden_elements: Optional[str] = None
+
+
+@app.put("/api/studio/kb/world-bible/{series_id}")
+async def kb_update_world_bible(series_id: str, body: KBWorldBibleUpdate):
+    """更新或创建系列的世界观词典"""
+    service = _studio_ensure_service_ready()
+    existing = service.storage.get_world_bible_by_series(series_id)
+    updates = {k: v for k, v in body.dict().items() if v is not None}
+    if existing:
+        bible = service.storage.update_world_bible(existing["id"], updates)
+    else:
+        bible = service.storage.create_world_bible(series_id=series_id, **updates)
+    return {"bible": bible}
+
+
+@app.post("/api/studio/kb/sync-all/{series_id}")
+async def kb_sync_all(series_id: str):
+    """一键同步：从 shared_elements 重新生成所有知识库词条"""
+    kb = _kb_get_instance()
+    result = kb.sync_all_elements(series_id)
+    return result
+
+
+class KBAssemblePreviewRequest(BaseModel):
+    shot: Dict[str, Any]
+    series_id: str = ""
+
+
+@app.post("/api/studio/kb/assemble-preview")
+async def kb_assemble_preview(body: KBAssemblePreviewRequest):
+    """预览：对指定镜头数据进行知识库提示词组装"""
+    service = _studio_ensure_service_ready()
+    assembler = service._get_or_create_prompt_assembler()
+    result = assembler.assemble_shot_prompt(body.shot, body.series_id)
+    return {"result": result}
 
 
 if __name__ == "__main__":

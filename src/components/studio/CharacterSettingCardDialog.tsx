@@ -6,13 +6,14 @@
 import { useState, useMemo } from 'react'
 import {
   X, Search, Plus, Star, ImageIcon, Loader2, Upload, Trash2, Users,
+  ChevronDown, ChevronRight, RefreshCw,
 } from 'lucide-react'
 import type {
   StudioSeries,
   StudioElement,
 } from '../../store/studioStore'
 import type { StudioElementRenderMode, StudioElementReferenceMode } from '../../services/api'
-import { uploadFile } from '../../services/api'
+import { uploadFile, syncKBCharacterCard } from '../../services/api'
 import DocumentUploadButton from './DocumentUploadButton'
 
 interface CharacterSettingCardDialogProps {
@@ -58,6 +59,25 @@ export default function CharacterSettingCardDialog({
   const [editDesc, setEditDesc] = useState('')
   const [editVoice, setEditVoice] = useState('')
 
+  // 结构化提示词档案
+  const [showStructuredFields, setShowStructuredFields] = useState(false)
+  const [syncingKB, setSyncingKB] = useState(false)
+  const [appearanceHair, setAppearanceHair] = useState('')
+  const [appearanceEyes, setAppearanceEyes] = useState('')
+  const [appearanceSkin, setAppearanceSkin] = useState('')
+  const [appearanceBuild, setAppearanceBuild] = useState('')
+  const [costumeVariant, setCostumeVariant] = useState<'default' | 'battle' | 'casual'>('default')
+  const [costumeDefault, setCostumeDefault] = useState('')
+  const [costumeBattle, setCostumeBattle] = useState('')
+  const [costumeCasual, setCostumeCasual] = useState('')
+  const [exprHappy, setExprHappy] = useState('')
+  const [exprAngry, setExprAngry] = useState('')
+  const [exprSad, setExprSad] = useState('')
+  const [exprShocked, setExprShocked] = useState('')
+  const [exprDetermined, setExprDetermined] = useState('')
+  const [exprNeutral, setExprNeutral] = useState('')
+  const [negativePrompts, setNegativePrompts] = useState('')
+
   const characters = useMemo(
     () => elements.filter((el) => el.type === 'character'),
     [elements],
@@ -76,6 +96,23 @@ export default function CharacterSettingCardDialog({
     setEditDesc(el.description || '')
     setEditVoice(el.voice_profile || '')
     setIsCreating(false)
+    // Reset structured fields when switching characters
+    setShowStructuredFields(false)
+    setAppearanceHair('')
+    setAppearanceEyes('')
+    setAppearanceSkin('')
+    setAppearanceBuild('')
+    setCostumeVariant('default')
+    setCostumeDefault('')
+    setCostumeBattle('')
+    setCostumeCasual('')
+    setExprHappy('')
+    setExprAngry('')
+    setExprSad('')
+    setExprShocked('')
+    setExprDetermined('')
+    setExprNeutral('')
+    setNegativePrompts('')
   }
 
   const startCreate = () => {
@@ -132,6 +169,18 @@ export default function CharacterSettingCardDialog({
     await onUpdateElement(selected.id, {
       is_favorite: selected.is_favorite === 1 ? 0 : 1,
     })
+  }
+
+  const handleSyncToKB = async () => {
+    if (!selected) return
+    setSyncingKB(true)
+    try {
+      await syncKBCharacterCard(selected.id)
+    } catch (err) {
+      console.error('同步到知识库失败:', err)
+    } finally {
+      setSyncingKB(false)
+    }
   }
 
   const showDetail = selected || isCreating
@@ -279,6 +328,146 @@ export default function CharacterSettingCardDialog({
                     className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500 resize-y"
                   />
                 </div>
+
+                {/* Structured prompt fields (collapsible) */}
+                {!isCreating && (
+                  <div className="rounded-lg border border-gray-700 bg-gray-800/30">
+                    <button
+                      onClick={() => setShowStructuredFields(!showStructuredFields)}
+                      className="w-full px-3 py-2 flex items-center justify-between text-left"
+                    >
+                      <span className="text-[11px] text-gray-400 inline-flex items-center gap-1.5">
+                        {showStructuredFields ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                        结构化提示词档案
+                      </span>
+                      <span className="text-[10px] text-gray-600">映射知识库角色卡</span>
+                    </button>
+                    {showStructuredFields && (
+                      <div className="px-3 pb-3 space-y-3 border-t border-gray-700/50 pt-3">
+                        {/* Appearance */}
+                        <div>
+                          <p className="text-[10px] text-gray-500 mb-1.5">外貌特征</p>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="text-[10px] text-gray-600 block mb-0.5">发型发色</label>
+                              <input
+                                value={appearanceHair}
+                                onChange={(e) => setAppearanceHair(e.target.value)}
+                                placeholder="long black hair, bangs"
+                                className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:border-purple-500"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-gray-600 block mb-0.5">瞳色</label>
+                              <input
+                                value={appearanceEyes}
+                                onChange={(e) => setAppearanceEyes(e.target.value)}
+                                placeholder="blue eyes"
+                                className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:border-purple-500"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-gray-600 block mb-0.5">肤色</label>
+                              <input
+                                value={appearanceSkin}
+                                onChange={(e) => setAppearanceSkin(e.target.value)}
+                                placeholder="fair skin"
+                                className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:border-purple-500"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-gray-600 block mb-0.5">体型</label>
+                              <input
+                                value={appearanceBuild}
+                                onChange={(e) => setAppearanceBuild(e.target.value)}
+                                placeholder="slim, tall"
+                                className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:border-purple-500"
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Costume Variants */}
+                        <div>
+                          <p className="text-[10px] text-gray-500 mb-1.5">服装变体</p>
+                          <div className="flex gap-1 mb-2">
+                            {(['default', 'battle', 'casual'] as const).map((v) => (
+                              <button
+                                key={v}
+                                onClick={() => setCostumeVariant(v)}
+                                className={`px-2 py-1 text-[10px] rounded transition-colors ${
+                                  costumeVariant === v
+                                    ? 'bg-purple-600/30 text-purple-200 border border-purple-500/50'
+                                    : 'bg-gray-900 text-gray-400 border border-gray-700 hover:border-gray-600'
+                                }`}
+                              >
+                                {v === 'default' ? '日常' : v === 'battle' ? '战斗' : '休闲'}
+                              </button>
+                            ))}
+                          </div>
+                          <input
+                            value={costumeVariant === 'default' ? costumeDefault : costumeVariant === 'battle' ? costumeBattle : costumeCasual}
+                            onChange={(e) => {
+                              if (costumeVariant === 'default') setCostumeDefault(e.target.value)
+                              else if (costumeVariant === 'battle') setCostumeBattle(e.target.value)
+                              else setCostumeCasual(e.target.value)
+                            }}
+                            placeholder="school uniform, white shirt, pleated skirt..."
+                            className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:border-purple-500"
+                          />
+                        </div>
+
+                        {/* Expression Chips */}
+                        <div>
+                          <p className="text-[10px] text-gray-500 mb-1.5">表情库</p>
+                          <div className="grid grid-cols-3 gap-2">
+                            {([
+                              { key: 'happy', label: 'Happy', value: exprHappy, set: setExprHappy },
+                              { key: 'angry', label: 'Angry', value: exprAngry, set: setExprAngry },
+                              { key: 'sad', label: 'Sad', value: exprSad, set: setExprSad },
+                              { key: 'shocked', label: 'Shocked', value: exprShocked, set: setExprShocked },
+                              { key: 'determined', label: 'Determined', value: exprDetermined, set: setExprDetermined },
+                              { key: 'neutral', label: 'Neutral', value: exprNeutral, set: setExprNeutral },
+                            ] as const).map(({ key, label, value: v, set }) => (
+                              <div key={key}>
+                                <label className="text-[10px] text-gray-600 block mb-0.5">{label}</label>
+                                <input
+                                  value={v}
+                                  onChange={(e) => set(e.target.value)}
+                                  placeholder={`${key} expression tokens`}
+                                  className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-[10px] text-gray-200 focus:outline-none focus:border-purple-500"
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Negative Prompts */}
+                        <div>
+                          <p className="text-[10px] text-gray-500 mb-1">负面提示词</p>
+                          <input
+                            value={negativePrompts}
+                            onChange={(e) => setNegativePrompts(e.target.value)}
+                            placeholder="extra fingers, deformed hands, blurry..."
+                            className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:border-purple-500"
+                          />
+                        </div>
+
+                        {/* Sync to KB */}
+                        <div className="flex justify-end pt-1">
+                          <button
+                            onClick={handleSyncToKB}
+                            disabled={syncingKB}
+                            className="px-2.5 py-1 rounded text-[11px] bg-purple-700/50 hover:bg-purple-600/50 text-purple-200 inline-flex items-center gap-1 transition-colors disabled:opacity-50"
+                          >
+                            {syncingKB ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                            同步到知识库
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Meta info (read-only) */}
                 {selected && (
