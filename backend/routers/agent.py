@@ -2942,3 +2942,202 @@ class WorkspaceEpisodeReviewRequest(BaseModel):
     note: str = ""
 
 
+# ---------------------------------------------------------------------------
+# Phase 4: Agent 任务队列路径
+# ---------------------------------------------------------------------------
+
+async def _agent_generate_frames_via_queue(
+    project, executor, project_id: str, visual_style: str,
+    exclude_shot_ids_str, mode: str,
+):
+    """通过任务队列生成帧，以 SSE 事件流形式推送进度。"""
+    import os
+    from services.studio.task_queue.storage import TaskStorage
+    from services.studio.task_queue.types import CreateTaskInput
+    from services.studio.task_queue.event_bus import TaskEventBus
+
+    db_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "data", "task_queue.db",
+    )
+    task_storage = TaskStorage(db_path)
+    event_bus = TaskEventBus(task_storage)
+
+    regenerate = (mode or "").strip().lower() in ("regenerate", "regen", "force", "all")
+    excluded_shot_ids = set()
+    if exclude_shot_ids_str:
+        for part in exclude_shot_ids_str.split(","):
+            sid = (part or "").strip()
+            if sid:
+                excluded_shot_ids.add(sid)
+
+    # 收集 shots
+    all_shots = []
+    for segment in project.segments:
+        if not isinstance(segment, dict):
+            continue
+        shots = segment.get("shots") or []
+        if not isinstance(shots, list):
+            continue
+        for shot in shots:
+            if isinstance(shot, dict) and isinstance(shot.get("id"), str) and shot.get("id"):
+                all_shots.append(shot)
+
+    total = len(all_shots)
+    yield f"data: {json.dumps({'type': 'start', 'total': total, 'percent': 0, 'mode': 'task_queue'})}\n\n"
+
+    task_ids = []
+    for shot in all_shots:
+        shot_id = shot.get("id", "")
+        if shot_id in excluded_shot_ids:
+            continue
+        if not regenerate and shot.get("start_image_url") and executor._should_skip_existing_image(shot.get("start_image_url")):
+            continue
+
+        prompt = shot.get("prompt") if isinstance(shot.get("prompt"), str) else ""
+        if not prompt.strip():
+            prompt = shot.get("description") if isinstance(shot.get("description"), str) else ""
+
+        dedupe_key = f"agent:{project_id}:{shot_id}:image_frame"
+        inp = CreateTaskInput(
+            type="image_frame",
+            queue_type="image",
+            target_type="shot",
+            target_id=shot_id,
+            series_id=project_id,
+            episode_id=project_id,
+            runtime="agent",
+            priority=0,
+            max_attempts=3,
+            payload={
+                "prompt": prompt,
+                "visual_style": visual_style,
+                "shot_id": shot_id,
+                "width": 1280,
+                "height": 720,
+            },
+            dedupe_key=dedupe_key,
+        )
+        task = task_storage.create_task(inp)
+        task_ids.append(task.id)
+
+    # 订阅事件
+    sub_queue = event_bus.subscribe(project_id)
+    expected = len(task_ids)
+    completed = 0
+    failed = 0
+
+    try:
+        timeout_count = 0
+        max_idle = 1200
+        while completed + failed < expected and timeout_count < max_idle:
+            try:
+                ev = await asyncio.wait_for(sub_queue.get(), timeout=0.5)
+                timeout_count = 0
+                payload = {"type": ev.event_type, "task_id": ev.task_id, **ev.payload}
+                if ev.event_type == "completed":
+                    completed += 1
+                    payload["percent"] = int(((completed + failed) / expected) * 100) if expected else 100
+                elif ev.event_type == "failed":
+                    failed += 1
+                    payload["percent"] = int(((completed + failed) / expected) * 100) if expected else 100
+                yield f"id: {ev.id}\ndata: {json.dumps(payload)}\n\n"
+            except asyncio.TimeoutError:
+                timeout_count += 1
+                yield ": keep-alive\n\n"
+    finally:
+        event_bus.unsubscribe(project_id, sub_queue)
+
+    yield f"data: {json.dumps({'type': 'done', 'generated': completed, 'failed': failed, 'total': total, 'percent': 100, 'mode': 'task_queue'})}\n\n"
+
+
+async def _agent_generate_videos_via_queue(
+    project, executor, project_id: str, resolution: str,
+):
+    """通过任务队列生成视频，以 SSE 事件流形式推送进度。"""
+    import os
+    from services.studio.task_queue.storage import TaskStorage
+    from services.studio.task_queue.types import CreateTaskInput
+    from services.studio.task_queue.event_bus import TaskEventBus
+
+    db_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "data", "task_queue.db",
+    )
+    task_storage = TaskStorage(db_path)
+    event_bus = TaskEventBus(task_storage)
+
+    # 收集所有有起始帧的镜头
+    all_shots = []
+    for segment in project.segments:
+        for shot in segment.get("shots", []):
+            if shot.get("start_image_url"):
+                all_shots.append(shot)
+
+    total = len(all_shots)
+    yield f"data: {json.dumps({'type': 'start', 'total': total, 'percent': 0, 'phase': 'submit', 'mode': 'task_queue'})}\n\n"
+
+    task_ids = []
+    skipped = 0
+    for shot in all_shots:
+        shot_id = shot.get("id", "")
+        if shot.get("video_url"):
+            skipped += 1
+            continue
+
+        video_prompt = executor._build_video_prompt_for_shot(shot, project) if hasattr(executor, '_build_video_prompt_for_shot') else ""
+        dedupe_key = f"agent:{project_id}:{shot_id}:video_panel"
+
+        inp = CreateTaskInput(
+            type="video_panel",
+            queue_type="video",
+            target_type="shot",
+            target_id=shot_id,
+            series_id=project_id,
+            episode_id=project_id,
+            runtime="agent",
+            priority=0,
+            max_attempts=3,
+            payload={
+                "image_url": shot.get("start_image_url", ""),
+                "prompt": video_prompt,
+                "duration": shot.get("duration", 5),
+                "resolution": resolution,
+                "shot_id": shot_id,
+            },
+            dedupe_key=dedupe_key,
+        )
+        task = task_storage.create_task(inp)
+        task_ids.append(task.id)
+
+    # 订阅事件
+    sub_queue = event_bus.subscribe(project_id)
+    expected = len(task_ids)
+    completed = 0
+    failed = 0
+
+    try:
+        timeout_count = 0
+        max_idle = 2400  # 20 分钟
+        while completed + failed < expected and timeout_count < max_idle:
+            try:
+                ev = await asyncio.wait_for(sub_queue.get(), timeout=0.5)
+                timeout_count = 0
+                payload = {"type": ev.event_type, "task_id": ev.task_id, **ev.payload}
+                if ev.event_type == "completed":
+                    completed += 1
+                    payload["percent"] = 50 + int((completed / expected) * 50) if expected else 100
+                elif ev.event_type == "failed":
+                    failed += 1
+                    payload["percent"] = 50 + int(((completed + failed) / expected) * 50) if expected else 100
+                yield f"id: {ev.id}\ndata: {json.dumps(payload)}\n\n"
+            except asyncio.TimeoutError:
+                timeout_count += 1
+                yield ": keep-alive\n\n"
+    finally:
+        event_bus.unsubscribe(project_id, sub_queue)
+
+    storage.save_agent_project(project.to_dict())
+    yield f"data: {json.dumps({'type': 'done', 'completed': completed, 'failed': failed, 'skipped': skipped, 'total': total, 'percent': 100, 'mode': 'task_queue'})}\n\n"
+
+

@@ -2756,7 +2756,9 @@ async def _studio_batch_generate_via_queue(
     支持 Last-Event-ID 重连重放。
     """
     import os
-    from services.studio.task_queue import TaskStorage, CreateTaskInput, TaskEventBus
+    from services.studio.task_queue.storage import TaskStorage
+    from services.studio.task_queue.types import CreateTaskInput
+    from services.studio.task_queue.event_bus import TaskEventBus
 
     db_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
