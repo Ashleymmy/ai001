@@ -3395,3 +3395,48 @@ export async function syncAllKB(seriesId: string): Promise<{ synced_characters: 
   const { data } = await studioApi.post(`/api/studio/kb/sync-all/${seriesId}`, {}, attachRuntimeContext({}))
   return data
 }
+
+// ===================== Phase 2: QA API =====================
+
+export interface QAIssue {
+  severity: string
+  description: string
+  fix_suggestion: string
+  source?: string
+  check?: string
+  affected_shots?: string[]
+  fix_instruction?: Record<string, unknown>
+}
+
+export interface QualityScore {
+  overall_score: number
+  narrative_score: number
+  prompt_score: number
+  visual_score: number
+  passed: boolean
+  total_issues: number
+  error_count: number
+  warning_count: number
+  info_count: number
+  issues: QAIssue[]
+}
+
+export async function runNarrativeQA(episodeId: string): Promise<Record<string, unknown>> {
+  const { data } = await studioApi.post(`/api/studio/qa/narrative/${episodeId}`, {}, attachRuntimeContext({}))
+  return data
+}
+
+export async function runPromptQA(shotId: string): Promise<Record<string, unknown>> {
+  const { data } = await studioApi.post(`/api/studio/qa/prompt/${shotId}`, {}, attachRuntimeContext({}))
+  return data
+}
+
+export async function runVisualQA(shotId: string): Promise<Record<string, unknown>> {
+  const { data } = await studioApi.post(`/api/studio/qa/visual/${shotId}`, {}, attachRuntimeContext({}))
+  return data
+}
+
+export async function runFullQA(episodeId: string): Promise<QualityScore> {
+  const { data } = await studioApi.post(`/api/studio/qa/full/${episodeId}`, {}, attachRuntimeContext({}))
+  return data
+}

@@ -23,7 +23,11 @@ _CONTEXT_SAFETY_RATIO = 0.85
 
 from .studio_storage import StudioStorage
 from .studio.prompts import DEFAULT_CUSTOM_PROMPTS, normalize_custom_prompts
-from .studio.prompt_sentinel import build_prompt_optimize_llm_payload
+from .studio.prompt_sentinel import build_prompt_optimize_llm_payload, check_kb_compliance
+# Phase 2: QA 模块
+from .studio.narrative_qa import NarrativeQA, QAResult
+from .studio.visual_qa import VisualQA
+from .studio.quality_scorer import QualityScorer
 from .studio.constants import (
     CAMERA_ANGLES,
     CAMERA_MOVEMENTS,
@@ -97,6 +101,10 @@ class StudioService:
         self._knowledge_base: Optional[KnowledgeBase] = None
         self._prompt_assembler: Optional[PromptAssembler] = None
         self._knowledge_base_enabled: bool = False
+        # Phase 2: QA 模块
+        self._narrative_qa: Optional[NarrativeQA] = None
+        self._visual_qa: Optional[VisualQA] = None
+        self._quality_scorer: QualityScorer = QualityScorer()
 
     # ------------------------------------------------------------------
     # Phase 1: 知识库 & 提示词组装引擎
@@ -112,6 +120,137 @@ class StudioService:
                 default_style=str(self.generation_defaults.get("visual_style", "")),
             )
         return self._prompt_assembler
+
+    # ------------------------------------------------------------------
+    # Phase 2: QA 质检模块
+    # ------------------------------------------------------------------
+
+    def _get_narrative_qa(self) -> NarrativeQA:
+        if self._narrative_qa is None:
+            self._narrative_qa = NarrativeQA(llm_service=self.llm)
+        return self._narrative_qa
+
+    def _get_visual_qa(self) -> VisualQA:
+        if self._visual_qa is None:
+            kb = self._knowledge_base
+            if kb is None and self._knowledge_base_enabled:
+                kb = KnowledgeBase(self.storage)
+                self._knowledge_base = kb
+            self._visual_qa = VisualQA(llm_service=self.llm, knowledge_base=kb)
+        return self._visual_qa
+
+    async def run_narrative_qa(self, episode_id: str) -> Dict[str, Any]:
+        """对指定集执行叙事 QA 检查"""
+        episode = self.storage.get_episode(episode_id)
+        if not episode:
+            raise StudioServiceError("集不存在", "episode_not_found", {"episode_id": episode_id})
+        shots = self.storage.get_shots(episode_id)
+        series_id = str(episode.get("series_id") or "")
+        elements = self.storage.list_elements(series_id) if series_id else []
+        qa = self._get_narrative_qa()
+        result = await qa.check_episode(shots, elements, episode)
+        return result.to_dict()
+
+    async def run_visual_qa(self, shot_id: str) -> Dict[str, Any]:
+        """对指定镜头执行视觉 QA 检查"""
+        shot = self.storage.get_shot(shot_id)
+        if not shot:
+            raise StudioServiceError("镜头不存在", "shot_not_found", {"shot_id": shot_id})
+        episode_id = str(shot.get("episode_id") or "")
+        episode = self.storage.get_episode(episode_id) if episode_id else None
+        series_id = str((episode or {}).get("series_id") or "")
+        # 获取角色 KB 档案
+        character_cards = []
+        if series_id:
+            elements = self.storage.list_elements(series_id)
+            for el in elements:
+                if el.get("type") == "character":
+                    card = self.storage.get_character_card_by_element(el["id"])
+                    if card:
+                        character_cards.append({**card, "element_name": el.get("name", "")})
+        image_url = str(shot.get("start_image_url") or "")
+        qa = self._get_visual_qa()
+        result = await qa.check_character_consistency(image_url, character_cards, shot)
+        return result.to_dict()
+
+    async def run_prompt_qa(self, shot_id: str) -> Dict[str, Any]:
+        """对指定镜头执行提示词 QA 检查"""
+        shot = self.storage.get_shot(shot_id)
+        if not shot:
+            raise StudioServiceError("镜头不存在", "shot_not_found", {"shot_id": shot_id})
+        prompt = str(shot.get("prompt") or "")
+        # 基础敏感词检测
+        from .studio.prompt_sentinel import analyze_prompt_text
+        safety_result = analyze_prompt_text(prompt)
+        # KB 合规检查
+        kb_context = None
+        if self._knowledge_base_enabled:
+            episode_id = str(shot.get("episode_id") or "")
+            episode = self.storage.get_episode(episode_id) if episode_id else None
+            series_id = str((episode or {}).get("series_id") or "")
+            if series_id:
+                kb_context = self._build_kb_context(series_id)
+        compliance = check_kb_compliance(prompt, shot, kb_context)
+        # 合并结果
+        all_issues = []
+        for m in safety_result.get("matches", []):
+            all_issues.append({"severity": "error" if m.get("severity") == "high" else "warning",
+                               "check": "sensitive_word", "description": f"敏感词: {m.get('term')}",
+                               "fix_suggestion": f"替换为: {m.get('replacement')}"})
+        all_issues.extend(compliance.get("issues", []))
+        safety_score = 100.0 - safety_result.get("risk_score", 0) * 10
+        kb_score = compliance.get("score", 100.0)
+        combined_score = safety_score * 0.6 + kb_score * 0.4
+        return {
+            "score": round(max(0, combined_score), 1),
+            "safety": safety_result,
+            "compliance": compliance,
+            "issues": all_issues,
+            "passed": safety_result.get("safe", True) and compliance.get("compliant", True),
+        }
+
+    def _build_kb_context(self, series_id: str) -> Dict[str, Any]:
+        """构建 KB 上下文供质检使用"""
+        context: Dict[str, Any] = {}
+        bible = self.storage.get_world_bible_by_series(series_id)
+        if bible:
+            context["forbidden_elements"] = bible.get("forbidden_elements", "")
+        elements = self.storage.list_elements(series_id)
+        cards = []
+        for el in elements:
+            if el.get("type") == "character":
+                card = self.storage.get_character_card_by_element(el["id"])
+                if card:
+                    cards.append(card)
+        context["character_cards"] = cards
+        from .studio.mood_packs import list_available_moods
+        context["available_moods"] = list_available_moods()
+        return context
+
+    async def run_full_qa(self, episode_id: str) -> Dict[str, Any]:
+        """执行完整的质量评估（叙事QA + 所有镜头的提示词QA + 视觉QA）"""
+        narrative_result = await self.run_narrative_qa(episode_id)
+        shots = self.storage.get_shots(episode_id)
+        prompt_scores = []
+        visual_results = []
+        for shot in shots:
+            shot_id = shot.get("id", "")
+            try:
+                pr = await self.run_prompt_qa(shot_id)
+                prompt_scores.append(pr.get("score", 100))
+            except Exception:
+                prompt_scores.append(100)
+            try:
+                vr = await self.run_visual_qa(shot_id)
+                visual_results.append(vr)
+            except Exception:
+                pass
+        prompt_result = {
+            "score": sum(prompt_scores) / len(prompt_scores) if prompt_scores else 100,
+            "issues": [],
+        }
+        result = self._quality_scorer.compute(narrative_result, prompt_result, visual_results)
+        return result.to_dict()
 
     # ------------------------------------------------------------------
     # 配置

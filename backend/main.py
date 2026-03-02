@@ -6845,6 +6845,25 @@ class StudioExportToAgentRequest(BaseModel):
     preserve_existing_messages: bool = True
 
 
+# --- Phase 1: 知识库 Pydantic 模型 ---
+
+class StudioKBWorldBibleRequest(BaseModel):
+    art_style: str = ""
+    era: str = ""
+    color_palette: str = ""
+    recurring_motifs: str = ""
+    forbidden_elements: str = ""
+
+
+class StudioKBMoodPackRequest(BaseModel):
+    mood_key: str
+    color_tokens: str = ""
+    line_style_tokens: str = ""
+    effect_tokens: str = ""
+    combined_prompt: str = ""
+    is_builtin: int = 0
+
+
 class StudioImportFromAgentRequest(BaseModel):
     project_id: Optional[str] = None
     projectId: Optional[str] = None
@@ -6858,49 +6877,6 @@ class StudioImportFromAgentRequest(BaseModel):
             self.project_id = resolved
             return self
         raise ValueError("project_id 不能为空")
-
-
-# ======================================================================
-# Phase 1: Knowledge Base Pydantic Models
-# ======================================================================
-
-class StudioKBCharacterCardUpdateRequest(BaseModel):
-    appearance_tokens: Optional[Dict[str, str]] = None
-    costume_tokens: Optional[Dict[str, str]] = None
-    expression_tokens: Optional[Dict[str, str]] = None
-    signature_poses: Optional[Dict[str, str]] = None
-    negative_prompts: Optional[str] = None
-
-
-class StudioKBSceneCardUpdateRequest(BaseModel):
-    base_tokens: Optional[str] = None
-    time_variants: Optional[Dict[str, str]] = None
-    negative_prompts: Optional[str] = None
-
-
-class StudioKBMoodPackCreateRequest(BaseModel):
-    mood_key: str
-    series_id: str = ""
-    color_tokens: str = ""
-    line_style_tokens: str = ""
-    effect_tokens: str = ""
-    combined_prompt: str = ""
-    label_zh: str = ""
-    label_en: str = ""
-
-
-class StudioKBWorldBibleUpdateRequest(BaseModel):
-    art_style: Optional[str] = None
-    era: Optional[str] = None
-    color_palette: Optional[str] = None
-    recurring_motifs: Optional[str] = None
-    forbidden_elements: Optional[str] = None
-
-
-class StudioKBAssemblePreviewRequest(BaseModel):
-    shot: Dict[str, Any]
-    series_id: str = ""
-    stage: str = "start_frame"
 
 
 def _studio_error_payload(
@@ -8082,6 +8058,235 @@ async def studio_series_stats(
     return service.storage.get_series_stats(series_id)
 
 
+# --- Phase 1: 知识库 API ---
+
+@app.post("/api/studio/series/{series_id}/kb/sync")
+async def studio_kb_sync_all(
+    series_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    """批量同步系列下所有角色和场景元素到知识库。"""
+    service = _studio_ensure_service_ready()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    series_workspace = str(series.get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+    from backend.services.studio.knowledge_base import KnowledgeBase
+    kb = KnowledgeBase(service.storage)
+    result = kb.sync_all_elements(series_id)
+    return {"synced": result}
+
+
+@app.post("/api/studio/series/{series_id}/kb/sync-element/{element_id}")
+async def studio_kb_sync_element(
+    series_id: str,
+    element_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    """同步单个共享元素到知识库卡片。"""
+    service = _studio_ensure_service_ready()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    series_workspace = str(series.get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+    element = service.storage.get_shared_element(element_id)
+    if not element:
+        _studio_raise(404, "元素不存在", "element_not_found", {"element_id": element_id})
+    from backend.services.studio.knowledge_base import KnowledgeBase
+    kb = KnowledgeBase(service.storage)
+    etype = str(element.get("type") or "")
+    if etype == "character":
+        card = kb.sync_character_from_element(element_id)
+    elif etype == "scene":
+        card = kb.sync_scene_from_element(element_id)
+    else:
+        _studio_raise(400, "仅支持 character 和 scene 类型", "unsupported_element_type")
+    return card
+
+
+@app.get("/api/studio/series/{series_id}/kb/character-cards")
+async def studio_kb_list_character_cards(
+    series_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    """列出系列下所有角色卡片（通过 element_id 关联）。"""
+    service = _studio_ensure_service_ready()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    series_workspace = str(series.get("workspace_id") or "").strip()
+    resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+    effective_workspace_id = series_workspace or resolved_workspace_id
+    if effective_workspace_id and (AUTH_REQUIRED or resolved_workspace_id):
+        _collab_require_workspace_role(request, effective_workspace_id, "viewer", authorization)
+    # Get element IDs for this series' characters
+    elements = service.storage.get_shared_elements(series_id, element_type="character")
+    cards = []
+    for elem in elements:
+        card = service.storage.get_character_card_by_element(elem["id"])
+        if card:
+            card["element_name"] = elem.get("name", "")
+            cards.append(card)
+    return cards
+
+
+@app.get("/api/studio/series/{series_id}/kb/scene-cards")
+async def studio_kb_list_scene_cards(
+    series_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    """列出系列下所有场景卡片。"""
+    service = _studio_ensure_service_ready()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    series_workspace = str(series.get("workspace_id") or "").strip()
+    resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+    effective_workspace_id = series_workspace or resolved_workspace_id
+    if effective_workspace_id and (AUTH_REQUIRED or resolved_workspace_id):
+        _collab_require_workspace_role(request, effective_workspace_id, "viewer", authorization)
+    elements = service.storage.get_shared_elements(series_id, element_type="scene")
+    cards = []
+    for elem in elements:
+        card = service.storage.get_scene_card_by_element(elem["id"])
+        if card:
+            card["element_name"] = elem.get("name", "")
+            cards.append(card)
+    return cards
+
+
+@app.get("/api/studio/series/{series_id}/kb/world-bible")
+async def studio_kb_get_world_bible(
+    series_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    """获取系列的世界观词典。"""
+    service = _studio_ensure_service_ready()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    series_workspace = str(series.get("workspace_id") or "").strip()
+    resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+    effective_workspace_id = series_workspace or resolved_workspace_id
+    if effective_workspace_id and (AUTH_REQUIRED or resolved_workspace_id):
+        _collab_require_workspace_role(request, effective_workspace_id, "viewer", authorization)
+    bible = service.storage.get_world_bible_by_series(series_id)
+    return bible or {}
+
+
+@app.put("/api/studio/series/{series_id}/kb/world-bible")
+async def studio_kb_save_world_bible(
+    series_id: str,
+    req: StudioKBWorldBibleRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    """创建或更新系列的世界观词典。"""
+    service = _studio_ensure_service_ready()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    series_workspace = str(series.get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+    existing = service.storage.get_world_bible_by_series(series_id)
+    if existing:
+        return service.storage.update_world_bible(existing["id"], {
+            "art_style": req.art_style,
+            "era": req.era,
+            "color_palette": req.color_palette,
+            "recurring_motifs": req.recurring_motifs,
+            "forbidden_elements": req.forbidden_elements,
+        })
+    return service.storage.create_world_bible(
+        series_id=series_id,
+        art_style=req.art_style,
+        era=req.era,
+        color_palette=req.color_palette,
+        recurring_motifs=req.recurring_motifs,
+        forbidden_elements=req.forbidden_elements,
+    )
+
+
+@app.get("/api/studio/series/{series_id}/kb/mood-packs")
+async def studio_kb_list_mood_packs(
+    series_id: str,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    """列出系列下所有情绪氛围预制包（含内置包）。"""
+    service = _studio_ensure_service_ready()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    series_workspace = str(series.get("workspace_id") or "").strip()
+    resolved_workspace_id = _collab_pick_workspace_id(request, workspace_id)
+    effective_workspace_id = series_workspace or resolved_workspace_id
+    if effective_workspace_id and (AUTH_REQUIRED or resolved_workspace_id):
+        _collab_require_workspace_role(request, effective_workspace_id, "viewer", authorization)
+    # KB table packs
+    kb_packs = service.storage.list_mood_packs(series_id=series_id)
+    # Merge with builtins from mood_packs.py
+    from backend.services.studio.mood_packs import list_available_moods
+    builtin_list = list_available_moods()
+    kb_keys = {p.get("mood_key") for p in kb_packs}
+    for builtin in builtin_list:
+        if builtin["mood_key"] not in kb_keys:
+            kb_packs.append(builtin)
+    return kb_packs
+
+
+@app.post("/api/studio/series/{series_id}/kb/mood-packs")
+async def studio_kb_save_mood_pack(
+    series_id: str,
+    req: StudioKBMoodPackRequest,
+    request: Request,
+    workspace_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    """创建或更新系列的情绪氛围预制包。"""
+    service = _studio_ensure_service_ready()
+    series = service.storage.get_series(series_id)
+    if not series:
+        _studio_raise(404, "系列不存在", "series_not_found", {"series_id": series_id})
+    series_workspace = str(series.get("workspace_id") or "").strip()
+    resolved_workspace_id = series_workspace or _collab_pick_workspace_id(request, workspace_id)
+    if resolved_workspace_id:
+        _collab_require_workspace_role(request, resolved_workspace_id, "editor", authorization)
+    combined = req.combined_prompt
+    if not combined:
+        parts = [t for t in (req.color_tokens, req.line_style_tokens, req.effect_tokens) if t]
+        combined = ", ".join(parts)
+    return service.storage.create_mood_pack(
+        mood_key=req.mood_key,
+        series_id=series_id,
+        color_tokens=req.color_tokens,
+        line_style_tokens=req.line_style_tokens,
+        effect_tokens=req.effect_tokens,
+        combined_prompt=combined,
+        is_builtin=req.is_builtin,
+    )
+
+
 # --- 镜头 ---
 
 @app.get("/api/studio/episodes/{episode_id}/shots")
@@ -9235,12 +9440,6 @@ async def studio_export_series(
 # Phase 1: Knowledge Base API Endpoints
 # =====================================================================
 
-from services.studio.knowledge_base import KnowledgeBase
-from services.studio.mood_packs import (
-    get_mood_pack, list_available_moods, get_mood_visual_prompt,
-    save_custom_mood_pack, delete_custom_mood_pack, BUILTIN_MOOD_PACKS,
-)
-
 
 def _kb_get_instance() -> KnowledgeBase:
     """获取或创建 KnowledgeBase 实例"""
@@ -9367,14 +9566,17 @@ class KBMoodPackCreate(BaseModel):
 async def kb_create_mood_pack(body: KBMoodPackCreate):
     """创建自定义情绪氛围包"""
     service = _studio_ensure_service_ready()
+    tokens = {
+        "color_tokens": body.color_tokens,
+        "line_style_tokens": body.line_style_tokens,
+        "effect_tokens": body.effect_tokens,
+        "combined_prompt": body.combined_prompt,
+    }
     pack = save_custom_mood_pack(
         service.storage,
         series_id=body.series_id,
         mood_key=body.mood_key,
-        color_tokens=body.color_tokens,
-        line_style_tokens=body.line_style_tokens,
-        effect_tokens=body.effect_tokens,
-        combined_prompt=body.combined_prompt,
+        tokens=tokens,
     )
     return {"pack": pack}
 
@@ -9436,6 +9638,54 @@ async def kb_assemble_preview(body: KBAssemblePreviewRequest):
     assembler = service._get_or_create_prompt_assembler()
     result = assembler.assemble_shot_prompt(body.shot, body.series_id)
     return {"result": result}
+
+
+# =====================================================================
+# Phase 2: QA Quality Assurance API Endpoints
+# =====================================================================
+
+@app.post("/api/studio/qa/narrative/{episode_id}")
+async def qa_narrative_check(episode_id: str):
+    """对指定集执行叙事一致性检查"""
+    service = _studio_ensure_service_ready()
+    try:
+        result = await service.run_narrative_qa(episode_id)
+        return result
+    except Exception as e:
+        _studio_raise_from_exception(e)
+
+
+@app.post("/api/studio/qa/prompt/{shot_id}")
+async def qa_prompt_check(shot_id: str):
+    """对指定镜头执行提示词 QA 检查（安全 + KB 合规）"""
+    service = _studio_ensure_service_ready()
+    try:
+        result = await service.run_prompt_qa(shot_id)
+        return result
+    except Exception as e:
+        _studio_raise_from_exception(e)
+
+
+@app.post("/api/studio/qa/visual/{shot_id}")
+async def qa_visual_check(shot_id: str):
+    """对指定镜头执行视觉一致性检查"""
+    service = _studio_ensure_service_ready()
+    try:
+        result = await service.run_visual_qa(shot_id)
+        return result
+    except Exception as e:
+        _studio_raise_from_exception(e)
+
+
+@app.post("/api/studio/qa/full/{episode_id}")
+async def qa_full_check(episode_id: str):
+    """对指定集执行完整质量评估（叙事 + 提示词 + 视觉）"""
+    service = _studio_ensure_service_ready()
+    try:
+        result = await service.run_full_qa(episode_id)
+        return result
+    except Exception as e:
+        _studio_raise_from_exception(e)
 
 
 if __name__ == "__main__":

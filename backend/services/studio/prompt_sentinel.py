@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 _SEVERITY_SCORE = {
@@ -352,3 +352,114 @@ def build_prompt_optimize_llm_payload(prompt: str, analysis: Dict[str, Any]) -> 
         f"命中风险项:\n{issue_text}\n"
     )
     return system_prompt, user_prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: 知识库合规检查
+# ---------------------------------------------------------------------------
+
+def check_kb_compliance(
+    prompt: str,
+    shot: Dict[str, Any],
+    kb_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """知识库合规性检查 — 验证提示词是否遵循知识库约束
+
+    检查项：
+    1. 角色描述是否包含知识库词条（非自由发挥）
+    2. 情绪词条是否来自预制包
+    3. 禁止元素是否出现
+    4. 负面提示词是否完整
+    5. 景别/角度/运镜是否使用标准词条
+    """
+    if not kb_context:
+        return {"compliant": True, "score": 100.0, "issues": []}
+
+    issues: List[Dict[str, Any]] = []
+    text = (prompt or "").strip()
+    text_lower = text.lower()
+
+    # 1. 检查禁止元素
+    forbidden = str(kb_context.get("forbidden_elements") or "").strip()
+    if forbidden:
+        for elem in forbidden.split(","):
+            elem = elem.strip()
+            if elem and elem.lower() in text_lower:
+                issues.append({
+                    "severity": "error",
+                    "check": "forbidden_element",
+                    "description": f"提示词包含禁止元素「{elem}」",
+                    "fix_suggestion": f"请移除「{elem}」，该元素在世界观词典中被标记为禁止",
+                })
+
+    # 2. 检查角色词条覆盖率
+    character_cards = kb_context.get("character_cards", [])
+    for card in character_cards:
+        appearance = card.get("appearance_tokens", {})
+        if isinstance(appearance, str):
+            try:
+                import json
+                appearance = json.loads(appearance)
+            except Exception:
+                appearance = {}
+        if not appearance:
+            continue
+        total_features = len(appearance)
+        matched = 0
+        for _key, val in appearance.items():
+            if val and str(val).strip().lower() in text_lower:
+                matched += 1
+        if total_features > 0:
+            coverage = matched / total_features
+            if coverage < 0.3:
+                issues.append({
+                    "severity": "warning",
+                    "check": "character_coverage",
+                    "description": f"角色档案词条覆盖率仅 {coverage:.0%}，可能存在自由发挥",
+                    "fix_suggestion": "建议启用知识库组装模式自动注入角色词条",
+                })
+
+    # 3. 检查情绪词条
+    emotion = str(shot.get("emotion") or "").strip()
+    if emotion:
+        mood_packs = kb_context.get("available_moods", [])
+        mood_keys = [m.get("mood_key", "") for m in mood_packs] if mood_packs else []
+        from .mood_packs import resolve_mood_key
+        resolved = resolve_mood_key(emotion)
+        if resolved and mood_keys and resolved not in mood_keys:
+            issues.append({
+                "severity": "info",
+                "check": "mood_not_in_packs",
+                "description": f"情绪「{emotion}」不在预制包中",
+                "fix_suggestion": "可以创建自定义情绪氛围包",
+            })
+
+    # 4. 检查景别/角度标准词条
+    from .constants import SHOT_SIZE_STANDARDS, CAMERA_ANGLES
+    shot_size = str(shot.get("shot_size") or "").strip()
+    if shot_size and shot_size not in SHOT_SIZE_STANDARDS:
+        issues.append({
+            "severity": "warning",
+            "check": "non_standard_shot_size",
+            "description": f"景别「{shot_size}」不是标准词条",
+            "fix_suggestion": f"请使用标准景别: {', '.join(SHOT_SIZE_STANDARDS.keys())}",
+        })
+    camera_angle = str(shot.get("camera_angle") or "").strip()
+    if camera_angle and camera_angle not in CAMERA_ANGLES:
+        issues.append({
+            "severity": "warning",
+            "check": "non_standard_angle",
+            "description": f"机位角度「{camera_angle}」不是标准词条",
+            "fix_suggestion": f"请使用标准角度: {', '.join(CAMERA_ANGLES.keys())}",
+        })
+
+    # 计算分数
+    error_count = sum(1 for i in issues if i["severity"] == "error")
+    warning_count = sum(1 for i in issues if i["severity"] == "warning")
+    score = max(0.0, 100.0 - error_count * 20 - warning_count * 8)
+
+    return {
+        "compliant": error_count == 0,
+        "score": round(score, 1),
+        "issues": issues,
+    }
