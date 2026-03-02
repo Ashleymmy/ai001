@@ -14,3 +14,5 @@ python-docx>=1.0.0
 PyPDF2>=3.0.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+arq>=0.26.0
+redis>=5.0.0

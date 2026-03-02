@@ -5,6 +5,10 @@ from .types import (
     CreateTaskInput,
 )
 from .storage import TaskStorage
+from .event_bus import TaskEventBus
+from .queue_manager import QueueManager, WorkerSettings
+from .watchdog import TaskWatchdog
+from .submitter import TaskSubmitter
 
 __all__ = [
     "TaskStatus", "TaskType", "QueueType",
@@ -12,4 +16,8 @@ __all__ = [
     "PipelineRun", "PipelineStep", "Checkpoint",
     "CreateTaskInput",
     "TaskStorage",
+    "TaskEventBus",
+    "QueueManager", "WorkerSettings",
+    "TaskWatchdog",
+    "TaskSubmitter",
 ]
