@@ -88,12 +88,19 @@ class WorkerSettings:
     async def on_startup(ctx: dict):
         from .storage import TaskStorage
         from .event_bus import TaskEventBus
+        from .startup_recovery import StartupRecovery
         import os
 
         db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "data", "task_queue.db")
         storage = TaskStorage(db_path)
+        event_bus = TaskEventBus(storage)
         ctx["storage"] = storage
-        ctx["event_bus"] = TaskEventBus(storage)
+        ctx["event_bus"] = event_bus
+
+        # 启动时自动恢复中断任务
+        recovery = StartupRecovery(storage, event_bus)
+        await recovery.recover()
+
         logger.info("arq worker started")
 
     @staticmethod

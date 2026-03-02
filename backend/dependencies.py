@@ -84,6 +84,9 @@ collab_service: Optional[CollabService] = None
 
 AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
+# Phase 4: 任务队列 Feature Flag
+USE_TASK_QUEUE = os.getenv("USE_TASK_QUEUE", "false").lower() == "true"
+
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 

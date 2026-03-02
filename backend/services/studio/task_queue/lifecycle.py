@@ -12,6 +12,16 @@ logger = logging.getLogger(__name__)
 HEARTBEAT_INTERVAL = 10  # 秒
 
 
+class ExternalHandoff(Exception):
+    """
+    Handler 抛出此异常表示任务已提交到外部服务，
+    external_id 已通过 storage.set_external_id() 持久化。
+    lifecycle 不标记完成/失败，而是保持 processing 状态，
+    由 ExternalTaskPoller 轮询外部服务完成状态。
+    """
+    pass
+
+
 async def _heartbeat_loop(task_id: str, storage: TaskStorage):
     """定时更新心跳"""
     while True:
@@ -34,6 +44,7 @@ async def with_task_lifecycle(
     2. 启动心跳
     3. 执行 handler
     4. 标记完成/失败
+    5. 支持 ExternalHandoff — handler 提交外部服务后挂起，由 poller 接管
     """
     # 1. 乐观标记
     if not storage.try_mark_processing(task_id):
@@ -56,6 +67,14 @@ async def with_task_lifecycle(
         storage.try_mark_completed(task_id, result or {})
         await event_bus.publish_lifecycle(task_id, "completed", payload=result, episode_id=episode_id)
         logger.info(f"Task {task_id} completed")
+
+    except ExternalHandoff:
+        # Handler 已提交外部服务并设置了 external_id
+        # 保持 processing 状态，由 ExternalTaskPoller 接管
+        await event_bus.publish_lifecycle(task_id, "external_handoff",
+            payload={"external_id": storage.get_task(task_id).external_id if storage.get_task(task_id) else ""},
+            episode_id=episode_id)
+        logger.info(f"Task {task_id} handed off to external service, poller will track completion")
 
     except Exception as exc:
         normalized = normalize_error(exc)

@@ -38,6 +38,7 @@ from schemas.settings import (
     ExecutePipelineV2Request,
 )
 import dependencies as deps
+from dependencies import USE_TASK_QUEUE
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
@@ -904,6 +905,16 @@ async def generate_project_frames_stream(
     executor = deps.get_agent_executor()
 
     async def event_generator():
+        # ── Phase 4: 任务队列路径 ──
+        if USE_TASK_QUEUE:
+            async for chunk in _agent_generate_frames_via_queue(
+                project, executor, project_id, visualStyle,
+                excludeShotIds, mode,
+            ):
+                yield chunk
+            return
+
+        # ── 原有路径 ──
         regenerate = (mode or "").strip().lower() in ("regenerate", "regen", "force", "all")
 
         excluded_shot_ids = set()
@@ -2531,6 +2542,15 @@ async def generate_project_videos_stream(project_id: str, resolution: str = "720
             raise HTTPException(status_code=400, detail=f"Invalid audio_timeline: {str(e)}")
 
     async def event_generator():
+        # ── Phase 4: 任务队列路径 ──
+        if USE_TASK_QUEUE:
+            async for chunk in _agent_generate_videos_via_queue(
+                project, executor, project_id, resolution,
+            ):
+                yield chunk
+            return
+
+        # ── 原有路径 ──
         # 收集所有有起始帧的镜头
         all_shots = []
         for segment in project.segments:

@@ -319,6 +319,22 @@ class TaskStorage:
             )
             self._conn.commit()
 
+    def reset_to_queued(self, task_id: str) -> bool:
+        """重置 processing 任务为 queued (启动恢复用)。"""
+        now = _now()
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                UPDATE tasks
+                SET status = 'queued', heartbeat_at = NULL,
+                    started_at = NULL, updated_at = ?
+                WHERE id = ? AND status = 'processing'
+                """,
+                (now, task_id),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
     def update_heartbeat(self, task_id: str):
         """更新任务心跳时间。"""
         now = _now()

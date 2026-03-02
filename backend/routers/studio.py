@@ -55,6 +55,7 @@ from schemas.settings import (
     KBAssemblePreviewRequest,
 )
 import dependencies as deps
+from dependencies import USE_TASK_QUEUE
 
 router = APIRouter(prefix="/api/studio", tags=["studio"])
 
@@ -1411,6 +1412,18 @@ async def studio_batch_generate_stream(
         parallel_cfg["global_max_concurrency"] = global_max_concurrency
 
     async def event_generator():
+        # ── Phase 4: 任务队列路径 ──
+        if USE_TASK_QUEUE:
+            async for chunk in _studio_batch_generate_via_queue(
+                service, episode_id, episode, stage_list, parallel_cfg,
+                video_generate_audio, image_width, image_height,
+                element_use_reference, element_reference_mode,
+                request,
+            ):
+                yield chunk
+            return
+
+        # ── 原有路径 ──
         queue: asyncio.Queue = asyncio.Queue()
 
         async def on_progress(event: Dict[str, Any]) -> None:
@@ -2718,4 +2731,148 @@ async def agent_bridge_export_kb(series_id: str):
     """导出知识库供 Agent 模式使用"""
     service = deps._studio_ensure_service_ready()
     return service.export_kb_for_agent_mode(series_id)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Studio 任务队列路径
+# ---------------------------------------------------------------------------
+
+async def _studio_batch_generate_via_queue(
+    service,
+    episode_id: str,
+    episode: dict,
+    stage_list: list,
+    parallel_cfg: dict,
+    video_generate_audio,
+    image_width,
+    image_height,
+    element_use_reference,
+    element_reference_mode,
+    request,
+):
+    """通过任务队列执行批量生成，以 SSE 事件流形式推送进度。
+
+    将每个 shot 的生成拆为独立 Task 入队，SSE 从 TaskEventBus 读取事件。
+    支持 Last-Event-ID 重连重放。
+    """
+    import os
+    from services.studio.task_queue import TaskStorage, CreateTaskInput, TaskEventBus
+
+    db_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "data", "task_queue.db",
+    )
+    task_storage = TaskStorage(db_path)
+    event_bus = TaskEventBus(task_storage)
+
+    series_id = str(episode.get("series_id", ""))
+
+    # 解析 Last-Event-ID 用于重连重放
+    last_event_id = 0
+    raw_last_id = request.headers.get("Last-Event-ID", "0") if hasattr(request, "headers") else "0"
+    try:
+        last_event_id = int(raw_last_id)
+    except (ValueError, TypeError):
+        pass
+
+    # 重放历史事件
+    if last_event_id > 0:
+        replayed = await event_bus.replay_after(episode_id, last_event_id)
+        for ev in replayed:
+            payload = {
+                "type": ev.event_type,
+                "task_id": ev.task_id,
+                **ev.payload,
+            }
+            yield f"id: {ev.id}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    # 获取 shot 列表
+    shots = service.storage.list_shots(episode_id)
+    if not shots:
+        yield f"data: {json.dumps({'type': 'done', 'generated': 0, 'total': 0}, ensure_ascii=False)}\n\n"
+        return
+
+    # 为每个需要生成的 shot 创建任务
+    task_ids = []
+    total = len(shots)
+    yield f"data: {json.dumps({'type': 'start', 'total': total, 'percent': 0, 'mode': 'task_queue'}, ensure_ascii=False)}\n\n"
+
+    for shot in shots:
+        shot_id = shot.get("id", "")
+
+        # 根据 stage_list 决定 task type
+        task_type = "image_frame"
+        queue_type = "image"
+        payload = {
+            "prompt": shot.get("prompt", ""),
+            "description": shot.get("description", ""),
+            "shot_id": shot_id,
+            "episode_id": episode_id,
+            "stages": stage_list,
+        }
+        if image_width:
+            payload["width"] = image_width
+        if image_height:
+            payload["height"] = image_height
+        if element_use_reference is not None:
+            payload["element_use_reference"] = element_use_reference
+        if element_reference_mode:
+            payload["element_reference_mode"] = element_reference_mode
+
+        dedupe_key = f"studio:{episode_id}:{shot_id}:{task_type}"
+
+        inp = CreateTaskInput(
+            type=task_type,
+            queue_type=queue_type,
+            target_type="shot",
+            target_id=shot_id,
+            series_id=series_id,
+            episode_id=episode_id,
+            runtime="studio",
+            priority=0,
+            max_attempts=3,
+            payload=payload,
+            dedupe_key=dedupe_key,
+        )
+        task = task_storage.create_task(inp)
+        task_ids.append(task.id)
+
+    # 订阅事件并推送 SSE
+    sub_queue = event_bus.subscribe(episode_id)
+    completed = 0
+    failed = 0
+
+    try:
+        import asyncio
+        timeout_count = 0
+        max_idle_timeouts = 1200  # 10 分钟 (0.5s * 1200)
+
+        while completed + failed < total and timeout_count < max_idle_timeouts:
+            try:
+                ev = await asyncio.wait_for(sub_queue.get(), timeout=0.5)
+                timeout_count = 0
+
+                payload = {
+                    "type": ev.event_type,
+                    "task_id": ev.task_id,
+                    **ev.payload,
+                }
+
+                if ev.event_type == "completed":
+                    completed += 1
+                    payload["percent"] = int(((completed + failed) / total) * 100)
+                elif ev.event_type == "failed":
+                    failed += 1
+                    payload["percent"] = int(((completed + failed) / total) * 100)
+
+                yield f"id: {ev.id}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+            except asyncio.TimeoutError:
+                timeout_count += 1
+                yield ": keep-alive\n\n"
+
+    finally:
+        event_bus.unsubscribe(episode_id, sub_queue)
+
+    yield f"data: {json.dumps({'type': 'done', 'generated': completed, 'failed': failed, 'total': total, 'percent': 100, 'mode': 'task_queue'}, ensure_ascii=False)}\n\n"
 
