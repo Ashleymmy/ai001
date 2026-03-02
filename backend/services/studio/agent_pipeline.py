@@ -637,3 +637,41 @@ def create_pipeline(series_id: str, episode_id: str, **kwargs: Any) -> AgentPipe
         llm_service=kwargs.get("llm_service"),
         on_progress=kwargs.get("on_progress"),
     )
+
+
+# ------------------------------------------------------------------
+# Graph Executor 集成 (Phase 3)
+# ------------------------------------------------------------------
+def build_graph_nodes_from_stages(
+    stage_handlers: dict,
+    pipeline_stages: list,
+) -> list:
+    """将现有 pipeline stage handlers 转为 GraphNode 列表"""
+    from .graph_executor import GraphNode, NodeResult, GraphNodeContext
+
+    nodes = []
+    for stage in pipeline_stages:
+        handler = stage_handlers.get(stage)
+        if not handler:
+            continue
+
+        async def _make_run(handler=handler):
+            async def _run(ctx: GraphNodeContext) -> NodeResult:
+                # 调用现有 handler, 将结果包装为 NodeResult
+                result = await handler(ctx.state.meta)
+                refs = {}
+                if isinstance(result, dict):
+                    refs = result
+                return NodeResult(checkpoint_refs=refs, output=result)
+            return _run
+
+        node = GraphNode(
+            key=str(stage.value if hasattr(stage, 'value') else stage),
+            title=str(stage.value if hasattr(stage, 'value') else stage),
+            max_attempts=2,
+            timeout_s=300,
+            run=None,  # Will be set at execution time
+        )
+        nodes.append(node)
+
+    return nodes
