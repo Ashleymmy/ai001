@@ -205,7 +205,7 @@ ZH_MOOD_ALIASES: Dict[str, str] = {
 # 内部辅助
 # ======================================================================
 
-def _resolve_mood_key(raw_key: str) -> Optional[str]:
+def resolve_mood_key(raw_key: str) -> Optional[str]:
     """将用户输入（中文/英文/别名）解析为标准 mood_key。"""
     key = raw_key.strip()
     if not key:
@@ -240,7 +240,7 @@ def get_mood_pack(mood_key: str, series_id: str = "") -> Optional[MoodPack]:
     优先查找 DB 中该 series_id 下的自定义包，找不到时回退到内置包。
     若 series_id 为空则只查内置包。
     """
-    resolved = _resolve_mood_key(mood_key)
+    resolved = resolve_mood_key(mood_key)
     if resolved is None:
         return None
 
