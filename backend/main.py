@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, Header, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
 from typing import Optional, List, Dict, Any, Tuple, Set
@@ -1414,6 +1414,164 @@ async def test_tts(request: TestTTSRequest):
         if msg.startswith("TTS HTTP 401:"):
             raise HTTPException(status_code=401, detail=f"TTS 鉴权失败：{msg}")
         raise HTTPException(status_code=500, detail=f"TTS 测试失败: {msg}")
+
+
+@app.post("/api/tts/preview")
+async def preview_tts(request: TestTTSRequest):
+    """TTS 试听：合成短文本并返回音频流供前端播放"""
+    import io
+    cfg = request.tts
+    provider = str(getattr(cfg, "provider", "") or "volc_tts_v1_http").strip() or "volc_tts_v1_http"
+    text = (request.text or "你好，这是一段语音试听示例。").strip()
+    voice_type = ""
+    audio_bytes = b""
+    out_fmt = "mp3"
+
+    try:
+        if provider.startswith("fish"):
+            fish_cfg = cfg.fish
+            voice_type = (
+                request.voiceType
+                or fish_cfg.narratorVoiceType
+                or fish_cfg.dialogueMaleVoiceType
+                or fish_cfg.dialogueFemaleVoiceType
+                or fish_cfg.dialogueVoiceType
+                or ""
+            ).strip()
+            api_key = str(fish_cfg.apiKey or "").strip()
+            if not api_key:
+                raise HTTPException(status_code=400, detail="缺少 Fish API Key：请在设置中配置 TTS 服务")
+            if not voice_type:
+                raise HTTPException(status_code=400, detail="缺少 Fish reference_id：请先配置音色")
+            base_url = str(fish_cfg.baseUrl or "").strip() or "https://api.fish.audio"
+            model_hdr = str(fish_cfg.model or "").strip()
+            if not model_hdr or model_hdr.startswith("seed-"):
+                model_hdr = "speech-1.5"
+            tts = FishTTSService(FishTTSConfig(api_key=api_key, base_url=base_url, model=model_hdr))
+            out_fmt = str(fish_cfg.encoding or "mp3").strip().lower() or "mp3"
+            audio_bytes, _ = await tts.synthesize(
+                text=text,
+                reference_id=voice_type,
+                encoding=out_fmt,
+                speed_ratio=float(fish_cfg.speedRatio or 1.0),
+                rate=int(fish_cfg.rate or 24000),
+            )
+
+        elif provider in {"aliyun_bailian_tts_v2", "dashscope_tts_v2"}:
+            bailian_cfg = cfg.bailian
+            voice_type = (
+                request.voiceType
+                or bailian_cfg.narratorVoiceType
+                or bailian_cfg.dialogueMaleVoiceType
+                or bailian_cfg.dialogueFemaleVoiceType
+                or bailian_cfg.dialogueVoiceType
+                or ""
+            ).strip()
+            api_key = str(bailian_cfg.apiKey or "").strip()
+            if not api_key:
+                raise HTTPException(status_code=400, detail="缺少阿里百炼 API Key：请在设置中配置 TTS 服务")
+            if not voice_type:
+                raise HTTPException(status_code=400, detail="缺少音色/voice：请先配置音色")
+            tts = DashScopeTTSService(
+                DashScopeTTSConfig(
+                    api_key=api_key,
+                    base_url=str(bailian_cfg.baseUrl or "").strip() or "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+                    model=str(bailian_cfg.model or "").strip() or "cosyvoice-v1",
+                    workspace=str(bailian_cfg.workspace or "").strip(),
+                )
+            )
+            out_fmt = str(bailian_cfg.encoding or "mp3").strip().lower() or "mp3"
+            audio_bytes, _ = await tts.synthesize(
+                text=text,
+                voice=voice_type,
+                encoding=out_fmt,
+                speed_ratio=float(bailian_cfg.speedRatio or 1.0),
+                rate=int(bailian_cfg.rate or 24000),
+            )
+
+        elif provider.startswith("custom_"):
+            custom_provider = storage.get_module_custom_provider(provider) or storage.get_custom_provider(provider) or {}
+            if not custom_provider or str(custom_provider.get("category") or "") != "tts":
+                raise HTTPException(status_code=400, detail="自定义 TTS 配置不存在：请先在设置中配置 TTS 服务")
+            custom_cfg = cfg.custom
+            voice_type = (
+                request.voiceType
+                or custom_cfg.narratorVoiceType
+                or custom_cfg.dialogueMaleVoiceType
+                or custom_cfg.dialogueFemaleVoiceType
+                or custom_cfg.dialogueVoiceType
+                or ""
+            ).strip()
+            if not voice_type:
+                raise HTTPException(status_code=400, detail="缺少 voice：请先配置音色")
+            api_key = str(custom_provider.get("apiKey") or "").strip()
+            base_url = str(custom_provider.get("baseUrl") or "").strip()
+            model = str(custom_provider.get("model") or "").strip()
+            if not api_key or not base_url:
+                raise HTTPException(status_code=400, detail="自定义 TTS 缺少 apiKey 或 baseUrl")
+            tts = OpenAITTSService(OpenAITTSConfig(api_key=api_key, base_url=base_url, model=model))
+            out_fmt = str(custom_cfg.encoding or "mp3").strip().lower() or "mp3"
+            audio_bytes, _ = await tts.synthesize(
+                text=text,
+                voice=voice_type,
+                encoding=out_fmt,
+                speed_ratio=float(custom_cfg.speedRatio or 1.0),
+            )
+
+        else:
+            # 默认：火山 OpenSpeech
+            volc_cfg = cfg.volc
+            voice_type = (
+                request.voiceType
+                or volc_cfg.narratorVoiceType
+                or volc_cfg.dialogueMaleVoiceType
+                or volc_cfg.dialogueFemaleVoiceType
+                or volc_cfg.dialogueVoiceType
+                or ""
+            ).strip()
+            appid = str(volc_cfg.appid or "").strip()
+            access_token = str(volc_cfg.accessToken or "").strip()
+            if not appid or not access_token:
+                raise HTTPException(status_code=400, detail="缺少 appid/accessToken：请在设置中配置 TTS 服务")
+            if not voice_type:
+                voice_type = VolcTTSService.auto_pick_voice_type(role="narration", name="narrator")
+            tts = VolcTTSService(
+                VolcTTSConfig(
+                    appid=appid,
+                    access_token=access_token,
+                    cluster=str(volc_cfg.cluster or "volcano_tts").strip() or "volcano_tts",
+                    model=str(volc_cfg.model or "seed-tts-1.1").strip() or "seed-tts-1.1",
+                    endpoint=str(volc_cfg.endpoint or "").strip() or "https://openspeech.bytedance.com/api/v1/tts",
+                )
+            )
+            out_fmt = str(volc_cfg.encoding or "mp3").strip().lower() or "mp3"
+            audio_bytes, _ = await tts.synthesize(
+                text=text,
+                voice_type=voice_type,
+                encoding=out_fmt,
+                speed_ratio=float(volc_cfg.speedRatio or 1.0),
+                rate=int(volc_cfg.rate or 24000),
+            )
+
+        if not audio_bytes:
+            raise HTTPException(status_code=500, detail="TTS 合成返回空音频")
+
+        content_type = "audio/mpeg" if out_fmt == "mp3" else f"audio/{out_fmt}"
+        return StreamingResponse(
+            io.BytesIO(audio_bytes),
+            media_type=content_type,
+            headers={"Content-Disposition": f"inline; filename=preview.{out_fmt}"},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        msg = str(e)
+        if "403" in msg:
+            raise HTTPException(status_code=403, detail=f"TTS 鉴权/权限失败：{msg}")
+        if "401" in msg:
+            raise HTTPException(status_code=401, detail=f"TTS 鉴权失败：{msg}")
+        raise HTTPException(status_code=500, detail=f"TTS 试听失败: {msg}")
 
 
 def _get_fish_service_from_settings() -> FishAudioService:

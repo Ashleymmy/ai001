@@ -8,7 +8,7 @@
  * - 底部：角色阶段时间线，可视化角色年龄/阶段切换节点
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Plus, Play, Loader2, Users, Sparkles, Settings2,
@@ -16,8 +16,9 @@ import {
 } from 'lucide-react'
 import { useStudioStore } from '../store/studioStore'
 import { useWorkspaceStore } from '../store/workspaceStore'
-import { studioCheckConfig, studioSaveDigitalHumanProfiles } from '../services/api'
+import { studioCheckConfig, studioSaveDigitalHumanProfiles, previewTTSVoice } from '../services/api'
 import { BACKEND_ORIGIN } from '../services/api'
+import { useSettingsStore } from '../store/settingsStore'
 import type {
   StudioShot,
 } from '../store/studioStore'
@@ -517,7 +518,11 @@ export default function DigitalHumanWorkbenchPage() {
   const [showShotDetail, setShowShotDetail] = useState(false)
   const [lipSyncActive, setLipSyncActive] = useState(false)
   const [auditioning, setAuditioning] = useState<string | null>(null)
+  const [auditionError, setAuditionError] = useState<string | null>(null)
   const [configChecked, setConfigChecked] = useState(false)
+  const auditionAudioRef = useRef<HTMLAudioElement | null>(null)
+  const auditionBlobUrlRef = useRef<string | null>(null)
+  const ttsSettings = useSettingsStore((s) => s.settings.tts)
 
   // ------ 过滤出数字人模式的系列 ------
   const visibleSeriesList = useMemo(
@@ -662,13 +667,79 @@ export default function DigitalHumanWorkbenchPage() {
     await store.planEpisode(store.currentEpisodeId)
   }, [store])
 
-  const handleAuditionVoice = useCallback((profileId: string) => {
+  const handleAuditionVoice = useCallback(async (profileId: string) => {
+    // 停止之前正在播放的试听
+    if (auditionAudioRef.current) {
+      auditionAudioRef.current.pause()
+      auditionAudioRef.current = null
+    }
+    if (auditionBlobUrlRef.current) {
+      URL.revokeObjectURL(auditionBlobUrlRef.current)
+      auditionBlobUrlRef.current = null
+    }
+
     setAuditioning(profileId)
-    // 模拟试听：真正实现需要调后端 TTS，此处设一个定时器来表示试听中状态
-    setTimeout(() => {
+    setAuditionError(null)
+
+    try {
+      const profile = profiles.find((p) => p.id === profileId)
+      const voiceType = profile?.voice_profile || undefined
+      const sampleText = profile?.appearance
+        ? `你好，我是${profile.display_name || profile.base_name || '角色'}。${profile.appearance.slice(0, 30)}`
+        : `你好，这是${profile?.display_name || profile?.base_name || '角色'}的语音试听。`
+
+      const ttsConfig = {
+        ...ttsSettings,
+        provider: ttsSettings.provider,
+        volc: { ...ttsSettings.volc },
+        fish: { ...ttsSettings.fish },
+        bailian: { ...ttsSettings.bailian },
+        custom: { ...ttsSettings.custom },
+      }
+
+      const audioBlob = await previewTTSVoice(ttsConfig, voiceType, sampleText)
+      const blobUrl = URL.createObjectURL(audioBlob)
+      auditionBlobUrlRef.current = blobUrl
+
+      const audio = new Audio(blobUrl)
+      auditionAudioRef.current = audio
+      audio.onended = () => {
+        setAuditioning(null)
+        auditionAudioRef.current = null
+        if (auditionBlobUrlRef.current) {
+          URL.revokeObjectURL(auditionBlobUrlRef.current)
+          auditionBlobUrlRef.current = null
+        }
+      }
+      audio.onerror = () => {
+        setAuditioning(null)
+        setAuditionError('音频播放失败')
+        auditionAudioRef.current = null
+        if (auditionBlobUrlRef.current) {
+          URL.revokeObjectURL(auditionBlobUrlRef.current)
+          auditionBlobUrlRef.current = null
+        }
+      }
+      await audio.play()
+    } catch (e: unknown) {
       setAuditioning(null)
-    }, 3000)
-  }, [])
+      const errResponse = (e as { response?: { data?: Blob | { detail?: string } } })?.response
+      if (errResponse?.data instanceof Blob) {
+        try {
+          const text = await errResponse.data.text()
+          const parsed = JSON.parse(text)
+          setAuditionError(parsed.detail || 'TTS 试听失败')
+        } catch {
+          setAuditionError('TTS 试听失败')
+        }
+      } else {
+        const detail = (errResponse?.data as { detail?: string })?.detail
+          || (e as Error)?.message
+          || 'TTS 试听失败，请先在设置中配置 TTS 服务'
+        setAuditionError(detail)
+      }
+    }
+  }, [profiles, ttsSettings])
 
   const handleReorderShots = useCallback(async (orderedIds: string[]) => {
     if (!store.currentEpisodeId) return
@@ -1207,13 +1278,28 @@ export default function DigitalHumanWorkbenchPage() {
                 )}
               </div>
 
-              {/* 试听中状态 */}
+              {/* 试听状态 */}
               {auditioning && (
                 <div className="mx-3 mb-2 px-3 py-2 rounded-lg bg-indigo-950/40 border border-indigo-800/40 flex items-center gap-2">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+                  {auditionAudioRef.current && !auditionAudioRef.current.paused ? (
+                    <Volume2 className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+                  ) : (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+                  )}
                   <span className="text-[11px] text-indigo-300">
-                    试听音色中...
+                    {auditionAudioRef.current && !auditionAudioRef.current.paused ? '正在播放试听...' : '正在合成语音...'}
                   </span>
+                </div>
+              )}
+              {!auditioning && auditionError && (
+                <div className="mx-3 mb-2 px-3 py-2 rounded-lg bg-red-950/40 border border-red-800/40 flex items-center gap-2">
+                  <span className="text-[11px] text-red-300 flex-1">{auditionError}</span>
+                  <button
+                    onClick={() => setAuditionError(null)}
+                    className="text-[10px] text-red-400 hover:text-red-200 transition-colors shrink-0"
+                  >
+                    关闭
+                  </button>
                 </div>
               )}
 

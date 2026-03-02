@@ -314,39 +314,37 @@ class ImageService:
     async def _call_openai_compatible(self, prompt: str, width: int = 1024, height: int = 1024) -> str:
         """调用 OpenAI 兼容的图像 API"""
         if not self.api_key:
-            return self._placeholder(prompt)
-        
+            raise Exception("OpenAI 兼容图像服务缺少 API Key")
+
         base_url = self.base_url or "https://api.openai.com/v1"
-        
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                headers = {
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
-                }
-                
-                payload = {
-                    "model": self.model or "dall-e-3",
-                    "prompt": prompt,
-                    "n": 1,
-                    "size": f"{width}x{height}"
-                }
-                
-                response = await client.post(
-                    f"{base_url.rstrip('/')}/images/generations",
-                    headers=headers,
-                    json=payload
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    if "data" in data and len(data["data"]) > 0:
-                        return data["data"][0].get("url", self._placeholder(prompt))
-                
-                return self._placeholder(prompt)
-        except Exception as e:
-            print(f"[OpenAI-Compatible] 错误: {e}")
-            return self._placeholder(prompt)
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+
+            payload = {
+                "model": self.model or "dall-e-3",
+                "prompt": prompt,
+                "n": 1,
+                "size": f"{width}x{height}"
+            }
+
+            response = await client.post(
+                f"{base_url.rstrip('/')}/images/generations",
+                headers=headers,
+                json=payload
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                if "data" in data and len(data["data"]) > 0:
+                    url = data["data"][0].get("url")
+                    if url:
+                        return url
+
+            raise Exception(f"OpenAI 兼容图像服务调用失败 ({response.status_code})")
     
     async def _call_comfyui(
         self,
@@ -359,33 +357,29 @@ class ImageService:
         seed: int = 0
     ) -> str:
         """调用本地 ComfyUI"""
-        try:
-            workflow = self._get_comfyui_workflow(prompt, negative_prompt, width, height, steps, seed)
-            
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    f"{self.comfyui_url}/prompt",
-                    json={"prompt": workflow, "client_id": str(uuid.uuid4())}
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    prompt_id = result.get("prompt_id")
-                    await asyncio.sleep(10)
-                    history = await client.get(f"{self.comfyui_url}/history/{prompt_id}")
-                    if history.status_code == 200:
-                        data = history.json()
-                        outputs = data.get(prompt_id, {}).get("outputs", {})
-                        for node_id, output in outputs.items():
-                            images = output.get("images", [])
-                            if images:
-                                filename = images[0].get("filename")
-                                return f"{self.comfyui_url}/view?filename={filename}"
-                
-                return self._placeholder(prompt, seed)
-        except Exception as e:
-            print(f"[ComfyUI] 错误: {e}")
-            return self._placeholder(prompt, seed)
+        workflow = self._get_comfyui_workflow(prompt, negative_prompt, width, height, steps, seed)
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{self.comfyui_url}/prompt",
+                json={"prompt": workflow, "client_id": str(uuid.uuid4())}
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                prompt_id = result.get("prompt_id")
+                await asyncio.sleep(10)
+                history = await client.get(f"{self.comfyui_url}/history/{prompt_id}")
+                if history.status_code == 200:
+                    data = history.json()
+                    outputs = data.get(prompt_id, {}).get("outputs", {})
+                    for node_id, output in outputs.items():
+                        images = output.get("images", [])
+                        if images:
+                            filename = images[0].get("filename")
+                            return f"{self.comfyui_url}/view?filename={filename}"
+
+        raise Exception("ComfyUI 未返回有效图片")
     
     def _get_comfyui_workflow(self, prompt: str, negative_prompt: str, width: int = 1024, height: int = 576, steps: int = 25, seed: int = 0) -> dict:
         """基础 SDXL 工作流"""
@@ -411,34 +405,29 @@ class ImageService:
     
     async def _call_sd_webui(self, prompt: str, reference_image: Optional[str] = None, negative_prompt: str = "", width: int = 1024, height: int = 576, steps: int = 25, seed: int = -1) -> str:
         """调用 SD WebUI API"""
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                payload = {"prompt": prompt, "negative_prompt": negative_prompt, "steps": steps, "width": width, "height": height, "cfg_scale": 7.5, "seed": seed}
-                response = await client.post(f"{self.sd_webui_url}/sdapi/v1/txt2img", json=payload)
-                if response.status_code == 200:
-                    data = response.json()
-                    images = data.get("images", [])
-                    if images:
-                        return f"data:image/png;base64,{images[0]}"
-                return self._placeholder(prompt, seed)
-        except Exception as e:
-            print(f"[SD-WebUI] 错误: {e}")
-            return self._placeholder(prompt, seed)
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            payload = {"prompt": prompt, "negative_prompt": negative_prompt, "steps": steps, "width": width, "height": height, "cfg_scale": 7.5, "seed": seed}
+            response = await client.post(f"{self.sd_webui_url}/sdapi/v1/txt2img", json=payload)
+            if response.status_code == 200:
+                data = response.json()
+                images = data.get("images", [])
+                if images:
+                    return f"data:image/png;base64,{images[0]}"
+        raise Exception("SD WebUI 未返回有效图片")
     
     async def _call_qwen_image(self, prompt: str, reference_image: Optional[str] = None, width: int = 1024, height: int = 576) -> str:
         """调用通义万相 API - 支持参考图"""
         if not self.api_key:
-            print("[Qwen-Image] 缺少 API Key")
-            return self._placeholder(prompt)
-        
+            raise Exception("Qwen-Image 缺少 API Key")
+
         # 尝试使用 DashScope SDK（支持本地文件上传）
         try:
             from dashscope import ImageSynthesis
             from http import HTTPStatus
-            
+
             model = self.model or "wanx-v1"
             size_str = f"{width}*{height}"
-            
+
             # 准备参数
             kwargs = {
                 "api_key": self.api_key,
@@ -447,7 +436,7 @@ class ImageService:
                 "n": 1,
                 "size": size_str
             }
-            
+
             # 处理参考图
             ref_file_path = None
             if reference_image:
@@ -462,14 +451,14 @@ class ImageService:
                         import base64 as b64
                         header, data = reference_image.split(',', 1)
                         image_data = b64.b64decode(data)
-                        
+
                         images_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "images")
                         os.makedirs(images_dir, exist_ok=True)
-                        
+
                         ref_file_path = os.path.join(images_dir, f"ref_{uuid.uuid4().hex[:8]}.png")
                         with open(ref_file_path, 'wb') as f:
                             f.write(image_data)
-                        
+
                         # 使用 sketch_image_url 参数传入本地文件路径
                         kwargs["sketch_image_url"] = ref_file_path
                         kwargs["ref_mode"] = "refonly"
@@ -477,197 +466,179 @@ class ImageService:
                         print(f"[Qwen-Image] 使用本地参考图: {ref_file_path}")
                     except Exception as e:
                         print(f"[Qwen-Image] 处理参考图失败: {e}")
-            
+
             print(f"[Qwen-Image] SDK 调用: model={model}, has_ref={bool(reference_image)}")
-            
+
             # 同步调用 SDK
             rsp = ImageSynthesis.call(**kwargs)
-            
+
             if rsp.status_code == HTTPStatus.OK:
                 results = rsp.output.results
                 if results:
                     url = results[0].url
                     print(f"[Qwen-Image] 生成成功: {url[:50]}...")
                     return url
+                raise Exception("Qwen-Image SDK 返回空结果")
             else:
-                print(f"[Qwen-Image] SDK 调用失败: {rsp.status_code}, {rsp.code}, {rsp.message}")
-            
-            return self._placeholder(prompt)
-            
+                raise Exception(f"Qwen-Image SDK 调用失败: {rsp.status_code}, {rsp.code}, {rsp.message}")
+
         except ImportError:
             print("[Qwen-Image] DashScope SDK 未安装，使用 HTTP API")
             # 回退到 HTTP API（不支持本地文件）
             return await self._call_qwen_image_http(prompt, reference_image, width, height)
-        except Exception as e:
-            print(f"[Qwen-Image] SDK 错误: {e}")
-            return self._placeholder(prompt)
     
     async def _call_qwen_image_http(self, prompt: str, reference_image: Optional[str] = None, width: int = 1024, height: int = 576) -> str:
         """调用通义万相 HTTP API（不支持本地文件参考图）"""
-        try:
-            async with httpx.AsyncClient(timeout=180.0) as client:
-                headers = {
-                    "Authorization": f"Bearer {self.api_key}", 
-                    "Content-Type": "application/json",
-                    "X-DashScope-Async": "enable"
-                }
-                model = self.model or "wanx-v1"
-                size_str = f"{width}*{height}"
-                
-                input_data = {"prompt": prompt}
-                parameters = {"size": size_str, "n": 1}
-                
-                if reference_image and (reference_image.startswith('http://') or reference_image.startswith('https://')):
-                    input_data["ref_img"] = reference_image
-                    parameters["ref_mode"] = "refonly"
-                    parameters["ref_strength"] = 0.7
-                
-                payload = {"model": model, "input": input_data, "parameters": parameters}
-                
-                print(f"[Qwen-Image] HTTP API 调用: model={model}")
-                response = await client.post(
-                    "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis",
-                    headers=headers, json=payload
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "X-DashScope-Async": "enable"
+            }
+            model = self.model or "wanx-v1"
+            size_str = f"{width}*{height}"
+
+            input_data = {"prompt": prompt}
+            parameters = {"size": size_str, "n": 1}
+
+            if reference_image and (reference_image.startswith('http://') or reference_image.startswith('https://')):
+                input_data["ref_img"] = reference_image
+                parameters["ref_mode"] = "refonly"
+                parameters["ref_strength"] = 0.7
+
+            payload = {"model": model, "input": input_data, "parameters": parameters}
+
+            print(f"[Qwen-Image] HTTP API 调用: model={model}")
+            response = await client.post(
+                "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis",
+                headers=headers, json=payload
+            )
+
+            print(f"[Qwen-Image] 响应状态: {response.status_code}")
+            result = response.json()
+            print(f"[Qwen-Image] 响应内容: {result}")
+
+            if response.status_code != 200:
+                raise Exception(f"Qwen-Image HTTP API 请求失败: {response.status_code}")
+
+            task_id = result.get("output", {}).get("task_id")
+            if not task_id:
+                raise Exception("Qwen-Image HTTP API 未返回 task_id")
+
+            print(f"[Qwen-Image] 任务已提交: task_id={task_id}")
+
+            # 轮询任务状态
+            for i in range(90):  # 最多等待 3 分钟
+                await asyncio.sleep(2)
+                status_resp = await client.get(
+                    f"https://dashscope.aliyuncs.com/api/v1/tasks/{task_id}",
+                    headers={"Authorization": f"Bearer {self.api_key}"}
                 )
-                
-                print(f"[Qwen-Image] 响应状态: {response.status_code}")
-                result = response.json()
-                print(f"[Qwen-Image] 响应内容: {result}")
-                
-                if response.status_code == 200:
-                    task_id = result.get("output", {}).get("task_id")
-                    if not task_id:
-                        print(f"[Qwen-Image] 未获取到 task_id")
-                        return self._placeholder(prompt)
-                    
-                    print(f"[Qwen-Image] 任务已提交: task_id={task_id}")
-                    
-                    # 轮询任务状态
-                    for i in range(90):  # 最多等待 3 分钟
-                        await asyncio.sleep(2)
-                        status_resp = await client.get(
-                            f"https://dashscope.aliyuncs.com/api/v1/tasks/{task_id}", 
-                            headers={"Authorization": f"Bearer {self.api_key}"}
-                        )
-                        if status_resp.status_code == 200:
-                            status_data = status_resp.json()
-                            task_status = status_data.get("output", {}).get("task_status")
-                            print(f"[Qwen-Image] 任务状态 ({i+1}): {task_status}")
-                            
-                            if task_status == "SUCCEEDED":
-                                results = status_data.get("output", {}).get("results", [])
-                                if results:
-                                    url = results[0].get("url")
-                                    print(f"[Qwen-Image] 生成成功: {url[:50]}...")
-                                    return url
-                            elif task_status == "FAILED":
-                                print(f"[Qwen-Image] 任务失败: {status_data}")
-                                break
-                        else:
-                            print(f"[Qwen-Image] 查询状态失败: {status_resp.status_code}")
+                if status_resp.status_code == 200:
+                    status_data = status_resp.json()
+                    task_status = status_data.get("output", {}).get("task_status")
+                    print(f"[Qwen-Image] 任务状态 ({i+1}): {task_status}")
+
+                    if task_status == "SUCCEEDED":
+                        results = status_data.get("output", {}).get("results", [])
+                        if results:
+                            url = results[0].get("url")
+                            print(f"[Qwen-Image] 生成成功: {url[:50]}...")
+                            return url
+                        raise Exception("Qwen-Image 任务完成但未返回图片 URL")
+                    elif task_status == "FAILED":
+                        raise Exception(f"Qwen-Image 任务失败: {status_data}")
                 else:
-                    print(f"[Qwen-Image] 请求失败: {result}")
-                
-                return self._placeholder(prompt)
-        except Exception as e:
-            print(f"[Qwen-Image] 错误: {e}")
-            return self._placeholder(prompt)
+                    print(f"[Qwen-Image] 查询状态失败: {status_resp.status_code}")
+
+            raise Exception("Qwen-Image 任务超时（3 分钟）")
     
     async def _call_dalle(self, prompt: str, width: int = 1792, height: int = 1024) -> str:
         """调用 DALL·E API"""
         if not self.api_key:
-            return self._placeholder(prompt)
-        
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-                model = self.model or "dall-e-3"
-                # DALL-E 支持的尺寸: 1024x1024, 1792x1024, 1024x1792
-                size = f"{width}x{height}"
-                if size not in ["1024x1024", "1792x1024", "1024x1792"]:
-                    size = "1792x1024"  # 默认横版
-                payload = {"model": model, "prompt": prompt, "n": 1, "size": size, "quality": "standard"}
-                
-                response = await client.post("https://api.openai.com/v1/images/generations", headers=headers, json=payload)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    images = data.get("data", [])
-                    if images:
-                        return images[0].get("url", self._placeholder(prompt))
-                else:
-                    print(f"[DALL-E] 错误: {response.text[:200]}")
-                
-                return self._placeholder(prompt)
-        except Exception as e:
-            print(f"[DALL-E] 错误: {e}")
-            return self._placeholder(prompt)
+            raise Exception("DALL-E 缺少 API Key")
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+            model = self.model or "dall-e-3"
+            # DALL-E 支持的尺寸: 1024x1024, 1792x1024, 1024x1792
+            size = f"{width}x{height}"
+            if size not in ["1024x1024", "1792x1024", "1024x1792"]:
+                size = "1792x1024"  # 默认横版
+            payload = {"model": model, "prompt": prompt, "n": 1, "size": size, "quality": "standard"}
+
+            response = await client.post("https://api.openai.com/v1/images/generations", headers=headers, json=payload)
+
+            if response.status_code == 200:
+                data = response.json()
+                images = data.get("data", [])
+                if images:
+                    url = images[0].get("url")
+                    if url:
+                        return url
+            else:
+                print(f"[DALL-E] 错误: {response.text[:200]}")
+
+            raise Exception(f"DALL-E 调用失败 ({response.status_code})")
     
     async def _call_stability(self, prompt: str, negative_prompt: str = "", width: int = 1024, height: int = 576, steps: int = 30, seed: int = 0) -> str:
         """调用 Stability AI API"""
         if not self.api_key:
-            return self._placeholder(prompt)
-        
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-                payload = {
-                    "text_prompts": [{"text": prompt, "weight": 1}, {"text": negative_prompt, "weight": -1}],
-                    "cfg_scale": 7, "height": height, "width": width, "samples": 1, "steps": steps, "seed": seed
-                }
-                
-                model = self.model or "stable-diffusion-xl-1024-v1-0"
-                response = await client.post(f"https://api.stability.ai/v1/generation/{model}/text-to-image", headers=headers, json=payload)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    artifacts = data.get("artifacts", [])
-                    if artifacts:
-                        b64 = artifacts[0].get("base64")
+            raise Exception("Stability AI 缺少 API Key")
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+            payload = {
+                "text_prompts": [{"text": prompt, "weight": 1}, {"text": negative_prompt, "weight": -1}],
+                "cfg_scale": 7, "height": height, "width": width, "samples": 1, "steps": steps, "seed": seed
+            }
+
+            model = self.model or "stable-diffusion-xl-1024-v1-0"
+            response = await client.post(f"https://api.stability.ai/v1/generation/{model}/text-to-image", headers=headers, json=payload)
+
+            if response.status_code == 200:
+                data = response.json()
+                artifacts = data.get("artifacts", [])
+                if artifacts:
+                    b64 = artifacts[0].get("base64")
+                    if b64:
                         return f"data:image/png;base64,{b64}"
-                else:
-                    print(f"[Stability] 错误: {response.text[:200]}")
-                
-                return self._placeholder(prompt)
-        except Exception as e:
-            print(f"[Stability] 错误: {e}")
-            return self._placeholder(prompt)
+            else:
+                print(f"[Stability] 错误: {response.text[:200]}")
+
+            raise Exception(f"Stability AI 调用失败 ({response.status_code})")
     
     async def _call_flux(self, prompt: str, width: int = 1024, height: int = 576) -> str:
         """调用 Flux (via Replicate) API"""
         if not self.api_key:
-            return self._placeholder(prompt)
-        
-        try:
-            async with httpx.AsyncClient(timeout=180.0) as client:
-                headers = {"Authorization": f"Token {self.api_key}", "Content-Type": "application/json"}
-                model = self.model or "flux-schnell"
-                # 计算宽高比
-                aspect = "16:9" if width > height else ("9:16" if height > width else "1:1")
-                payload = {
-                    "version": f"black-forest-labs/{model}",
-                    "input": {"prompt": prompt, "aspect_ratio": aspect, "output_format": "webp"}
-                }
-                
-                response = await client.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload)
-                
-                if response.status_code in [200, 201]:
-                    data = response.json()
-                    prediction_url = data.get("urls", {}).get("get")
-                    
-                    for _ in range(60):
-                        await asyncio.sleep(2)
-                        status_resp = await client.get(prediction_url, headers=headers)
-                        if status_resp.status_code == 200:
-                            status_data = status_resp.json()
-                            if status_data.get("status") == "succeeded":
-                                output = status_data.get("output")
-                                if output:
-                                    return output[0] if isinstance(output, list) else output
-                            elif status_data.get("status") == "failed":
-                                break
-                
-                return self._placeholder(prompt)
-        except Exception as e:
-            print(f"[Flux] 错误: {e}")
-            return self._placeholder(prompt)
+            raise Exception("Flux 缺少 API Key")
+
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            headers = {"Authorization": f"Token {self.api_key}", "Content-Type": "application/json"}
+            model = self.model or "flux-schnell"
+            # 计算宽高比
+            aspect = "16:9" if width > height else ("9:16" if height > width else "1:1")
+            payload = {
+                "version": f"black-forest-labs/{model}",
+                "input": {"prompt": prompt, "aspect_ratio": aspect, "output_format": "webp"}
+            }
+
+            response = await client.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload)
+
+            if response.status_code in [200, 201]:
+                data = response.json()
+                prediction_url = data.get("urls", {}).get("get")
+
+                for _ in range(60):
+                    await asyncio.sleep(2)
+                    status_resp = await client.get(prediction_url, headers=headers)
+                    if status_resp.status_code == 200:
+                        status_data = status_resp.json()
+                        if status_data.get("status") == "succeeded":
+                            output = status_data.get("output")
+                            if output:
+                                return output[0] if isinstance(output, list) else output
+                        elif status_data.get("status") == "failed":
+                            raise Exception(f"Flux 任务失败: {status_data.get('error', '未知错误')}")
+
+            raise Exception(f"Flux 调用失败 ({response.status_code})")

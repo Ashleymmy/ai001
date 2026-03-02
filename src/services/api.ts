@@ -233,6 +233,11 @@ export async function testTTSConnection(tts: NonNullable<FullSettings['tts']>, v
   return response.data
 }
 
+export async function previewTTSVoice(tts: NonNullable<FullSettings['tts']>, voiceType?: string, text?: string): Promise<Blob> {
+  const response = await api.post('/api/tts/preview', { tts, voiceType, text }, { responseType: 'blob', timeout: 30000 })
+  return response.data as Blob
+}
+
 export type FishModel = {
   id: string
   title?: string

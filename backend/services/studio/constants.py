@@ -94,6 +94,11 @@ CAMERA_ANGLES: Dict[str, Dict[str, str]] = {
     "overhead": {"zh": "顶拍", "en": "Overhead/Bird's Eye"},
     "side": {"zh": "侧面", "en": "Side View"},
     "back": {"zh": "背面", "en": "Back View"},
+    "over_shoulder": {
+        "zh": "过肩镜",
+        "en": "Over-the-Shoulder Shot (OTS)",
+        "desc": "对话场景中越过一方肩膀拍摄另一方，营造临场感与博弈张力，强化视角归属",
+    },
 }
 
 # ---------------------------------------------------------------------------

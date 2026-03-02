@@ -783,52 +783,6 @@ class VideoService:
                         "video_url": None
                     }
     
-    async def _generate_qwen_video(
-        self,
-        image_url: str,
-        prompt: str,
-        duration: float,
-        seed: Optional[int]
-    ) -> Dict[str, Any]:
-        """通义视频生成"""
-        # 通义视频 API 实现
-        url = self.base_url or "https://dashscope.aliyuncs.com/api/v1"
-        
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "X-DashScope-Async": "enable"
-        }
-        
-        payload = {
-            "model": self.model or "wanx-v1-video",
-            "input": {
-                "image_url": image_url,
-                "prompt": prompt
-            },
-            "parameters": {}
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{url}/services/aigc/video-generation/generation",
-                headers=headers,
-                json=payload
-            ) as resp:
-                if resp.status != 200:
-                    error = await resp.text()
-                    raise Exception(f"通义视频 API 错误: {error}")
-                
-                result = await resp.json()
-                
-                return {
-                    "task_id": result.get("output", {}).get("task_id", ""),
-                    "status": "processing",
-                    "video_url": None,
-                    "duration": duration,
-                    "seed": seed or 0
-                }
-    
     async def _generate_custom(
         self,
         image_url: str,

@@ -25,13 +25,17 @@ from .studio_storage import StudioStorage
 from .studio.prompts import DEFAULT_CUSTOM_PROMPTS, normalize_custom_prompts
 from .studio.prompt_sentinel import build_prompt_optimize_llm_payload
 from .studio.constants import (
+    CAMERA_ANGLES,
     CAMERA_MOVEMENTS,
     DEFAULT_NEGATIVE_PROMPT,
+    SHOT_SIZE_STANDARDS,
     get_shot_size_zh,
     get_camera_angle_zh,
     get_camera_movement_desc,
     get_emotion_intensity_zh,
 )
+# Phase0-0.2: 激活帧级专业模板
+from .studio.prompt_templates import get_frame_system_prompt, get_frame_type_label
 from .llm_service import LLMService
 from .image_service import ImageService
 from .video_service import VideoService
@@ -1208,6 +1212,65 @@ class StudioService:
         series = self._get_series_by_episode(episode_id)
         return self._build_digital_human_constraints(series, prompt_text)
 
+    # ------------------------------------------------------------------
+    # Phase0-0.4: 情绪字段→英文视觉词映射
+    # ------------------------------------------------------------------
+    EMOTION_VISUAL_HINTS: Dict[str, str] = {
+        # 中文 key
+        "开心": "bright lighting, warm tones, smiling expression",
+        "快乐": "bright lighting, warm tones, smiling expression",
+        "悲伤": "desaturated palette, soft shadows, tearful eyes",
+        "伤心": "desaturated palette, soft shadows, tearful eyes",
+        "愤怒": "high contrast, sharp shadows, intense gaze, clenched fists",
+        "恐惧": "dark atmosphere, cold tones, wide-eyed expression",
+        "害怕": "dark atmosphere, cold tones, wide-eyed expression",
+        "惊讶": "dramatic lighting, wide-open eyes, dynamic composition",
+        "紧张": "high contrast, shallow depth of field, sweat drops",
+        "平静": "soft even lighting, neutral tones, serene expression",
+        "温柔": "warm soft focus, gentle rim light, tender gaze",
+        "期待": "upward angle lighting, anticipatory pose, bright eyes",
+        "绝望": "heavy shadows, muted desaturated tones, collapsed posture",
+        "思念": "bokeh background, soft glow, distant gaze",
+        "决心": "strong back-light, firm jaw, upright posture",
+        "孤独": "wide negative space, single light source, isolated figure",
+        # 英文 key
+        "happy": "bright lighting, warm tones, smiling expression",
+        "sad": "desaturated palette, soft shadows, tearful eyes",
+        "angry": "high contrast, sharp shadows, intense gaze, clenched fists",
+        "fear": "dark atmosphere, cold tones, wide-eyed expression",
+        "surprise": "dramatic lighting, wide-open eyes, dynamic composition",
+        "tense": "high contrast, shallow depth of field, sweat drops",
+        "calm": "soft even lighting, neutral tones, serene expression",
+        "tender": "warm soft focus, gentle rim light, tender gaze",
+        "hopeful": "upward angle lighting, anticipatory pose, bright eyes",
+        "despair": "heavy shadows, muted desaturated tones, collapsed posture",
+        "longing": "bokeh background, soft glow, distant gaze",
+        "determined": "strong back-light, firm jaw, upright posture",
+        "lonely": "wide negative space, single light source, isolated figure",
+    }
+
+    # ------------------------------------------------------------------
+    # Phase0-0.1: 从 constants 取英文景别/机位/运镜词条
+    # ------------------------------------------------------------------
+    def _get_cinematography_en(self, shot: Dict[str, Any]) -> str:
+        """从 constants.py 的标准表中取出英文景别、机位、运镜词条拼接为纯英文字符串。"""
+        parts: List[str] = []
+        shot_size = str(shot.get("shot_size") or "").strip()
+        camera_angle = str(shot.get("camera_angle") or "").strip()
+        camera_movement = str(shot.get("camera_movement") or "").strip()
+
+        if shot_size:
+            entry = SHOT_SIZE_STANDARDS.get(shot_size)
+            parts.append(f"Shot size: {entry['en']}" if entry else f"Shot size: {shot_size}")
+        if camera_angle:
+            entry = CAMERA_ANGLES.get(camera_angle)
+            parts.append(f"Camera angle: {entry['en']}" if entry else f"Camera angle: {camera_angle}")
+        if camera_movement:
+            entry = CAMERA_MOVEMENTS.get(camera_movement)
+            parts.append(f"Camera movement: {entry['en']}" if entry else f"Camera movement: {camera_movement}")
+
+        return "; ".join(parts)
+
     def _build_shot_image_prompt(
         self,
         shot: Dict[str, Any],
@@ -1237,10 +1300,10 @@ class StudioService:
         }
         stage_clause = stage_clauses.get(stage, stage_clauses["start_frame"])
 
-        # 注入景别/机位/情绪信息到帧提示词
-        cinematography_parts = []
-        shot_size = str(shot.get("shot_size") or "").strip()
-        camera_angle = str(shot.get("camera_angle") or "").strip()
+        # Phase0-0.1: 改用英文景别/机位词条，提升图像模型理解准确度
+        cinematography_en = self._get_cinematography_en(shot)
+
+        # Phase0-0.4: 情绪字段→英文视觉词
         emotion = str(shot.get("emotion") or "").strip()
         emotion_intensity = shot.get("emotion_intensity", 0)
         if not isinstance(emotion_intensity, (int, float)):
@@ -1249,15 +1312,25 @@ class StudioService:
             except (ValueError, TypeError):
                 emotion_intensity = 0
 
-        if shot_size:
-            cinematography_parts.append(f"景别：{get_shot_size_zh(shot_size)}")
-        if camera_angle:
-            cinematography_parts.append(f"机位：{get_camera_angle_zh(camera_angle)}")
+        emotion_visual = ""
         if emotion:
-            intensity_label = get_emotion_intensity_zh(emotion_intensity)
-            cinematography_parts.append(f"情绪：{emotion}（{intensity_label}）")
+            # 查找视觉提示词：先精确匹配，再忽略大小写匹配
+            emotion_visual = self.EMOTION_VISUAL_HINTS.get(emotion, "")
+            if not emotion_visual:
+                emotion_lower = emotion.lower()
+                for k, v in self.EMOTION_VISUAL_HINTS.items():
+                    if k.lower() == emotion_lower:
+                        emotion_visual = v
+                        break
 
-        cinematography_text = "；".join(cinematography_parts)
+        # Phase0-0.2: 激活 prompt_templates 帧级模板
+        frame_template_hint = ""
+        if stage in ("start_frame", "key_frame", "end_frame"):
+            tmpl = get_frame_system_prompt(stage)
+            # 将风格填入模板中的 {visual_style} 占位符
+            tmpl_filled = tmpl.format(visual_style=style_anchor)
+            # 提取模板中的关键要点作为帧级补充指导
+            frame_template_hint = tmpl_filled
 
         if digital_constraints:
             base_rules = f"{base_rules}\n{digital_constraints}"
@@ -1265,9 +1338,20 @@ class StudioService:
         parts = []
         if resolved_prompt:
             parts.append(resolved_prompt)
-        if cinematography_text:
-            parts.append(cinematography_text)
+        # Phase0-0.1: 注入英文景别/机位/运镜词条
+        if cinematography_en:
+            parts.append(f"[Cinematography] {cinematography_en}")
+        # Phase0-0.4: 注入情绪英文视觉词
+        if emotion_visual:
+            parts.append(f"[Emotion visual cues] {emotion_visual}")
+        elif emotion:
+            # 没有匹配到视觉词时保留原始情绪标签
+            intensity_label = get_emotion_intensity_zh(emotion_intensity)
+            parts.append(f"情绪：{emotion}（{intensity_label}）")
         parts.append(f"{base_rules}{stage_clause}")
+        # Phase0-0.2: 追加帧级模板指导
+        if frame_template_hint:
+            parts.append(f"--- 帧级专业指导 ---\n{frame_template_hint}")
 
         return "\n".join(parts).strip()
 
@@ -3518,14 +3602,18 @@ class StudioService:
             else:
                 raw_video_prompt = f"导演运镜要求：{director_text}"
         elif shot.get("camera_movement"):
-            # 回退到扁平化运镜字段
-            movement_desc = get_camera_movement_desc(str(shot["camera_movement"]))
-            if movement_desc and raw_video_prompt:
-                raw_video_prompt = f"{raw_video_prompt}\n运镜：{movement_desc}"
-            elif movement_desc:
-                raw_video_prompt = f"运镜：{movement_desc}"
+            # Phase0-0.1: 回退到扁平化运镜字段，改用英文运镜词条
+            mv_key = str(shot["camera_movement"])
+            mv_entry = CAMERA_MOVEMENTS.get(mv_key)
+            movement_en = mv_entry["en"] if mv_entry else mv_key
+            movement_desc = get_camera_movement_desc(mv_key)
+            movement_label = f"{movement_en}" + (f" ({movement_desc})" if movement_desc else "")
+            if raw_video_prompt:
+                raw_video_prompt = f"{raw_video_prompt}\n[Camera movement] {movement_label}"
+            else:
+                raw_video_prompt = f"[Camera movement] {movement_label}"
 
-        # 注入情绪氛围
+        # Phase0-0.4: 注入情绪氛围 - 优先使用英文视觉词
         emotion = str(shot.get("emotion") or "").strip()
         emotion_intensity = shot.get("emotion_intensity", 0)
         if not isinstance(emotion_intensity, (int, float)):
@@ -3534,8 +3622,18 @@ class StudioService:
             except (ValueError, TypeError):
                 emotion_intensity = 0
         if emotion:
-            intensity_label = get_emotion_intensity_zh(emotion_intensity)
-            raw_video_prompt = f"{raw_video_prompt}\n情绪氛围：{emotion}（{intensity_label}）"
+            emotion_visual = self.EMOTION_VISUAL_HINTS.get(emotion, "")
+            if not emotion_visual:
+                emotion_lower = emotion.lower()
+                for k, v in self.EMOTION_VISUAL_HINTS.items():
+                    if k.lower() == emotion_lower:
+                        emotion_visual = v
+                        break
+            if emotion_visual:
+                raw_video_prompt = f"{raw_video_prompt}\n[Emotion visual cues] {emotion_visual}"
+            else:
+                intensity_label = get_emotion_intensity_zh(emotion_intensity)
+                raw_video_prompt = f"{raw_video_prompt}\n情绪氛围：{emotion}（{intensity_label}）"
 
         # 注入时长约束
         duration = shot.get("duration", self._default_video_duration())
