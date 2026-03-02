@@ -3583,3 +3583,105 @@ export async function updateForeshadowing(fid: string, fData: Record<string, unk
 export async function deleteForeshadowing(fid: string): Promise<void> {
   await studioApi.delete(`/api/studio/story-state/foreshadowing/${fid}`, attachRuntimeContext({}))
 }
+
+// ---------------------------------------------------------------------------
+// Phase 4: 全链路贯通 — 跨集状态 / KB 反馈 / 节奏模板 / 数字人同步 / Agent Bridge
+// ---------------------------------------------------------------------------
+
+// Task 4.1: Episode state summary
+export interface EpisodeStateSummary {
+  active_character_states: Record<string, Record<string, string>>
+  unresolved_foreshadowing: Foreshadowing[]
+  foreshadowing_warnings: Array<Foreshadowing & { episodes_since_planted: number }>
+}
+
+export async function getEpisodeStateSummary(seriesId: string, episodeId: string): Promise<EpisodeStateSummary> {
+  const { data } = await studioApi.get(`/api/studio/story-state/summary/${seriesId}/${episodeId}`, attachRuntimeContext({}))
+  return data
+}
+
+export async function propagateEpisodeStates(seriesId: string, fromEp: string, toEp: string): Promise<Record<string, unknown>[]> {
+  const { data } = await studioApi.post('/api/studio/story-state/propagate', {
+    series_id: seriesId, from_episode_id: fromEp, to_episode_id: toEp
+  }, attachRuntimeContext({}))
+  return data.propagated
+}
+
+export async function getForeshadowingWarnings(seriesId: string, currentEp: number): Promise<Array<Record<string, unknown>>> {
+  const { data } = await studioApi.get(`/api/studio/story-state/foreshadowing-warnings/${seriesId}`, {
+    params: { current_episode: currentEp }, ...attachRuntimeContext({})
+  })
+  return data.warnings
+}
+
+// Task 4.2: KB Feedback
+export interface TokenFeedbackResult {
+  token: string
+  weight: number
+  good_count: number
+  bad_count: number
+}
+
+export async function recordTokenFeedback(
+  seriesId: string, token: string, rating: 'good' | 'bad' | 'neutral',
+  source: string = 'manual', context: string = ''
+): Promise<TokenFeedbackResult> {
+  const { data } = await studioApi.post('/api/studio/kb/feedback', {
+    series_id: seriesId, token, rating, source, context
+  }, attachRuntimeContext({}))
+  return data
+}
+
+export async function getKBFeedbackStats(seriesId: string): Promise<Record<string, unknown>> {
+  const { data } = await studioApi.get(`/api/studio/kb/feedback-stats/${seriesId}`, attachRuntimeContext({}))
+  return data
+}
+
+export async function getKBSuggestUpdates(seriesId: string, elementId: string): Promise<Record<string, unknown>> {
+  const { data } = await studioApi.get(`/api/studio/kb/suggest-updates/${seriesId}/${elementId}`, attachRuntimeContext({}))
+  return data
+}
+
+// Task 4.3: Rhythm templates
+export interface RhythmTemplate {
+  template_id: string
+  name: string
+  name_en: string
+  description: string
+  platform: string
+  duration_seconds: number
+  segments: Array<{ name: string; duration_ratio: number; shot_count: number; pace: string; mood_suggestion: string }>
+}
+
+export async function listRhythmTemplates(platform?: string): Promise<RhythmTemplate[]> {
+  const params: Record<string, string> = {}
+  if (platform) params.platform = platform
+  const { data } = await studioApi.get('/api/studio/rhythm-templates', { params, ...attachRuntimeContext({}) })
+  return data.templates
+}
+
+// Task 4.4: Digital human sync
+export async function syncDigitalHumanToKB(profileId: string): Promise<Record<string, unknown>> {
+  const { data } = await studioApi.post(`/api/studio/digital-human/sync-to-kb/${profileId}`, {}, attachRuntimeContext({}))
+  return data
+}
+
+export async function syncKBToDigitalHuman(elementId: string, profileId: string): Promise<Record<string, unknown>> {
+  const { data } = await studioApi.post('/api/studio/digital-human/sync-from-kb', {
+    element_id: elementId, profile_id: profileId
+  }, attachRuntimeContext({}))
+  return data
+}
+
+// Task 4.5: Agent Bridge
+export async function importAgentProjectToKB(projectData: Record<string, unknown>, seriesId: string): Promise<Record<string, unknown>> {
+  const { data } = await studioApi.post('/api/studio/agent-bridge/import-to-kb', {
+    project_data: projectData, series_id: seriesId
+  }, attachRuntimeContext({}))
+  return data
+}
+
+export async function exportKBForAgent(seriesId: string): Promise<Record<string, unknown>> {
+  const { data } = await studioApi.get(`/api/studio/agent-bridge/export-kb/${seriesId}`, attachRuntimeContext({}))
+  return data
+}

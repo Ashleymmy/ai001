@@ -31,6 +31,15 @@ from .studio.quality_scorer import QualityScorer
 # Phase 3: Agent 编排引擎
 from .studio.agent_roles import AGENT_ROLES, list_agent_roles, list_roles_by_department
 from .studio.agent_pipeline import AgentPipeline, PipelineStage, create_pipeline
+# Phase 4: 全链路贯通
+from .studio.story_state_manager import StoryStateManager
+from .studio.kb_feedback import KBFeedbackManager
+from .studio.pipeline_optimizer import (
+    list_rhythm_templates, get_rhythm_template, adapt_pipeline_for_short_video,
+    sync_digital_human_to_kb, sync_kb_to_digital_human,
+    import_agent_project_to_kb, export_kb_for_agent,
+    KBCache, get_shared_kb_cache,
+)
 from .studio.constants import (
     CAMERA_ANGLES,
     CAMERA_MOVEMENTS,
@@ -111,6 +120,10 @@ class StudioService:
         # Phase 3: Agent Pipeline
         self._active_pipelines: Dict[str, AgentPipeline] = {}
         self._agent_pipeline_enabled: bool = False
+        # Phase 4: 全链路贯通
+        self._story_state_manager: Optional[StoryStateManager] = None
+        self._kb_feedback: Optional[KBFeedbackManager] = None
+        self._kb_cache: KBCache = get_shared_kb_cache()
 
     # ------------------------------------------------------------------
     # Phase 1: 知识库 & 提示词组装引擎
@@ -352,6 +365,65 @@ class StudioService:
 
     def delete_foreshadowing(self, fid: str) -> bool:
         return self.storage.delete_foreshadowing(fid)
+
+    # ------------------------------------------------------------------
+    # Phase 4: 全链路贯通
+    # ------------------------------------------------------------------
+
+    def _get_story_state_manager(self) -> StoryStateManager:
+        if self._story_state_manager is None:
+            self._story_state_manager = StoryStateManager(self.storage)
+        return self._story_state_manager
+
+    def _get_kb_feedback(self) -> KBFeedbackManager:
+        if self._kb_feedback is None:
+            self._kb_feedback = KBFeedbackManager(self.storage)
+        return self._kb_feedback
+
+    # Task 4.1: 跨集状态
+
+    def propagate_episode_states(self, series_id: str, from_ep: str, to_ep: str) -> List[Dict]:
+        return self._get_story_state_manager().propagate_character_states(series_id, from_ep, to_ep)
+
+    def get_episode_state_summary(self, series_id: str, episode_id: str) -> Dict[str, Any]:
+        return self._get_story_state_manager().get_episode_state_summary(series_id, episode_id)
+
+    def get_foreshadowing_warnings(self, series_id: str, current_ep: int) -> List[Dict]:
+        return self._get_story_state_manager().check_foreshadowing_warnings(series_id, current_ep)
+
+    # Task 4.2: KB 反馈迭代
+
+    def record_token_feedback(self, series_id: str, token: str, rating: str,
+                              source: str = "manual", context: str = "") -> Dict:
+        w = self._get_kb_feedback().record_feedback(series_id, token, rating, source, context)
+        return {"token": w.token, "weight": w.weight, "good_count": w.good_count, "bad_count": w.bad_count}
+
+    def get_kb_feedback_stats(self, series_id: str) -> Dict:
+        return self._get_kb_feedback().get_feedback_stats(series_id)
+
+    def suggest_kb_updates(self, series_id: str, element_id: str) -> Dict:
+        return self._get_kb_feedback().suggest_kb_updates(series_id, element_id)
+
+    # Task 4.3: 短视频节奏模板
+
+    def get_rhythm_templates(self, platform: Optional[str] = None) -> List[Dict]:
+        return list_rhythm_templates(platform)
+
+    # Task 4.4: 数字人同步
+
+    def sync_dh_to_kb(self, profile_id: str) -> Dict:
+        return sync_digital_human_to_kb(self.storage, profile_id)
+
+    def sync_kb_to_dh(self, element_id: str, profile_id: str) -> Dict:
+        return sync_kb_to_digital_human(self.storage, element_id, profile_id)
+
+    # Task 4.5: Agent Bridge
+
+    def import_agent_to_kb(self, project_data: Dict, series_id: str) -> Dict:
+        return import_agent_project_to_kb(self.storage, project_data, series_id)
+
+    def export_kb_for_agent_mode(self, series_id: str) -> Dict:
+        return export_kb_for_agent(self.storage, series_id)
 
     # ------------------------------------------------------------------
     # 配置

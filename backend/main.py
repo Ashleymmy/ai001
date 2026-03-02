@@ -9810,6 +9810,115 @@ async def story_state_delete_foreshadowing(fid: str):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# Phase 4: 全链路贯通 — 跨集状态 / KB 反馈 / 节奏模板 / 数字人同步 / Agent Bridge
+# ---------------------------------------------------------------------------
+
+@app.get("/api/studio/story-state/summary/{series_id}/{episode_id}")
+async def story_state_episode_summary(series_id: str, episode_id: str):
+    """获取集的完整状态摘要（角色状态 + 伏笔 + 警告）"""
+    service = _studio_ensure_service_ready()
+    return service.get_episode_state_summary(series_id, episode_id)
+
+
+@app.post("/api/studio/story-state/propagate")
+async def story_state_propagate(request: Request):
+    """将角色状态从一集传递到下一集"""
+    service = _studio_ensure_service_ready()
+    body = await request.json()
+    result = service.propagate_episode_states(
+        body.get("series_id", ""),
+        body.get("from_episode_id", ""),
+        body.get("to_episode_id", ""),
+    )
+    return {"propagated": result}
+
+
+@app.get("/api/studio/story-state/foreshadowing-warnings/{series_id}")
+async def story_state_foreshadowing_warnings(
+    series_id: str,
+    current_episode: int = Query(1),
+):
+    """获取未回收伏笔警告"""
+    service = _studio_ensure_service_ready()
+    return {"warnings": service.get_foreshadowing_warnings(series_id, current_episode)}
+
+
+@app.post("/api/studio/kb/feedback")
+async def kb_record_feedback(request: Request):
+    """记录知识库词条反馈（好/差评）"""
+    service = _studio_ensure_service_ready()
+    body = await request.json()
+    result = service.record_token_feedback(
+        body.get("series_id", ""),
+        body.get("token", ""),
+        body.get("rating", "neutral"),
+        body.get("source", "manual"),
+        body.get("context", ""),
+    )
+    return result
+
+
+@app.get("/api/studio/kb/feedback-stats/{series_id}")
+async def kb_feedback_stats(series_id: str):
+    """获取知识库反馈统计"""
+    service = _studio_ensure_service_ready()
+    return service.get_kb_feedback_stats(series_id)
+
+
+@app.get("/api/studio/kb/suggest-updates/{series_id}/{element_id}")
+async def kb_suggest_updates(series_id: str, element_id: str):
+    """获取知识库词条更新建议"""
+    service = _studio_ensure_service_ready()
+    return service.suggest_kb_updates(series_id, element_id)
+
+
+@app.get("/api/studio/rhythm-templates")
+async def rhythm_templates_list(platform: Optional[str] = Query(None)):
+    """获取短视频节奏模板列表"""
+    service = _studio_ensure_service_ready()
+    return {"templates": service.get_rhythm_templates(platform)}
+
+
+@app.post("/api/studio/digital-human/sync-to-kb/{profile_id}")
+async def digital_human_sync_to_kb(profile_id: str):
+    """同步数字人 Profile 到知识库"""
+    service = _studio_ensure_service_ready()
+    try:
+        result = service.sync_dh_to_kb(profile_id)
+        return result
+    except Exception as e:
+        _studio_raise_from_exception(e)
+
+
+@app.post("/api/studio/digital-human/sync-from-kb")
+async def digital_human_sync_from_kb(request: Request):
+    """从知识库同步到数字人 Profile"""
+    service = _studio_ensure_service_ready()
+    body = await request.json()
+    try:
+        result = service.sync_kb_to_dh(body.get("element_id", ""), body.get("profile_id", ""))
+        return result
+    except Exception as e:
+        _studio_raise_from_exception(e)
+
+
+@app.post("/api/studio/agent-bridge/import-to-kb")
+async def agent_bridge_import_to_kb(request: Request):
+    """将 Agent 项目导入知识库"""
+    service = _studio_ensure_service_ready()
+    body = await request.json()
+    result = service.import_agent_to_kb(body.get("project_data", {}), body.get("series_id", ""))
+    return result
+
+
+@app.get("/api/studio/agent-bridge/export-kb/{series_id}")
+async def agent_bridge_export_kb(series_id: str):
+    """导出知识库供 Agent 模式使用"""
+    service = _studio_ensure_service_ready()
+    return service.export_kb_for_agent_mode(series_id)
+
+
 if __name__ == "__main__":
     import uvicorn
     port_raw = os.getenv("AI_STORYBOARDER_PORT") or os.getenv("BACKEND_PORT") or os.getenv("PORT") or "8001"
