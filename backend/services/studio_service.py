@@ -28,6 +28,9 @@ from .studio.prompt_sentinel import build_prompt_optimize_llm_payload, check_kb_
 from .studio.narrative_qa import NarrativeQA, QAResult
 from .studio.visual_qa import VisualQA
 from .studio.quality_scorer import QualityScorer
+# Phase 3: Agent 编排引擎
+from .studio.agent_roles import AGENT_ROLES, list_agent_roles, list_roles_by_department
+from .studio.agent_pipeline import AgentPipeline, PipelineStage, create_pipeline
 from .studio.constants import (
     CAMERA_ANGLES,
     CAMERA_MOVEMENTS,
@@ -105,6 +108,9 @@ class StudioService:
         self._narrative_qa: Optional[NarrativeQA] = None
         self._visual_qa: Optional[VisualQA] = None
         self._quality_scorer: QualityScorer = QualityScorer()
+        # Phase 3: Agent Pipeline
+        self._active_pipelines: Dict[str, AgentPipeline] = {}
+        self._agent_pipeline_enabled: bool = False
 
     # ------------------------------------------------------------------
     # Phase 1: 知识库 & 提示词组装引擎
@@ -251,6 +257,101 @@ class StudioService:
         }
         result = self._quality_scorer.compute(narrative_result, prompt_result, visual_results)
         return result.to_dict()
+
+    # ------------------------------------------------------------------
+    # Phase 3: Agent Pipeline — 多 Agent 编排引擎
+    # ------------------------------------------------------------------
+
+    def get_agent_roles_list(self) -> List[Dict[str, Any]]:
+        """返回所有 Agent 角色列表"""
+        return list_agent_roles()
+
+    def get_agent_roles_by_department(self, department: str) -> List[Dict[str, Any]]:
+        """按部门筛选 Agent 角色"""
+        roles = list_roles_by_department(department)
+        return [
+            {
+                "role_id": r.role_id,
+                "display_name": r.display_name,
+                "display_name_en": r.display_name_en,
+                "department": r.department,
+                "model_tier": r.model_tier,
+                "description": r.description,
+            }
+            for r in roles
+        ]
+
+    async def start_agent_pipeline(
+        self, episode_id: str, options: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """启动 Agent Pipeline 完整流水线"""
+        episode = self.storage.get_episode(episode_id)
+        if not episode:
+            raise StudioServiceError("集不存在", "episode_not_found", {"episode_id": episode_id})
+        series_id = str(episode.get("series_id") or "")
+        script = str(episode.get("script_excerpt") or episode.get("summary") or "")
+
+        pipeline = create_pipeline(
+            series_id=series_id,
+            episode_id=episode_id,
+            storage=self.storage,
+            llm_service=self.llm,
+        )
+        self._active_pipelines[episode_id] = pipeline
+
+        # Run pre-generation stages (non-blocking kick-off, return initial state)
+        state = pipeline.get_state()
+        # Launch pipeline asynchronously
+        asyncio.ensure_future(self._run_pipeline_async(pipeline, script, options))
+        return state
+
+    async def _run_pipeline_async(
+        self, pipeline: AgentPipeline, script: str, options: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """异步执行 pipeline（后台运行）"""
+        try:
+            await pipeline.run_episode_pipeline(script, options)
+        except Exception:
+            pass  # Errors logged inside pipeline
+
+    def get_pipeline_state(self, episode_id: str) -> Dict[str, Any]:
+        """获取 Pipeline 当前状态"""
+        pipeline = self._active_pipelines.get(episode_id)
+        if not pipeline:
+            return {"pipeline_id": "", "current_stage": "idle", "stages_completed": [], "stages_remaining": [], "decision_log": []}
+        return pipeline.get_state()
+
+    def get_pipeline_decision_log(self, episode_id: str) -> List[Dict[str, Any]]:
+        """获取 Pipeline 决策日志"""
+        pipeline = self._active_pipelines.get(episode_id)
+        if pipeline:
+            return pipeline.get_decision_log()
+        return self.storage.list_agent_decisions(episode_id=episode_id)
+
+    # ------------------------------------------------------------------
+    # Phase 3: Story State — 角色状态 & 伏笔矩阵
+    # ------------------------------------------------------------------
+
+    def list_character_states(self, series_id: str, element_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        return self.storage.list_character_states(series_id, element_id)
+
+    def create_character_state(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        return self.storage.create_character_state(data)
+
+    def delete_character_state(self, state_id: str) -> bool:
+        return self.storage.delete_character_state(state_id)
+
+    def list_foreshadowing(self, series_id: str, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        return self.storage.list_foreshadowing(series_id, status)
+
+    def create_foreshadowing(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        return self.storage.create_foreshadowing(data)
+
+    def update_foreshadowing(self, fid: str, data: Dict[str, Any]) -> bool:
+        return self.storage.update_foreshadowing(fid, data)
+
+    def delete_foreshadowing(self, fid: str) -> bool:
+        return self.storage.delete_foreshadowing(fid)
 
     # ------------------------------------------------------------------
     # 配置

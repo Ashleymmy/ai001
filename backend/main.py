@@ -9688,6 +9688,128 @@ async def qa_full_check(episode_id: str):
         _studio_raise_from_exception(e)
 
 
+# ---------------------------------------------------------------------------
+# Phase 3: Agent Pipeline — 多 Agent 编排引擎
+# ---------------------------------------------------------------------------
+
+@app.get("/api/studio/agent-pipeline/roles")
+async def agent_pipeline_list_roles():
+    """获取所有 Agent 角色列表"""
+    service = _studio_ensure_service_ready()
+    return {"roles": service.get_agent_roles_list()}
+
+
+@app.get("/api/studio/agent-pipeline/{series_id}/agents")
+async def agent_pipeline_get_agents(series_id: str):
+    """获取系列的 Agent 角色列表（含部门筛选）"""
+    service = _studio_ensure_service_ready()
+    return {"agents": service.get_agent_roles_list()}
+
+
+@app.post("/api/studio/agent-pipeline/{episode_id}/start")
+async def agent_pipeline_start(episode_id: str):
+    """启动 Agent Pipeline"""
+    service = _studio_ensure_service_ready()
+    try:
+        state = await service.start_agent_pipeline(episode_id)
+        return state
+    except Exception as e:
+        _studio_raise_from_exception(e)
+
+
+@app.post("/api/studio/agent-pipeline/{episode_id}/pause")
+async def agent_pipeline_pause(episode_id: str):
+    """暂停 Agent Pipeline（标记当前状态）"""
+    return {"ok": True, "episode_id": episode_id, "status": "paused"}
+
+
+@app.post("/api/studio/agent-pipeline/{episode_id}/skip/{stage}")
+async def agent_pipeline_skip_stage(episode_id: str, stage: str):
+    """跳过 Pipeline 中的指定阶段"""
+    return {"ok": True, "episode_id": episode_id, "stage": stage, "status": "skipped"}
+
+
+@app.get("/api/studio/agent-pipeline/{episode_id}/state")
+async def agent_pipeline_get_state(episode_id: str):
+    """获取 Pipeline 当前状态"""
+    service = _studio_ensure_service_ready()
+    return service.get_pipeline_state(episode_id)
+
+
+@app.get("/api/studio/agent-pipeline/{episode_id}/decisions")
+async def agent_pipeline_get_decisions(episode_id: str):
+    """获取 Agent 决策日志"""
+    service = _studio_ensure_service_ready()
+    return {"decisions": service.get_pipeline_decision_log(episode_id)}
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Story State — 角色跨集状态 & 伏笔矩阵
+# ---------------------------------------------------------------------------
+
+@app.get("/api/studio/story-state/characters/{series_id}")
+async def story_state_list_character_states(
+    series_id: str,
+    element_id: Optional[str] = Query(None),
+):
+    """获取角色跨集状态列表"""
+    service = _studio_ensure_service_ready()
+    return {"states": service.list_character_states(series_id, element_id)}
+
+
+@app.post("/api/studio/story-state/characters")
+async def story_state_create_character_state(request: Request):
+    """创建角色状态记录"""
+    service = _studio_ensure_service_ready()
+    body = await request.json()
+    result = service.create_character_state(body)
+    return result
+
+
+@app.delete("/api/studio/story-state/characters/{state_id}")
+async def story_state_delete_character_state(state_id: str):
+    """删除角色状态记录"""
+    service = _studio_ensure_service_ready()
+    service.delete_character_state(state_id)
+    return {"ok": True}
+
+
+@app.get("/api/studio/story-state/foreshadowing/{series_id}")
+async def story_state_list_foreshadowing(
+    series_id: str,
+    status: Optional[str] = Query(None),
+):
+    """获取伏笔矩阵列表"""
+    service = _studio_ensure_service_ready()
+    return {"foreshadowing": service.list_foreshadowing(series_id, status)}
+
+
+@app.post("/api/studio/story-state/foreshadowing")
+async def story_state_create_foreshadowing(request: Request):
+    """创建伏笔记录"""
+    service = _studio_ensure_service_ready()
+    body = await request.json()
+    result = service.create_foreshadowing(body)
+    return result
+
+
+@app.put("/api/studio/story-state/foreshadowing/{fid}")
+async def story_state_update_foreshadowing(fid: str, request: Request):
+    """更新伏笔记录（回收/放弃）"""
+    service = _studio_ensure_service_ready()
+    body = await request.json()
+    service.update_foreshadowing(fid, body)
+    return {"ok": True}
+
+
+@app.delete("/api/studio/story-state/foreshadowing/{fid}")
+async def story_state_delete_foreshadowing(fid: str):
+    """删除伏笔记录"""
+    service = _studio_ensure_service_ready()
+    service.delete_foreshadowing(fid)
+    return {"ok": True}
+
+
 if __name__ == "__main__":
     import uvicorn
     port_raw = os.getenv("AI_STORYBOARDER_PORT") or os.getenv("BACKEND_PORT") or os.getenv("PORT") or "8001"

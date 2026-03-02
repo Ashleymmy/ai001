@@ -216,6 +216,51 @@ CREATE INDEX IF NOT EXISTS idx_kb_character_cards_element ON kb_character_cards(
 CREATE INDEX IF NOT EXISTS idx_kb_mood_packs_series ON kb_mood_packs(series_id, mood_key);
 CREATE INDEX IF NOT EXISTS idx_kb_scene_cards_element ON kb_scene_cards(element_id);
 CREATE INDEX IF NOT EXISTS idx_kb_world_bible_series ON kb_world_bible(series_id);
+
+-- Phase 3: 角色跨集状态追踪
+CREATE TABLE IF NOT EXISTS story_character_states (
+    id TEXT PRIMARY KEY,
+    series_id TEXT DEFAULT '',
+    element_id TEXT DEFAULT '',
+    episode_id TEXT DEFAULT '',
+    state_key TEXT NOT NULL,
+    state_value TEXT DEFAULT '',
+    valid_from_episode INTEGER DEFAULT 0,
+    valid_to_episode INTEGER,
+    created_at TEXT NOT NULL
+);
+
+-- Phase 3: 伏笔矩阵
+CREATE TABLE IF NOT EXISTS story_foreshadowing (
+    id TEXT PRIMARY KEY,
+    series_id TEXT DEFAULT '',
+    planted_episode_id TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    resolved_episode_id TEXT,
+    status TEXT DEFAULT 'planted',
+    created_at TEXT NOT NULL
+);
+
+-- Phase 3: Agent 决策日志
+CREATE TABLE IF NOT EXISTS agent_decision_log (
+    id TEXT PRIMARY KEY,
+    series_id TEXT DEFAULT '',
+    episode_id TEXT DEFAULT '',
+    pipeline_id TEXT DEFAULT '',
+    agent_role TEXT NOT NULL,
+    action TEXT DEFAULT '',
+    input_summary TEXT DEFAULT '',
+    output_summary TEXT DEFAULT '',
+    model_used TEXT DEFAULT '',
+    tokens_used INTEGER DEFAULT 0,
+    duration_ms INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_story_char_states_series ON story_character_states(series_id, element_id);
+CREATE INDEX IF NOT EXISTS idx_story_foreshadowing_series ON story_foreshadowing(series_id, status);
+CREATE INDEX IF NOT EXISTS idx_agent_decision_log_episode ON agent_decision_log(episode_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_decision_log_pipeline ON agent_decision_log(pipeline_id);
 """
 
 
@@ -2244,3 +2289,192 @@ class StudioStorage:
         finally:
             conn.close()
         return self.get_episode_snapshot(episode_id)
+
+    # ------------------------------------------------------------------
+    # Phase 3: Story Character States — 角色跨集状态追踪
+    # ------------------------------------------------------------------
+
+    def create_character_state(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        state_id = data.get("id") or _gen_id("cstate_")
+        now = _now()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """INSERT INTO story_character_states
+                   (id, series_id, element_id, episode_id, state_key, state_value,
+                    valid_from_episode, valid_to_episode, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (
+                    state_id,
+                    str(data.get("series_id") or ""),
+                    str(data.get("element_id") or ""),
+                    str(data.get("episode_id") or ""),
+                    str(data.get("state_key") or ""),
+                    str(data.get("state_value") or ""),
+                    data.get("valid_from_episode", 0),
+                    data.get("valid_to_episode"),
+                    now,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"id": state_id}
+
+    def list_character_states(self, series_id: str, element_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            if element_id:
+                rows = conn.execute(
+                    "SELECT * FROM story_character_states WHERE series_id=? AND element_id=? ORDER BY created_at DESC",
+                    (series_id, element_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM story_character_states WHERE series_id=? ORDER BY created_at DESC",
+                    (series_id,),
+                ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def delete_character_state(self, state_id: str) -> bool:
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM story_character_states WHERE id=?", (state_id,))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Phase 3: Story Foreshadowing — 伏笔矩阵
+    # ------------------------------------------------------------------
+
+    def create_foreshadowing(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        fid = data.get("id") or _gen_id("fsh_")
+        now = _now()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """INSERT INTO story_foreshadowing
+                   (id, series_id, planted_episode_id, description,
+                    resolved_episode_id, status, created_at)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (
+                    fid,
+                    str(data.get("series_id") or ""),
+                    str(data.get("planted_episode_id") or ""),
+                    str(data.get("description") or ""),
+                    data.get("resolved_episode_id"),
+                    str(data.get("status") or "planted"),
+                    now,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"id": fid}
+
+    def list_foreshadowing(self, series_id: str, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM story_foreshadowing WHERE series_id=? AND status=? ORDER BY created_at DESC",
+                    (series_id, status),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM story_foreshadowing WHERE series_id=? ORDER BY created_at DESC",
+                    (series_id,),
+                ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def update_foreshadowing(self, fid: str, data: Dict[str, Any]) -> bool:
+        conn = self._connect()
+        try:
+            updates = []
+            values = []
+            for key in ("description", "resolved_episode_id", "status"):
+                if key in data:
+                    updates.append(f"{key}=?")
+                    values.append(data[key])
+            if not updates:
+                return False
+            values.append(fid)
+            conn.execute(f"UPDATE story_foreshadowing SET {', '.join(updates)} WHERE id=?", values)
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def delete_foreshadowing(self, fid: str) -> bool:
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM story_foreshadowing WHERE id=?", (fid,))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Phase 3: Agent Decision Log — Agent 决策日志
+    # ------------------------------------------------------------------
+
+    def log_agent_decision(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        log_id = data.get("id") or _gen_id("adl_")
+        now = _now()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """INSERT INTO agent_decision_log
+                   (id, series_id, episode_id, pipeline_id, agent_role,
+                    action, input_summary, output_summary, model_used,
+                    tokens_used, duration_ms, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    log_id,
+                    str(data.get("series_id") or ""),
+                    str(data.get("episode_id") or ""),
+                    str(data.get("pipeline_id") or ""),
+                    str(data.get("agent_role") or ""),
+                    str(data.get("action") or ""),
+                    str(data.get("input_summary") or ""),
+                    str(data.get("output_summary") or ""),
+                    str(data.get("model_used") or ""),
+                    int(data.get("tokens_used") or 0),
+                    int(data.get("duration_ms") or 0),
+                    now,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"id": log_id}
+
+    def list_agent_decisions(
+        self, episode_id: Optional[str] = None, pipeline_id: Optional[str] = None, limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            if pipeline_id:
+                rows = conn.execute(
+                    "SELECT * FROM agent_decision_log WHERE pipeline_id=? ORDER BY created_at DESC LIMIT ?",
+                    (pipeline_id, limit),
+                ).fetchall()
+            elif episode_id:
+                rows = conn.execute(
+                    "SELECT * FROM agent_decision_log WHERE episode_id=? ORDER BY created_at DESC LIMIT ?",
+                    (episode_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM agent_decision_log ORDER BY created_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
+        finally:
+            conn.close()

@@ -3440,3 +3440,146 @@ export async function runFullQA(episodeId: string): Promise<QualityScore> {
   const { data } = await studioApi.post(`/api/studio/qa/full/${episodeId}`, {}, attachRuntimeContext({}))
   return data
 }
+
+// ---------------------------------------------------------------------------
+// Phase 3: Agent Pipeline — 多 Agent 编排引擎
+// ---------------------------------------------------------------------------
+
+export interface AgentRoleInfo {
+  role_id: string
+  display_name: string
+  display_name_en: string
+  department: string
+  model_tier: string
+  description: string
+  calls_per_episode: string
+}
+
+export interface PipelineStageInfo {
+  stage: string
+  label: string
+  agent_role: string
+  status: 'pending' | 'running' | 'completed' | 'skipped' | 'error'
+  started_at?: string
+  completed_at?: string
+  duration_ms?: number
+  output_summary?: string
+}
+
+export interface DecisionLogEntry {
+  agent_role: string
+  action: string
+  input_summary: string
+  output_summary: string
+  model_used: string
+  tokens_used: number
+  duration_ms: number
+  created_at: string
+}
+
+export interface PipelineState {
+  pipeline_id: string
+  current_stage: string
+  stages_completed: string[]
+  stages_remaining: string[]
+  decision_log: DecisionLogEntry[]
+  started_at: string
+  error?: string
+}
+
+export async function getAgentRoles(): Promise<AgentRoleInfo[]> {
+  const { data } = await studioApi.get('/api/studio/agent-pipeline/roles', attachRuntimeContext({}))
+  return data.roles
+}
+
+export async function getAgentsBySeriesId(seriesId: string): Promise<AgentRoleInfo[]> {
+  const { data } = await studioApi.get(`/api/studio/agent-pipeline/${seriesId}/agents`, attachRuntimeContext({}))
+  return data.agents
+}
+
+export async function startAgentPipeline(episodeId: string): Promise<PipelineState> {
+  const { data } = await studioApi.post(`/api/studio/agent-pipeline/${episodeId}/start`, {}, attachRuntimeContext({}))
+  return data
+}
+
+export async function pauseAgentPipeline(episodeId: string): Promise<Record<string, unknown>> {
+  const { data } = await studioApi.post(`/api/studio/agent-pipeline/${episodeId}/pause`, {}, attachRuntimeContext({}))
+  return data
+}
+
+export async function skipPipelineStage(episodeId: string, stage: string): Promise<Record<string, unknown>> {
+  const { data } = await studioApi.post(`/api/studio/agent-pipeline/${episodeId}/skip/${stage}`, {}, attachRuntimeContext({}))
+  return data
+}
+
+export async function getPipelineState(episodeId: string): Promise<PipelineState> {
+  const { data } = await studioApi.get(`/api/studio/agent-pipeline/${episodeId}/state`, attachRuntimeContext({}))
+  return data
+}
+
+export async function getPipelineDecisions(episodeId: string): Promise<DecisionLogEntry[]> {
+  const { data } = await studioApi.get(`/api/studio/agent-pipeline/${episodeId}/decisions`, attachRuntimeContext({}))
+  return data.decisions
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: Story State — 角色跨集状态 & 伏笔矩阵
+// ---------------------------------------------------------------------------
+
+export interface CharacterState {
+  id: string
+  series_id: string
+  element_id: string
+  episode_id: string
+  state_key: string
+  state_value: string
+  valid_from_episode: number
+  valid_to_episode: number | null
+  created_at: string
+}
+
+export interface Foreshadowing {
+  id: string
+  series_id: string
+  planted_episode_id: string
+  description: string
+  resolved_episode_id: string | null
+  status: 'planted' | 'resolved' | 'abandoned'
+  created_at: string
+}
+
+export async function listCharacterStates(seriesId: string, elementId?: string): Promise<CharacterState[]> {
+  const params: Record<string, string> = {}
+  if (elementId) params.element_id = elementId
+  const { data } = await studioApi.get(`/api/studio/story-state/characters/${seriesId}`, { params, ...attachRuntimeContext({}) })
+  return data.states
+}
+
+export async function createCharacterState(stateData: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const { data } = await studioApi.post('/api/studio/story-state/characters', stateData, attachRuntimeContext({}))
+  return data
+}
+
+export async function deleteCharacterState(stateId: string): Promise<void> {
+  await studioApi.delete(`/api/studio/story-state/characters/${stateId}`, attachRuntimeContext({}))
+}
+
+export async function listForeshadowing(seriesId: string, status?: string): Promise<Foreshadowing[]> {
+  const params: Record<string, string> = {}
+  if (status) params.status = status
+  const { data } = await studioApi.get(`/api/studio/story-state/foreshadowing/${seriesId}`, { params, ...attachRuntimeContext({}) })
+  return data.foreshadowing
+}
+
+export async function createForeshadowing(fData: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const { data } = await studioApi.post('/api/studio/story-state/foreshadowing', fData, attachRuntimeContext({}))
+  return data
+}
+
+export async function updateForeshadowing(fid: string, fData: Record<string, unknown>): Promise<void> {
+  await studioApi.put(`/api/studio/story-state/foreshadowing/${fid}`, fData, attachRuntimeContext({}))
+}
+
+export async function deleteForeshadowing(fid: string): Promise<void> {
+  await studioApi.delete(`/api/studio/story-state/foreshadowing/${fid}`, attachRuntimeContext({}))
+}
