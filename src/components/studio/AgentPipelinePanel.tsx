@@ -320,7 +320,7 @@ export default function AgentPipelinePanel({ episodeId, seriesId, onClose }: Age
               {/* vertical line */}
               <div className="absolute left-[7px] top-1 bottom-1 w-px bg-gray-700" />
 
-              {stages.map((s, idx) => {
+              {stages.map((s) => {
                 const isCurrent = s.status === 'running'
                 return (
                   <div key={s.stage}
