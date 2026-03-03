@@ -1656,7 +1656,6 @@ async def studio_save_settings(
     workspace_id: Optional[str] = Query(None),
     authorization: Optional[str] = Header(None),
 ):
-    global deps.studio_current_settings
     service = deps._studio_ensure_service_ready()
     resolved_workspace_id = deps._collab_pick_workspace_id(request, workspace_id)
     if deps.AUTH_REQUIRED and not resolved_workspace_id:
@@ -2255,7 +2254,7 @@ async def studio_export_series(
 # =====================================================================
 
 
-def deps._kb_get_instance() -> KnowledgeBase:
+def _kb_get_instance() -> KnowledgeBase:
     """获取或创建 KnowledgeBase 实例"""
     service = deps._studio_ensure_service_ready()
     if service._knowledge_base is None:

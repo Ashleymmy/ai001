@@ -667,7 +667,7 @@ class ExtractVideoAudioRequest(BaseModel):
     overwrite: bool = False
 
 
-def deps.get_agent_executor() -> AgentExecutor:
+def get_agent_executor() -> AgentExecutor:
     """获取 Agent 执行器"""
     return AgentExecutor(
         agent_service=deps.get_agent_service(),
