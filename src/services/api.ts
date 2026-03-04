@@ -2567,6 +2567,9 @@ export interface StudioShot {
   emotion_intensity: number
   key_frame_prompt: string
   key_frame_url: string
+  scene_type: string
+  cinematography: Record<string, unknown>
+  acting_direction: Record<string, unknown>
   status: string
   created_at: string
   updated_at: string

@@ -558,6 +558,9 @@ class StudioShotUpdateRequest(BaseModel):
     emotion_intensity: Optional[int] = None
     key_frame_prompt: Optional[str] = None
     key_frame_url: Optional[str] = None
+    scene_type: Optional[str] = None
+    cinematography: Optional[Dict[str, Any]] = None
+    acting_direction: Optional[Dict[str, Any]] = None
 
 
 class StudioGenerateRequest(BaseModel):

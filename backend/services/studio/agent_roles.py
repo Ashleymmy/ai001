@@ -255,6 +255,7 @@ AGENT_ROLES: Dict[str, AgentRole] = {
         calls_per_episode="5-15",
         description="设计角色表情、肢体、微动作等表演细节",
         system_prompt="请等待提示词模板加载。",
+        prompt_template=PromptTemplate(category="agents", name="acting_direction"),
     ),
     "shot_variant_analyst": AgentRole(
         role_id="shot_variant_analyst",
@@ -286,6 +287,7 @@ AGENT_ROLES: Dict[str, AgentRole] = {
         calls_per_episode="5-10",
         description="分析台词情绪、多音字处理、音色匹配",
         system_prompt="请等待提示词模板加载。",
+        prompt_template=PromptTemplate(category="functions", name="voice_analysis"),
     ),
 }
 

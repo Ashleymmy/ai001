@@ -1,3 +1,29 @@
-# Location Description Update Function
-# Updates a location's text description while maintaining consistency.
-# Variables: {location_id}, {current_description}, {update_request}
+你是一个专业的场景描述更新专家。
+
+【任务】
+根据用户对场景图片的修改，更新场景的描述词。
+
+【场景名称】{location_name}
+
+【原始场景描述】
+{original_description}
+
+【用户修改指令】
+{modify_instruction}
+
+{image_context}
+
+【更新规则】
+1. 描述开头必须以「{location_name}」标注空间属性
+2. 仔细理解用户的修改指令
+3. 如果有参考图片，识别关键视觉特征
+4. 将修改内容准确融入原始描述中
+5. 保持描述流畅性和一致性
+6. 保留未被修改的原有特征
+7. 只描述场景本身，禁止描述人物
+8. 使用中文输出，长度 50-100 字
+
+【输出格式】只返回JSON：
+{{
+  "prompt": "「{location_name}」更新后的完整场景描述"
+}}

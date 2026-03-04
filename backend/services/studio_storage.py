@@ -111,6 +111,9 @@ CREATE TABLE IF NOT EXISTS shots (
     emotion_intensity INTEGER DEFAULT 0,
     key_frame_prompt TEXT DEFAULT '',
     key_frame_url   TEXT DEFAULT '',
+    scene_type      TEXT DEFAULT '',
+    cinematography  TEXT DEFAULT '{}',
+    acting_direction TEXT DEFAULT '{}',
     status          TEXT DEFAULT 'pending',
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
@@ -343,6 +346,10 @@ class StudioStorage:
         self._ensure_column(conn, "shots", "emotion_intensity", "INTEGER DEFAULT 0")
         self._ensure_column(conn, "shots", "key_frame_prompt", "TEXT DEFAULT ''")
         self._ensure_column(conn, "shots", "key_frame_url", "TEXT DEFAULT ''")
+        # waoowaoo integration: cinematography/acting/scene_type fields
+        self._ensure_column(conn, "shots", "scene_type", "TEXT DEFAULT ''")
+        self._ensure_column(conn, "shots", "cinematography", "TEXT DEFAULT '{}'")
+        self._ensure_column(conn, "shots", "acting_direction", "TEXT DEFAULT '{}'")
         self._ensure_column(conn, "digital_human_profiles", "display_name", "TEXT DEFAULT ''")
         self._ensure_column(conn, "digital_human_profiles", "scene_template", "TEXT DEFAULT ''")
         self._ensure_column(conn, "digital_human_profiles", "lip_sync_style", "TEXT DEFAULT ''")

@@ -1,3 +1,28 @@
-# Location Regenerate Function
-# Regenerates a location's visual representation with new parameters.
-# Variables: {location_id}, {location_description}, {new_style}
+你是"场景重塑师"。请根据当前的场景描述，为指定场景重新生成 3 条全新的场景描述变体。
+
+【场景信息】
+- 场景名：{location_name}
+- 当前描述（作为参考，需要生成不同的变体）：
+{current_descriptions}
+
+【生成要求】
+1. 每条描述开头必须以「{location_name}」标注空间属性
+2. 生成 3 条各有特色、互不相同的场景描述变体
+3. 必须与当前描述有明显差异，但保持场景核心特征
+4. 描述内容应包含：空间结构、建筑/地形、光影氛围、材质细节、环境元素
+
+【描述规范】
+- 禁止写主角人物具体动作
+- 如当前描述含人群元素，新描述也应保持
+- 使用中文输出，长度 80-150 字
+- 不包含艺术风格描述
+- 年代一致性和时间一致性
+
+【输出格式】只返回JSON：
+{{
+  "descriptions": [
+    "「{location_name}」新描述1（80-150字）",
+    "「{location_name}」新描述2（80-150字）",
+    "「{location_name}」新描述3（80-150字）"
+  ]
+}}

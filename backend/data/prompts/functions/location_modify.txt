@@ -1,3 +1,28 @@
-# Location Modify Function
-# Modifies an existing location based on user feedback.
-# Variables: {location_id}, {current_description}, {modification_request}
+请按照以下规则执行用户的修改场景需求。
+
+【场景名称】{location_name}
+
+【场景修改要求（用于出图，中文描述）】
+
+开头必须以「{location_name}」的形式标注空间属性。
+
+描述必须包含具体的视觉元素：
+- 空间定位：明确场景类型
+- 主要结构：墙面/地面/天花板材质、门窗位置
+- 家具/道具：主要物体摆放
+- 光线环境：光源和照明效果
+- 氛围细节：色调、空间感、状态特征
+
+描述规范：
+- 使用具体名词，避免抽象形容词
+- 不写主角人物具体动作、情绪
+- 长度控制在 60-100 字
+- 不包含艺术风格描述
+
+当前场景描述：{location_input}
+用户的修改指令：{user_input}
+
+只返回JSON格式：
+{{
+  "prompt": "「{location_name}」修改后的场景描述"
+}}
