@@ -26,6 +26,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
 from .agent_roles import AgentRole, AGENT_ROLES, MODEL_TIERS, get_agent_role
+from .prompt_integration import get_agent_prompt
 
 # agent_protocol is a sibling Phase 3 module; gracefully degrade if absent.
 try:
@@ -390,10 +391,24 @@ class AgentPipeline:
         role = get_agent_role("character_profiler")
         script = str(ctx.get("script", ""))
         world = ctx.get(PipelineStage.WORLD_BUILDING.value, {})
-        prompt = (
-            f"从以下原文中精准提取角色档案，按 S/A/B/C/D 层级分类，识别子形象。\n\n"
-            f"原文:\n{script[:800]}\n\n"
+
+        # Build context variables for the prompt template
+        characters_lib_info = json.dumps(
+            ctx.get("characters_lib_info", "暂无已有角色资产。"),
+            ensure_ascii=False, default=str,
+        ) if isinstance(ctx.get("characters_lib_info"), (dict, list)) else str(
+            ctx.get("characters_lib_info", "暂无已有角色资产。")
+        )
+        input_text = (
+            f"{script[:800]}\n\n"
             f"世界观:\n{json.dumps(world, ensure_ascii=False, default=str)[:300]}"
+        )
+
+        # Load prompt from template (falls back to system_prompt if template missing)
+        prompt = get_agent_prompt(
+            "character_profiler",
+            characters_lib_info=characters_lib_info,
+            input=input_text,
         )
         result = await self._call_llm(role, prompt)
         return result or {"profiles": [], "_placeholder": True}
@@ -401,10 +416,16 @@ class AgentPipeline:
     async def _run_character_visual_design(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
         """Character Visual Designer generates layered visual appearance descriptions."""
         role = get_agent_role("character_visual_designer")
-        characters = ctx.get(PipelineStage.CHARACTER_DEVELOPMENT.value, {})
-        prompt = (
-            f"为以下角色生成层级化视觉外观描述，输出结构化 JSON。\n\n"
-            f"角色设定:\n{json.dumps(characters, ensure_ascii=False, default=str)[:800]}"
+        # Character profiles come from the profiling stage; fall back to character_development
+        profiles = ctx.get(PipelineStage.CHARACTER_PROFILING.value, {})
+        if not profiles or profiles.get("_placeholder"):
+            profiles = ctx.get(PipelineStage.CHARACTER_DEVELOPMENT.value, {})
+        character_profiles = json.dumps(profiles, ensure_ascii=False, default=str)[:800]
+
+        # Load prompt from template
+        prompt = get_agent_prompt(
+            "character_visual_designer",
+            character_profiles=character_profiles,
         )
         result = await self._call_llm(role, prompt)
         return result or {"visual_designs": [], "_placeholder": True}
@@ -504,12 +525,40 @@ class AgentPipeline:
         plan = ctx.get(PipelineStage.PLANNING.value, {})
         characters = ctx.get(PipelineStage.CHARACTER_DEVELOPMENT.value, {})
         dialogue = ctx.get(PipelineStage.DIALOGUE_WRITING.value, {})
-        prompt = (
-            f"将以下内容转化为分镜序列。每个镜头包含: shot_id, description, "
-            f"shot_size, camera_angle, camera_movement, emotion, characters, dialogue。\n\n"
-            f"角色:\n{json.dumps(characters, ensure_ascii=False, default=str)[:300]}\n\n"
-            f"对话:\n{json.dumps(dialogue, ensure_ascii=False, default=str)[:300]}\n\n"
-            f"任务:\n{json.dumps(plan, ensure_ascii=False, default=str)[:300]}"
+        visual_designs = ctx.get(PipelineStage.CHARACTER_VISUAL_DESIGN.value, {})
+        text_clips = ctx.get(PipelineStage.TEXT_CLIPPING.value, {})
+
+        # Build template context variables
+        characters_lib_name = str(ctx.get("characters_lib_name", "角色资产库"))
+        locations_lib_name = str(ctx.get("locations_lib_name", "场景资产库"))
+        characters_introduction = json.dumps(
+            ctx.get("characters_introduction", characters),
+            ensure_ascii=False, default=str,
+        )[:500]
+        characters_appearance_list = json.dumps(
+            ctx.get("characters_appearance_list", visual_designs),
+            ensure_ascii=False, default=str,
+        )[:500]
+        characters_full_description = json.dumps(
+            ctx.get("characters_full_description", characters),
+            ensure_ascii=False, default=str,
+        )[:500]
+        clip_json = json.dumps(
+            ctx.get("clip_json", text_clips),
+            ensure_ascii=False, default=str,
+        )[:300]
+        clip_content = str(ctx.get("clip_content", ctx.get("script", "")))[:500]
+
+        # Load prompt from template
+        prompt = get_agent_prompt(
+            "storyboard_writer",
+            characters_lib_name=characters_lib_name,
+            locations_lib_name=locations_lib_name,
+            characters_introduction=characters_introduction,
+            characters_appearance_list=characters_appearance_list,
+            characters_full_description=characters_full_description,
+            clip_json=clip_json,
+            clip_content=clip_content,
         )
         result = await self._call_llm(role, prompt)
         return result or {"shots": [], "_placeholder": True}
@@ -634,11 +683,26 @@ class AgentPipeline:
 
         If ``self.llm_service`` is *None*, returns *None* so that callers
         fall back to placeholder / mock results.
+
+        When the role has a ``prompt_template``, the template has already been
+        resolved by the stage handler via :func:`get_agent_prompt`, so the
+        full prompt content arrives in *user_prompt*.  In that case we use the
+        role's description as a lightweight system prompt instead of the
+        placeholder ``system_prompt``.
         """
         if self.llm_service is None or role is None:
             return None
 
-        system_prompt = role.system_prompt if role else ""
+        if role.prompt_template is not None:
+            # Template-based roles: the user_prompt already contains the
+            # fully resolved template.  Use a brief system instruction.
+            system_prompt = (
+                f"You are {role.display_name_en} ({role.display_name}). "
+                f"{role.description}"
+            )
+        else:
+            system_prompt = role.system_prompt
+
         model = self._model_for_role(role.role_id if role else "producer")
 
         try:

@@ -10,6 +10,13 @@ from typing import Dict, List, Optional
 
 
 @dataclass
+class PromptTemplate:
+    """Pointer to a prompt template file managed by prompt_loader."""
+    category: str   # e.g., "agents"
+    name: str       # e.g., "character_profile" (filename without .txt)
+
+
+@dataclass
 class AgentRole:
     """Agent 角色定义"""
     role_id: str                    # e.g., "producer"
@@ -17,10 +24,11 @@ class AgentRole:
     display_name_en: str            # e.g., "Producer"
     department: str                 # "executive" / "story" / "visual" / "tech"
     model_tier: str                 # "tier1" / "tier2" / "tier3" / "tier4"
-    system_prompt: str              # 角色系统提示词
+    system_prompt: str              # 角色系统提示词 (fallback when no prompt_template)
     description: str = ""           # 角色职责描述
     calls_per_episode: str = ""     # 每集调用次数估算
     can_use_tools: bool = False     # 是否可以使用工具（Phase 3+）
+    prompt_template: Optional[PromptTemplate] = None  # 外部提示词模板引用
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +117,7 @@ AGENT_ROLES: Dict[str, AgentRole] = {
             "使用标准景别词条：extreme_long/long/medium/medium_close/close_up/extreme_close\n"
             "使用标准角度词条：eye_level/low_angle/high_angle/dutch/overhead/side/back/over_shoulder"
         ),
+        prompt_template=PromptTemplate(category="agents", name="storyboard_plan"),
     ),
     "prompt_compositor": AgentRole(
         role_id="prompt_compositor",
@@ -191,6 +200,7 @@ AGENT_ROLES: Dict[str, AgentRole] = {
         calls_per_episode="1-3",
         description="从原文精准提取角色档案（S/A/B/C/D层级，子形象识别）",
         system_prompt="请等待提示词模板加载。",
+        prompt_template=PromptTemplate(category="agents", name="character_profile"),
     ),
     "character_visual_designer": AgentRole(
         role_id="character_visual_designer",
@@ -201,6 +211,7 @@ AGENT_ROLES: Dict[str, AgentRole] = {
         calls_per_episode="1-5",
         description="为角色生成层级化视觉外观描述",
         system_prompt="请等待提示词模板加载。",
+        prompt_template=PromptTemplate(category="agents", name="character_visual"),
     ),
     "text_clipper": AgentRole(
         role_id="text_clipper",
