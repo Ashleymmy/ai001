@@ -1,0 +1,3 @@
+# Character Regenerate Function
+# Regenerates a character's visual representation with new parameters.
+# Variables: {character_id}, {character_profile}, {new_style}

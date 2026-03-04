@@ -1,0 +1,3 @@
+# Location Description Update Function
+# Updates a location's text description while maintaining consistency.
+# Variables: {location_id}, {current_description}, {update_request}

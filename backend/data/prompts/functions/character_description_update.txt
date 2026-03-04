@@ -1,0 +1,3 @@
+# Character Description Update Function
+# Updates a character's text description while maintaining consistency.
+# Variables: {character_id}, {current_description}, {update_request}

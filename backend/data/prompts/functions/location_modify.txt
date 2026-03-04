@@ -1,0 +1,3 @@
+# Location Modify Function
+# Modifies an existing location based on user feedback.
+# Variables: {location_id}, {current_description}, {modification_request}

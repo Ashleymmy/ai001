@@ -1,0 +1,3 @@
+# Character Reference to Sheet Function
+# Generates a character sheet from reference images and descriptions.
+# Variables: {reference_images}, {character_description}, {art_style}

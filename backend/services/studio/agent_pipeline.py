@@ -1,13 +1,17 @@
 """Multi-Agent 编排引擎 — Phase 3, Task 3.4
 
-核心 pipeline，按顺序调度 10 个 Agent 角色完成一集漫剧的完整生产流水线。
+核心 pipeline，按顺序调度 Agent 角色完成一集漫剧的完整生产流水线。
 每个阶段产出结构化 JSON，供下游阶段消费。
 
-Pipeline stages:
-  planning -> world_building -> character_development -> dialogue_writing
-  -> storyboard_planning -> narrative_qa -> prompt_composition -> prompt_qa
-  -> image_generation -> visual_qa -> video_generation -> audio_generation
-  -> completed
+Pipeline stages (core + waoowaoo extensions):
+  planning -> world_building -> character_profiling* -> character_development
+  -> character_visual_design* -> text_clipping* -> screenplay_conversion*
+  -> dialogue_writing -> storyboard_planning -> narrative_qa
+  -> cinematography* -> acting_direction* -> prompt_composition -> prompt_qa
+  -> image_generation -> visual_qa -> video_generation -> voice_analysis*
+  -> audio_generation -> completed
+
+  (* = waoowaoo extension stages)
 """
 
 from __future__ import annotations
@@ -72,15 +76,22 @@ class PipelineStage(str, Enum):
     """All stages in the episode production pipeline."""
     PLANNING = "planning"
     WORLD_BUILDING = "world_building"
+    CHARACTER_PROFILING = "character_profiling"               # waoowaoo ext
     CHARACTER_DEVELOPMENT = "character_development"
+    CHARACTER_VISUAL_DESIGN = "character_visual_design"       # waoowaoo ext
+    TEXT_CLIPPING = "text_clipping"                           # waoowaoo ext
+    SCREENPLAY_CONVERSION = "screenplay_conversion"           # waoowaoo ext
     DIALOGUE_WRITING = "dialogue_writing"
     STORYBOARD_PLANNING = "storyboard_planning"
     NARRATIVE_QA = "narrative_qa"
+    CINEMATOGRAPHY = "cinematography"                         # waoowaoo ext
+    ACTING_DIRECTION = "acting_direction"                     # waoowaoo ext
     PROMPT_COMPOSITION = "prompt_composition"
     PROMPT_QA = "prompt_qa"
     IMAGE_GENERATION = "image_generation"
     VISUAL_QA = "visual_qa"
     VIDEO_GENERATION = "video_generation"
+    VOICE_ANALYSIS = "voice_analysis"                         # waoowaoo ext
     AUDIO_GENERATION = "audio_generation"
     COMPLETED = "completed"
 
@@ -89,15 +100,22 @@ class PipelineStage(str, Enum):
 _DEFAULT_STAGE_ORDER: List[str] = [
     PipelineStage.PLANNING.value,
     PipelineStage.WORLD_BUILDING.value,
+    PipelineStage.CHARACTER_PROFILING.value,           # waoowaoo: after story analysis, before character dev
     PipelineStage.CHARACTER_DEVELOPMENT.value,
+    PipelineStage.CHARACTER_VISUAL_DESIGN.value,       # waoowaoo: after character development
+    PipelineStage.TEXT_CLIPPING.value,                  # waoowaoo: before storyboard writing
+    PipelineStage.SCREENPLAY_CONVERSION.value,          # waoowaoo: before storyboard writing, optional
     PipelineStage.DIALOGUE_WRITING.value,
     PipelineStage.STORYBOARD_PLANNING.value,
     PipelineStage.NARRATIVE_QA.value,
+    PipelineStage.CINEMATOGRAPHY.value,                 # waoowaoo: after storyboard
+    PipelineStage.ACTING_DIRECTION.value,               # waoowaoo: after cinematography
     PipelineStage.PROMPT_COMPOSITION.value,
     PipelineStage.PROMPT_QA.value,
     PipelineStage.IMAGE_GENERATION.value,
     PipelineStage.VISUAL_QA.value,
     PipelineStage.VIDEO_GENERATION.value,
+    PipelineStage.VOICE_ANALYSIS.value,                 # waoowaoo: after dialogue, before audio
     PipelineStage.AUDIO_GENERATION.value,
 ]
 
@@ -105,10 +123,16 @@ _DEFAULT_STAGE_ORDER: List[str] = [
 _PRE_GENERATION_STAGES: List[str] = [
     PipelineStage.PLANNING.value,
     PipelineStage.WORLD_BUILDING.value,
+    PipelineStage.CHARACTER_PROFILING.value,
     PipelineStage.CHARACTER_DEVELOPMENT.value,
+    PipelineStage.CHARACTER_VISUAL_DESIGN.value,
+    PipelineStage.TEXT_CLIPPING.value,
+    PipelineStage.SCREENPLAY_CONVERSION.value,
     PipelineStage.DIALOGUE_WRITING.value,
     PipelineStage.STORYBOARD_PLANNING.value,
     PipelineStage.NARRATIVE_QA.value,
+    PipelineStage.CINEMATOGRAPHY.value,
+    PipelineStage.ACTING_DIRECTION.value,
     PipelineStage.PROMPT_COMPOSITION.value,
     PipelineStage.PROMPT_QA.value,
 ]
@@ -157,15 +181,22 @@ class PipelineState:
 _STAGE_AGENT_MAP: Dict[str, str] = {
     PipelineStage.PLANNING.value: "producer",
     PipelineStage.WORLD_BUILDING.value: "world_builder",
+    PipelineStage.CHARACTER_PROFILING.value: "character_profiler",
     PipelineStage.CHARACTER_DEVELOPMENT.value: "character_developer",
+    PipelineStage.CHARACTER_VISUAL_DESIGN.value: "character_visual_designer",
+    PipelineStage.TEXT_CLIPPING.value: "text_clipper",
+    PipelineStage.SCREENPLAY_CONVERSION.value: "screenplay_converter",
     PipelineStage.DIALOGUE_WRITING.value: "dialogue_writer",
     PipelineStage.STORYBOARD_PLANNING.value: "storyboard_writer",
     PipelineStage.NARRATIVE_QA.value: "narrative_qa",
+    PipelineStage.CINEMATOGRAPHY.value: "cinematographer",
+    PipelineStage.ACTING_DIRECTION.value: "acting_director",
     PipelineStage.PROMPT_COMPOSITION.value: "prompt_compositor",
     PipelineStage.PROMPT_QA.value: "prompt_qa",
     PipelineStage.IMAGE_GENERATION.value: "producer",          # producer oversees generation
     PipelineStage.VISUAL_QA.value: "visual_qa",
     PipelineStage.VIDEO_GENERATION.value: "producer",
+    PipelineStage.VOICE_ANALYSIS.value: "voice_analyst",
     PipelineStage.AUDIO_GENERATION.value: "producer",
 }
 
@@ -293,15 +324,22 @@ class AgentPipeline:
         return {
             PipelineStage.PLANNING.value: self._run_planning,
             PipelineStage.WORLD_BUILDING.value: self._run_world_building,
+            PipelineStage.CHARACTER_PROFILING.value: self._run_character_profiling,
             PipelineStage.CHARACTER_DEVELOPMENT.value: self._run_character_development,
+            PipelineStage.CHARACTER_VISUAL_DESIGN.value: self._run_character_visual_design,
+            PipelineStage.TEXT_CLIPPING.value: self._run_text_clipping,
+            PipelineStage.SCREENPLAY_CONVERSION.value: self._run_screenplay_conversion,
             PipelineStage.DIALOGUE_WRITING.value: self._run_dialogue_writing,
             PipelineStage.STORYBOARD_PLANNING.value: self._run_storyboard,
             PipelineStage.NARRATIVE_QA.value: self._run_narrative_qa,
+            PipelineStage.CINEMATOGRAPHY.value: self._run_cinematography,
+            PipelineStage.ACTING_DIRECTION.value: self._run_acting_direction,
             PipelineStage.PROMPT_COMPOSITION.value: self._run_prompt_composition,
             PipelineStage.PROMPT_QA.value: self._run_prompt_qa,
             PipelineStage.IMAGE_GENERATION.value: self._run_image_generation,
             PipelineStage.VISUAL_QA.value: self._run_visual_qa,
             PipelineStage.VIDEO_GENERATION.value: self._run_video_generation,
+            PipelineStage.VOICE_ANALYSIS.value: self._run_voice_analysis,
             PipelineStage.AUDIO_GENERATION.value: self._run_audio_generation,
         }
 
@@ -344,6 +382,93 @@ class AgentPipeline:
             "culture": "待补充",
             "rules": "待补充",
         }
+
+    # -- waoowaoo extension stages ------------------------------------------
+
+    async def _run_character_profiling(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        """Character Profiler extracts character profiles from source text (S/A/B/C/D tiers)."""
+        role = get_agent_role("character_profiler")
+        script = str(ctx.get("script", ""))
+        world = ctx.get(PipelineStage.WORLD_BUILDING.value, {})
+        prompt = (
+            f"从以下原文中精准提取角色档案，按 S/A/B/C/D 层级分类，识别子形象。\n\n"
+            f"原文:\n{script[:800]}\n\n"
+            f"世界观:\n{json.dumps(world, ensure_ascii=False, default=str)[:300]}"
+        )
+        result = await self._call_llm(role, prompt)
+        return result or {"profiles": [], "_placeholder": True}
+
+    async def _run_character_visual_design(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        """Character Visual Designer generates layered visual appearance descriptions."""
+        role = get_agent_role("character_visual_designer")
+        characters = ctx.get(PipelineStage.CHARACTER_DEVELOPMENT.value, {})
+        prompt = (
+            f"为以下角色生成层级化视觉外观描述，输出结构化 JSON。\n\n"
+            f"角色设定:\n{json.dumps(characters, ensure_ascii=False, default=str)[:800]}"
+        )
+        result = await self._call_llm(role, prompt)
+        return result or {"visual_designs": [], "_placeholder": True}
+
+    async def _run_text_clipping(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        """Text Clipper segments text by scene and element density."""
+        role = get_agent_role("text_clipper")
+        script = str(ctx.get("script", ""))
+        prompt = (
+            f"按场景和元素密度对以下文本进行智能切片，输出 JSON 数组。\n\n"
+            f"文本:\n{script[:1000]}"
+        )
+        result = await self._call_llm(role, prompt)
+        return result or {"clips": [], "_placeholder": True}
+
+    async def _run_screenplay_conversion(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        """Screenplay Converter transforms narrative text into standard screenplay format."""
+        role = get_agent_role("screenplay_converter")
+        clips = ctx.get(PipelineStage.TEXT_CLIPPING.value, {})
+        script = str(ctx.get("script", ""))
+        prompt = (
+            f"将以下叙事文本转换为标准影视剧本格式，输出结构化 JSON。\n\n"
+            f"切片结果:\n{json.dumps(clips, ensure_ascii=False, default=str)[:500]}\n\n"
+            f"原文:\n{script[:500]}"
+        )
+        result = await self._call_llm(role, prompt)
+        return result or {"screenplay": [], "_placeholder": True}
+
+    async def _run_cinematography(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        """Cinematographer designs lighting, depth-of-field, tone and other camera parameters."""
+        role = get_agent_role("cinematographer")
+        storyboard = ctx.get(PipelineStage.STORYBOARD_PLANNING.value, {})
+        prompt = (
+            f"为以下分镜设计摄影参数（灯光、景深、色调等），输出结构化 JSON。\n\n"
+            f"分镜:\n{json.dumps(storyboard, ensure_ascii=False, default=str)[:800]}"
+        )
+        result = await self._call_llm(role, prompt)
+        return result or {"cinematography": [], "_placeholder": True}
+
+    async def _run_acting_direction(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        """Acting Director designs facial expressions, body language, and micro-actions."""
+        role = get_agent_role("acting_director")
+        storyboard = ctx.get(PipelineStage.STORYBOARD_PLANNING.value, {})
+        cinematography = ctx.get(PipelineStage.CINEMATOGRAPHY.value, {})
+        prompt = (
+            f"为以下镜头设计角色表演细节（表情、肢体、微动作），输出结构化 JSON。\n\n"
+            f"分镜:\n{json.dumps(storyboard, ensure_ascii=False, default=str)[:500]}\n\n"
+            f"摄影参数:\n{json.dumps(cinematography, ensure_ascii=False, default=str)[:300]}"
+        )
+        result = await self._call_llm(role, prompt)
+        return result or {"acting_directions": [], "_placeholder": True}
+
+    async def _run_voice_analysis(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        """Voice Analyst analyzes dialogue emotions, polyphones, and voice timbre matching."""
+        role = get_agent_role("voice_analyst")
+        dialogue = ctx.get(PipelineStage.DIALOGUE_WRITING.value, {})
+        characters = ctx.get(PipelineStage.CHARACTER_DEVELOPMENT.value, {})
+        prompt = (
+            f"分析以下台词的情绪、多音字及音色匹配，输出结构化 JSON。\n\n"
+            f"对话:\n{json.dumps(dialogue, ensure_ascii=False, default=str)[:500]}\n\n"
+            f"角色:\n{json.dumps(characters, ensure_ascii=False, default=str)[:300]}"
+        )
+        result = await self._call_llm(role, prompt)
+        return result or {"voice_analysis": [], "_placeholder": True}
 
     async def _run_character_development(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
         """Character Developer enriches character profiles."""

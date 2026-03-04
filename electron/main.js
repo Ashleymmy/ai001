@@ -76,7 +76,7 @@ function createWindow() {
 function startPythonBackend() {
   return new Promise((resolve, reject) => {
     let pythonPath, args, cwd
-    const backendPort = process.env.AI_STORYBOARDER_PORT || process.env.BACKEND_PORT || '8001'
+    const backendPort = process.env.AI_STORYBOARDER_PORT || process.env.BACKEND_PORT || '18001'
     
     if (app.isPackaged) {
       // 打包后使用 PyInstaller 生成的 exe

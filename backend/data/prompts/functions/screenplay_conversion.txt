@@ -1,0 +1,3 @@
+# Screenplay Conversion Function
+# Converts raw story text into structured screenplay format.
+# Variables: {raw_text}, {format_style}, {target_length}

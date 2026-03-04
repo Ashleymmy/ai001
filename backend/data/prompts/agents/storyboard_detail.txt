@@ -1,0 +1,3 @@
+# Storyboard Detail Agent
+# Expands storyboard plan items into detailed panel descriptions.
+# Variables: {plan_item}, {characters}, {location}, {mood}

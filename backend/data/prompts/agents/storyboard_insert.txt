@@ -1,0 +1,3 @@
+# Storyboard Insert Agent
+# Inserts new panels into an existing storyboard sequence.
+# Variables: {before_panel}, {after_panel}, {insert_description}, {context}

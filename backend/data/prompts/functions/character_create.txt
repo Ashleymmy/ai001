@@ -1,0 +1,3 @@
+# Character Create Function
+# Creates a new character definition from user input.
+# Variables: {character_description}, {story_context}, {art_style}

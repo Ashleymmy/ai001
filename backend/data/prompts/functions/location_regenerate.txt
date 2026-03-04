@@ -1,0 +1,3 @@
+# Location Regenerate Function
+# Regenerates a location's visual representation with new parameters.
+# Variables: {location_id}, {location_description}, {new_style}

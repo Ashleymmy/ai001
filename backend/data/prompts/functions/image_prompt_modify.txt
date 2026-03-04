@@ -1,0 +1,3 @@
+# Image Prompt Modify Function
+# Modifies an existing image generation prompt based on user feedback.
+# Variables: {current_prompt}, {modification_request}, {style_constraints}

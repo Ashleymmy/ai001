@@ -1,0 +1,3 @@
+# Character Profile Agent
+# Generates detailed character profiles including personality, backstory, and role in the story.
+# Variables: {character_name}, {story_context}, {style}

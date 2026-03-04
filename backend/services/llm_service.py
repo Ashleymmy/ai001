@@ -1,8 +1,11 @@
 """LLM 服务 - 基于 OpenAI 原生 SDK 的多服务商/中转渠道适配。"""
 import os
 import re
-from typing import Optional, List, Dict, Any
+import json
+import asyncio
+from typing import Optional, List, Dict, Any, AsyncGenerator
 from openai import AsyncOpenAI
+from fastapi.responses import StreamingResponse
 
 # 预设的提供商配置
 PROVIDER_CONFIGS = {
@@ -237,6 +240,119 @@ class LLMService:
         response = await self.client.chat.completions.create(**kwargs)
         return response.choices[0].message.content or ""
 
+    async def stream_structured_output(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        model_config: dict = None,
+        response_schema: dict = None,
+    ) -> AsyncGenerator[dict, None]:
+        """Stream structured JSON output similar to Vercel AI SDK's streamObject.
+
+        Yields dicts with one of the following shapes:
+        - {"type": "delta", "content": str, "accumulated": str}
+        - {"type": "progress", "percentage": float}
+        - {"type": "complete", "content": str, "parsed": dict}
+        - {"type": "error", "message": str}
+
+        The caller can break out of the generator at any time to cancel.
+        """
+        if not self.client:
+            yield {"type": "error", "message": "LLM client not initialised (missing API key)"}
+            return
+
+        messages: List[Dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        cfg = model_config or {}
+        model = cfg.get("model") or self.model
+        temperature = float(cfg.get("temperature", 0.7))
+        max_tokens = cfg.get("max_tokens")
+
+        kwargs: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+        }
+        if max_tokens is not None:
+            kwargs["max_tokens"] = int(max_tokens)
+
+        # Request JSON-formatted output when a schema hint is provided.
+        if response_schema is not None:
+            kwargs["response_format"] = {"type": "json_object"}
+            # Embed the schema description into the system prompt so the model
+            # knows the expected shape even for providers that ignore the
+            # response_format parameter.
+            schema_hint = (
+                "\n\nIMPORTANT: You MUST reply with a single valid JSON object "
+                "matching this schema:\n" + json.dumps(response_schema, ensure_ascii=False)
+            )
+            if messages and messages[0]["role"] == "system":
+                messages[0]["content"] += schema_hint
+            else:
+                messages.insert(0, {"role": "system", "content": schema_hint.strip()})
+
+        accumulated = ""
+        try:
+            stream = await self.client.chat.completions.create(**kwargs)
+
+            async for chunk in stream:
+                choice = chunk.choices[0] if chunk.choices else None
+                if choice is None:
+                    continue
+
+                delta_content = choice.delta.content if choice.delta else None
+                if delta_content:
+                    accumulated += delta_content
+                    yield {
+                        "type": "delta",
+                        "content": delta_content,
+                        "accumulated": accumulated,
+                    }
+
+                # Emit a rough progress estimate based on accumulated length vs
+                # max_tokens (if known).  This is purely informational.
+                if max_tokens and accumulated:
+                    pct = min(len(accumulated) / (max_tokens * 4) * 100, 99.0)
+                    yield {"type": "progress", "percentage": round(pct, 1)}
+
+                if choice.finish_reason is not None:
+                    break
+
+            # Try to parse the accumulated text as JSON.
+            parsed = None
+            if response_schema is not None and accumulated:
+                try:
+                    parsed = json.loads(accumulated)
+                except json.JSONDecodeError:
+                    # The model may have wrapped JSON in markdown fences.
+                    import re as _re
+                    m = _re.search(r"```(?:json)?\s*([\s\S]*?)```", accumulated)
+                    if m:
+                        try:
+                            parsed = json.loads(m.group(1))
+                        except json.JSONDecodeError:
+                            pass
+
+            yield {
+                "type": "complete",
+                "content": accumulated,
+                "parsed": parsed,
+            }
+
+        except asyncio.CancelledError:
+            # The caller cancelled the generator (e.g. client disconnected).
+            yield {
+                "type": "complete",
+                "content": accumulated,
+                "parsed": None,
+            }
+        except Exception as exc:
+            yield {"type": "error", "message": str(exc)}
+
     def _get_style_description(self, style: str) -> str:
         styles = {
             "cinematic": "cinematic lighting, film grain, dramatic shadows, movie scene",
@@ -283,3 +399,41 @@ class LLMService:
 - 水墨: 中国传统水墨画"""
         
         return "我是 AI 分镜助手。请在设置中配置 API Key 以启用完整功能。"
+
+
+# ---------------------------------------------------------------------------
+# Standalone helper: wrap a structured stream into a FastAPI SSE response
+# ---------------------------------------------------------------------------
+
+def create_structured_sse_response(
+    stream_generator: AsyncGenerator[dict, None],
+    request=None,
+) -> StreamingResponse:
+    """Wrap a ``stream_structured_output`` async generator into a FastAPI
+    ``StreamingResponse`` that emits Server-Sent Events.
+
+    Each yielded dict is serialised as ``data: {json}\n\n``.
+
+    If *request* is provided (a Starlette ``Request``), the generator will
+    stop early when the client disconnects.
+    """
+
+    async def _event_source():
+        try:
+            async for event in stream_generator:
+                # Honour client disconnect when a Request is available.
+                if request is not None and await request.is_disconnected():
+                    break
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except asyncio.CancelledError:
+            pass
+
+    return StreamingResponse(
+        _event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

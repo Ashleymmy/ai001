@@ -1,0 +1,3 @@
+# Acting Direction Agent
+# Generates acting directions for characters in each scene/panel.
+# Variables: {character_name}, {emotion}, {scene_context}, {dialogue}

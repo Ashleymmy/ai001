@@ -1,0 +1,3 @@
+# Character Modify Function
+# Modifies an existing character based on user feedback.
+# Variables: {character_id}, {current_profile}, {modification_request}

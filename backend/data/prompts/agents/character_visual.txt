@@ -1,0 +1,3 @@
+# Character Visual Agent
+# Generates visual descriptions and image prompts for characters.
+# Variables: {character_name}, {character_profile}, {art_style}

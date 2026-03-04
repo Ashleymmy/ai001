@@ -1,0 +1,3 @@
+# Clip Agent
+# Generates individual clip/shot details from storyboard panels.
+# Variables: {panel_description}, {scene_context}, {visual_style}

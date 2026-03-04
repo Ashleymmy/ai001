@@ -1,0 +1,3 @@
+# Voice Analysis Function
+# Analyzes dialogue to determine voice characteristics and TTS parameters.
+# Variables: {dialogue}, {character_profile}, {emotion}

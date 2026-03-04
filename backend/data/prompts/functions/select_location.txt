@@ -1,0 +1,3 @@
+# Select Location Function
+# Selects the most appropriate location for a scene from available locations.
+# Variables: {scene_description}, {available_locations}, {mood}

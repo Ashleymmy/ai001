@@ -1,0 +1,3 @@
+# Character Image to Description Function
+# Converts a character reference image into a textual description.
+# Variables: {image_url}, {context}, {detail_level}

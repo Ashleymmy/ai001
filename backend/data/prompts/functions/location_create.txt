@@ -1,0 +1,3 @@
+# Location Create Function
+# Creates a new location/scene definition from user input.
+# Variables: {location_description}, {story_context}, {art_style}

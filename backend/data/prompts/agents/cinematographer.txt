@@ -1,0 +1,3 @@
+# Cinematographer Agent
+# Determines camera angles, movements, lighting, and composition for shots.
+# Variables: {scene_description}, {mood}, {visual_style}

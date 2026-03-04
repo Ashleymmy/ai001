@@ -24,7 +24,7 @@ class AgentRole:
 
 
 # ---------------------------------------------------------------------------
-# 10 个核心 Agent 角色定义
+# Agent 角色定义 (10 core + 9 waoowaoo extension)
 # ---------------------------------------------------------------------------
 
 AGENT_ROLES: Dict[str, AgentRole] = {
@@ -177,6 +177,100 @@ AGENT_ROLES: Dict[str, AgentRole] = {
         calls_per_episode="持续",
         description="跨集角色状态追踪、伏笔矩阵管理",
         system_prompt="管理角色跨集状态变化和伏笔回收。",
+    ),
+
+    # -------------------------------------------------------------------
+    # waoowaoo 扩展角色 (Phase 2 integration)
+    # -------------------------------------------------------------------
+    "character_profiler": AgentRole(
+        role_id="character_profiler",
+        display_name="角色档案师",
+        display_name_en="Character Profiler",
+        department="story",
+        model_tier="tier2",
+        calls_per_episode="1-3",
+        description="从原文精准提取角色档案（S/A/B/C/D层级，子形象识别）",
+        system_prompt="请等待提示词模板加载。",
+    ),
+    "character_visual_designer": AgentRole(
+        role_id="character_visual_designer",
+        display_name="角色视觉设计师",
+        display_name_en="Character Visual Designer",
+        department="visual",
+        model_tier="tier2",
+        calls_per_episode="1-5",
+        description="为角色生成层级化视觉外观描述",
+        system_prompt="请等待提示词模板加载。",
+    ),
+    "text_clipper": AgentRole(
+        role_id="text_clipper",
+        display_name="文本切片师",
+        display_name_en="Text Clipper",
+        department="story",
+        model_tier="tier3",
+        calls_per_episode="1-3",
+        description="按场景和元素密度进行文本智能切片",
+        system_prompt="请等待提示词模板加载。",
+    ),
+    "screenplay_converter": AgentRole(
+        role_id="screenplay_converter",
+        display_name="剧本转换师",
+        display_name_en="Screenplay Converter",
+        department="story",
+        model_tier="tier3",
+        calls_per_episode="1-3",
+        description="将叙事文本转换为标准影视剧本格式",
+        system_prompt="请等待提示词模板加载。",
+    ),
+    "cinematographer": AgentRole(
+        role_id="cinematographer",
+        display_name="摄影指导",
+        display_name_en="Cinematographer",
+        department="visual",
+        model_tier="tier2",
+        calls_per_episode="5-15",
+        description="设计灯光、景深、色调等摄影参数",
+        system_prompt="请等待提示词模板加载。",
+    ),
+    "acting_director": AgentRole(
+        role_id="acting_director",
+        display_name="表演指导",
+        display_name_en="Acting Director",
+        department="visual",
+        model_tier="tier3",
+        calls_per_episode="5-15",
+        description="设计角色表情、肢体、微动作等表演细节",
+        system_prompt="请等待提示词模板加载。",
+    ),
+    "shot_variant_analyst": AgentRole(
+        role_id="shot_variant_analyst",
+        display_name="镜头变体分析师",
+        display_name_en="Shot Variant Analyst",
+        department="visual",
+        model_tier="tier3",
+        calls_per_episode="5-15",
+        description="分析并生成5-8种创意镜头方案",
+        system_prompt="请等待提示词模板加载。",
+    ),
+    "location_extractor": AgentRole(
+        role_id="location_extractor",
+        display_name="场景提取师",
+        display_name_en="Location Extractor",
+        department="story",
+        model_tier="tier3",
+        calls_per_episode="1-3",
+        description="从文本中提取场景资产并生成空间化描述",
+        system_prompt="请等待提示词模板加载。",
+    ),
+    "voice_analyst": AgentRole(
+        role_id="voice_analyst",
+        display_name="配音分析师",
+        display_name_en="Voice Analyst",
+        department="tech",
+        model_tier="tier3",
+        calls_per_episode="5-10",
+        description="分析台词情绪、多音字处理、音色匹配",
+        system_prompt="请等待提示词模板加载。",
     ),
 }
 

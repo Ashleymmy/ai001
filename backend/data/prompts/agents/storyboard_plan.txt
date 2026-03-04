@@ -1,0 +1,3 @@
+# Storyboard Plan Agent
+# Creates high-level storyboard plans from scripts or story outlines.
+# Variables: {script}, {num_panels}, {style_guide}
