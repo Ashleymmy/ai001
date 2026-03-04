@@ -10,10 +10,9 @@ import {
   Plus, Image as ImageIcon,
   Maximize2, ChevronLeft, Save,
   Loader2, CheckCircle, AlertCircle,
-  FileText, Music, Mic, Settings2, Eye, Download, Package, Trash2, X
+  FileText, Music, Mic, Settings2, Eye, Download, Package
 } from 'lucide-react'
 import {
-  BACKEND_ORIGIN,
   agentChat, agentPlanProject, agentGenerateElementPrompt,
   createAgentProject, getAgentProject, updateAgentProject, listAgentProjects,
   applyAgentOperator,
@@ -42,6 +41,8 @@ import {
   ChatMessageItem,
   ElementsPanel,
   ImagePreviewModal,
+  ImportElementsModal,
+  ImportShotRefsModal,
   StoryboardPanel,
   TaskCard,
   TimelinePanel,
@@ -59,131 +60,13 @@ import type {
   VisualAsset,
 } from '../features/agent/types'
 import { formatBytes, sanitizeFilename } from '../features/agent/utils'
-
-function isProbablyExpiredSignedUrl(url?: string | null) {
-  const raw = (url || '').trim()
-  if (!raw || !/^https?:/i.test(raw)) return false
-  try {
-    const parsed = new URL(raw)
-    const qs = parsed.searchParams
-
-    const tosDate = qs.get('X-Tos-Date')
-    const tosExpires = qs.get('X-Tos-Expires')
-    if (tosDate && tosExpires) {
-      const expiresSeconds = Number.parseInt(tosExpires, 10)
-      if (!Number.isFinite(expiresSeconds)) return false
-      const year = Number.parseInt(tosDate.slice(0, 4), 10)
-      const month = Number.parseInt(tosDate.slice(4, 6), 10)
-      const day = Number.parseInt(tosDate.slice(6, 8), 10)
-      const hour = Number.parseInt(tosDate.slice(9, 11), 10)
-      const minute = Number.parseInt(tosDate.slice(11, 13), 10)
-      const second = Number.parseInt(tosDate.slice(13, 15), 10)
-      const startMs = Date.UTC(year, Math.max(0, month - 1), day, hour, minute, second)
-      const bufferSeconds = 30
-      return Date.now() > startMs + Math.max(0, expiresSeconds - bufferSeconds) * 1000
-    }
-
-    const amzDate = qs.get('X-Amz-Date')
-    const amzExpires = qs.get('X-Amz-Expires')
-    if (amzDate && amzExpires) {
-      const expiresSeconds = Number.parseInt(amzExpires, 10)
-      if (!Number.isFinite(expiresSeconds)) return false
-      const year = Number.parseInt(amzDate.slice(0, 4), 10)
-      const month = Number.parseInt(amzDate.slice(4, 6), 10)
-      const day = Number.parseInt(amzDate.slice(6, 8), 10)
-      const hour = Number.parseInt(amzDate.slice(9, 11), 10)
-      const minute = Number.parseInt(amzDate.slice(11, 13), 10)
-      const second = Number.parseInt(amzDate.slice(13, 15), 10)
-      const startMs = Date.UTC(year, Math.max(0, month - 1), day, hour, minute, second)
-      const bufferSeconds = 30
-      return Date.now() > startMs + Math.max(0, expiresSeconds - bufferSeconds) * 1000
-    }
-  } catch {
-    // ignore
-  }
-  return false
-}
-
-function resolveMediaUrl(url?: string | null) {
-  const u = (url || '').trim()
-  if (!u) return ''
-  if (/^(data:|blob:)/i.test(u)) return u
-  if (/^https?:/i.test(u)) return isProbablyExpiredSignedUrl(u) ? '' : u
-  if (u.startsWith('/api/')) return `${BACKEND_ORIGIN}${u}`
-  return u
-}
-
-function canonicalizeMediaUrl(url: string) {
-  const u = (url || '').trim()
-  if (!u) return ''
-  return u.replace(/^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?(?=\/api\/)/i, '')
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value)
-}
-
-function unwrapStructuredPayload(value: unknown): Record<string, unknown> | null {
-  if (!isRecord(value)) return null
-  let obj: Record<string, unknown> = value
-  for (const key of ['data', 'result', 'plan', 'patch', 'updates']) {
-    const inner = obj[key]
-    if (isRecord(inner)) obj = inner
-  }
-  return obj
-}
-
-function looksLikeAgentPatch(value: unknown): boolean {
-  const obj = unwrapStructuredPayload(value)
-  if (!obj) return false
-  const keys = [
-    'elements',
-    'segments',
-    'creative_brief',
-    'creativeBrief',
-    'Creative_Brief',
-    'Key_Elements',
-    'key_elements',
-    'Storyboard_With_Prompts',
-    'storyboard_with_prompts',
-    'Storyboard',
-    'storyboard',
-    'Character_Designs',
-    'character_designs',
-    'characterDesigns',
-  ]
-  return keys.some((k) => k in obj)
-}
-
-function createAgentChatSessionId() {
-  return `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-}
-
-function buildInitialAgentMessages(): ChatMessage[] {
-  return [
-    {
-      id: '1',
-      role: 'assistant',
-      content: `你好！我是 YuanYuan AI 视频制作助手 ✨
-
-我可以帮你将创意转化为完整的视频作品。只需要告诉我你想制作什么，我会：
-
-**第一步** 📋 分析需求，制定创意简报
-**第二步** 🎬 设计分镜，规划镜头序列  
-**第三步** 🎨 生成角色和场景素材
-**第四步** 🎥 将静态画面转化为动态视频
-**第五步** 🎵 添加旁白和背景音乐
-
-请描述你想制作的视频，例如：
-「制作格林童话《白蛇》的短片，时长1分钟，画风吉卜力2D」`,
-      options: [
-        { id: 'example1', label: '童话故事短片', value: '制作一个1分钟的童话短片，讲述白蛇的故事，画风吉卜力2D' },
-        { id: 'example2', label: '产品宣传视频', value: '制作一个30秒的产品宣传视频，现代简约风格' },
-        { id: 'example3', label: '教育动画', value: '制作一个2分钟的科普教育动画，解释光合作用' },
-      ],
-    },
-  ]
-}
+import {
+  resolveMediaUrl,
+  canonicalizeMediaUrl,
+  looksLikeAgentPatch,
+  createAgentChatSessionId,
+  buildInitialAgentMessages,
+} from '../features/agent/mediaUtils'
 
 export default function AgentPage() {
   const navigate = useNavigate()
@@ -3648,341 +3531,44 @@ ${result.success
 
       {/* 导入元素 Modal（连续创作） */}
       {importElementsOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={closeImportElementsModal}>
-          <div className="w-[92vw] max-w-3xl max-h-[80vh] glass-card rounded-2xl border border-white/10 overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <div className="p-4 border-b border-white/10 flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium">导入上一集/历史项目元素</p>
-                <p className="text-xs text-gray-500 mt-1">把人物/场景/道具直接导入本集，减少续集缺失与重复配置</p>
-              </div>
-              <button className="p-2 glass rounded-lg hover:bg-white/10" onClick={closeImportElementsModal} title="关闭">
-                <X size={16} />
-              </button>
-            </div>
-
-            <div className="p-4 space-y-3 overflow-y-auto" style={{ maxHeight: 'calc(80vh - 132px)' }}>
-              <div className="space-y-2">
-                <p className="text-xs text-gray-400">选择来源项目</p>
-                <select
-                  className="w-full glass-dark rounded-lg px-3 py-2 text-sm border border-white/10"
-                  value={importSourceProjectId || ''}
-                  onChange={(e) => setImportSourceProjectId(e.target.value || null)}
-                >
-                  <option value="" disabled>请选择一个历史项目…</option>
-                  {agentProjects
-                    .filter((p) => p.id !== projectId)
-                    .map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name} ({p.id})
-                      </option>
-                    ))}
-                </select>
-              </div>
-
-              {importSourceProject && (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs text-gray-400">选择要导入的元素</p>
-                    <div className="flex gap-2">
-                      <button
-                        className="text-xs glass-button px-2 py-1 rounded-lg"
-                        onClick={() => {
-                          const els = Object.values(importSourceProject.elements || {})
-                          const query = importElementQuery.trim().toLowerCase()
-                          const filtered = els.filter((el) => {
-                            if (importElementTypeFilter !== 'all' && el.type !== importElementTypeFilter) return false
-                            const hasConflict = Boolean(elements[el.id])
-                            if (importElementShowOnlyMissing && hasConflict) return false
-                            if (importElementShowOnlyConflicts && !hasConflict) return false
-                            if (query) {
-                              const hay = `${el.id} ${el.name} ${el.type}`.toLowerCase()
-                              if (!hay.includes(query)) return false
-                            }
-                            return true
-                          })
-                          setImportSelectedElementIds(new Set(filtered.map((el) => el.id)))
-                        }}
-                      >
-                        全选（筛选结果）
-                      </button>
-                      <button
-                        className="text-xs glass-button px-2 py-1 rounded-lg"
-                        onClick={() => {
-                          setImportElementTypeFilter('character')
-                          setImportElementShowOnlyMissing(false)
-                          setImportElementShowOnlyConflicts(false)
-                          const els = Object.values(importSourceProject.elements || {}).filter((el) => el.type === 'character')
-                          setImportSelectedElementIds(new Set(els.map((el) => el.id)))
-                        }}
-                        title="只导入人物（character）"
-                      >
-                        只导入人物
-                      </button>
-                      <button
-                        className="text-xs glass-button px-2 py-1 rounded-lg"
-                        onClick={() => setImportSelectedElementIds(new Set())}
-                      >
-                        全不选
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    <input
-                      value={importElementQuery}
-                      onChange={(e) => setImportElementQuery(e.target.value)}
-                      placeholder="搜索：元素名 / ID / type…"
-                      className="sm:col-span-2 glass-dark rounded-lg px-3 py-2 text-sm border border-white/10"
-                    />
-                    <select
-                      className="glass-dark rounded-lg px-3 py-2 text-sm border border-white/10"
-                      value={importElementTypeFilter}
-                      onChange={(e) => setImportElementTypeFilter(e.target.value as typeof importElementTypeFilter)}
-                    >
-                      <option value="all">全部类型</option>
-                      <option value="character">人物 character</option>
-                      <option value="scene">场景 scene</option>
-                      <option value="object">道具 object</option>
-                    </select>
-                  </div>
-
-                  <div className="flex items-center gap-3 text-xs text-gray-400">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={importElementShowOnlyMissing}
-                        onChange={(e) => {
-                          setImportElementShowOnlyMissing(e.target.checked)
-                          if (e.target.checked) setImportElementShowOnlyConflicts(false)
-                        }}
-                      />
-                      仅看未存在
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={importElementShowOnlyConflicts}
-                        onChange={(e) => {
-                          setImportElementShowOnlyConflicts(e.target.checked)
-                          if (e.target.checked) setImportElementShowOnlyMissing(false)
-                        }}
-                      />
-                      仅看冲突（同 ID）
-                    </label>
-                  </div>
-
-                  <div className="glass-dark rounded-xl border border-white/10 overflow-hidden">
-                    <div className="max-h-[42vh] overflow-y-auto divide-y divide-white/5">
-                      {Object.values(importSourceProject.elements || {})
-                        .filter((el) => {
-                          if (importElementTypeFilter !== 'all' && el.type !== importElementTypeFilter) return false
-                          const hasConflict = Boolean(elements[el.id])
-                          if (importElementShowOnlyMissing && hasConflict) return false
-                          if (importElementShowOnlyConflicts && !hasConflict) return false
-                          const query = importElementQuery.trim().toLowerCase()
-                          if (query) {
-                            const hay = `${el.id} ${el.name} ${el.type}`.toLowerCase()
-                            if (!hay.includes(query)) return false
-                          }
-                          return true
-                        })
-                        .map((el) => {
-                        const checked = importSelectedElementIds.has(el.id)
-                        const hasConflict = Boolean(elements[el.id])
-                        return (
-                          <label key={el.id} className="flex items-center gap-3 px-3 py-2 hover:bg-white/5 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => {
-                                setImportSelectedElementIds((prev) => {
-                                  const next = new Set(prev)
-                                  if (next.has(el.id)) next.delete(el.id)
-                                  else next.add(el.id)
-                                  return next
-                                })
-                              }}
-                            />
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2">
-                                <span className="text-sm truncate">{el.name}</span>
-                                <span className="text-[10px] text-gray-500 glass px-1.5 py-0.5 rounded">{el.type}</span>
-                                {hasConflict && (
-                                  <span className="text-[10px] text-yellow-300 glass px-1.5 py-0.5 rounded" title="当前项目已有同 ID 元素，将执行合并（不覆盖已有内容）">
-                                    冲突→合并
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-[10px] text-gray-500 truncate mt-0.5">{el.id}</p>
-                            </div>
-                          </label>
-                        )
-                      })}
-                    </div>
-                  </div>
-
-                  <p className="text-[10px] text-gray-500">
-                    合并策略：同 ID 元素默认不覆盖，仅补充缺失的参考图/历史/当前图（用于保证连续创作最稳妥）。
-                  </p>
-                </div>
-              )}
-            </div>
-
-            <div className="p-4 border-t border-white/10 flex items-center justify-end gap-2">
-              <button
-                className="px-3 py-2 glass-button rounded-xl text-sm flex items-center gap-2 disabled:opacity-50"
-                onClick={handleDeleteSelectedElements}
-                disabled={importingElements || Array.from(importSelectedElementIds).filter((id) => elements[id]).length === 0}
-                title="从当前项目删除选中的元素（不影响来源项目）"
-              >
-                <Trash2 size={14} />
-                删除选中（当前项目）
-              </button>
-              <button className="px-3 py-2 glass-button rounded-xl text-sm" onClick={closeImportElementsModal} disabled={importingElements}>
-                取消
-              </button>
-              <button
-                className="px-3 py-2 glass-button rounded-xl text-sm flex items-center gap-2 disabled:opacity-50"
-                onClick={handleImportSelectedElements}
-                disabled={!importSourceProjectId || !importSourceProject || importSelectedElementIds.size === 0 || importingElements}
-              >
-                {importingElements ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-                导入选中（{importSelectedElementIds.size}）
-              </button>
-            </div>
-          </div>
-        </div>
+        <ImportElementsModal
+          agentProjects={agentProjects}
+          projectId={projectId}
+          elements={elements}
+          importSourceProjectId={importSourceProjectId}
+          importSourceProject={importSourceProject}
+          importSelectedElementIds={importSelectedElementIds}
+          importElementQuery={importElementQuery}
+          importElementTypeFilter={importElementTypeFilter}
+          importElementShowOnlyMissing={importElementShowOnlyMissing}
+          importElementShowOnlyConflicts={importElementShowOnlyConflicts}
+          importingElements={importingElements}
+          onSetImportSourceProjectId={setImportSourceProjectId}
+          onSetImportSelectedElementIds={setImportSelectedElementIds}
+          onSetImportElementQuery={setImportElementQuery}
+          onSetImportElementTypeFilter={setImportElementTypeFilter}
+          onSetImportElementShowOnlyMissing={setImportElementShowOnlyMissing}
+          onSetImportElementShowOnlyConflicts={setImportElementShowOnlyConflicts}
+          onClose={closeImportElementsModal}
+          onImport={handleImportSelectedElements}
+          onDeleteSelected={handleDeleteSelectedElements}
+        />
       )}
 
       {/* 导入镜头参考图 Modal（连续创作） */}
       {importShotRefsOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={closeImportShotRefsModal}>
-          <div className="w-[92vw] max-w-4xl max-h-[80vh] glass-card rounded-2xl border border-white/10 overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <div className="p-4 border-b border-white/10 flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium">导入镜头参考图</p>
-                <p className="text-xs text-gray-500 mt-1">把上一集的镜头参考图/起始帧导入到当前镜头（用于续集场景连续）</p>
-              </div>
-              <button className="p-2 glass rounded-lg hover:bg-white/10" onClick={closeImportShotRefsModal} title="关闭">
-                <X size={16} />
-              </button>
-            </div>
-
-            <div className="p-4 space-y-3 overflow-y-auto" style={{ maxHeight: 'calc(80vh - 132px)' }}>
-              <div className="space-y-2">
-                <p className="text-xs text-gray-400">选择来源项目</p>
-                <select
-                  className="w-full glass-dark rounded-lg px-3 py-2 text-sm border border-white/10"
-                  value={importShotRefsSourceProjectId || ''}
-                  onChange={(e) => setImportShotRefsSourceProjectId(e.target.value || null)}
-                >
-                  <option value="" disabled>请选择一个历史项目…</option>
-                  {agentProjects
-                    .filter((p) => p.id !== projectId)
-                    .map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name} ({p.id})
-                      </option>
-                    ))}
-                </select>
-              </div>
-
-              {importShotRefsSourceProject && (
-                <div className="space-y-2">
-                  <p className="text-xs text-gray-400">选择要导入的图片（点击选中/取消）</p>
-                  <div className="glass-dark rounded-xl border border-white/10 overflow-hidden">
-                    <div className="max-h-[48vh] overflow-y-auto divide-y divide-white/5">
-                      {(importShotRefsSourceProject.segments || []).flatMap((seg) => seg.shots || []).map((shot) => {
-                        const raw = [
-                          ...(Array.isArray(shot.reference_images) ? shot.reference_images : []),
-                          shot.cached_start_image_url,
-                          shot.start_image_url,
-                          ...(Array.isArray(shot.start_image_history) ? shot.start_image_history.map((h) => h.url) : [])
-                        ].filter(Boolean) as string[]
-                        const urls = Array.from(new Set(raw))
-                        if (urls.length === 0) return null
-                        return (
-                          <div key={shot.id} className="p-3 space-y-2">
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="min-w-0">
-                                <p className="text-sm truncate">{shot.name}</p>
-                                <p className="text-[10px] text-gray-500 truncate">{shot.id}</p>
-                              </div>
-                              <button
-                                className="text-xs glass-button px-2 py-1 rounded-lg"
-                                onClick={() => {
-                                  setImportShotRefsSelectedUrls((prev) => {
-                                    const next = new Set(prev)
-                                    for (const u of urls) next.add(u)
-                                    return next
-                                  })
-                                }}
-                              >
-                                全选本镜头
-                              </button>
-                            </div>
-                            <div className="flex gap-2 overflow-x-auto pb-1">
-                              {urls.map((u) => {
-                                const selected = importShotRefsSelectedUrls.has(u)
-                                return (
-                                  <button
-                                    key={u}
-                                    type="button"
-                                    onClick={() => {
-                                      setImportShotRefsSelectedUrls((prev) => {
-                                        const next = new Set(prev)
-                                        if (next.has(u)) next.delete(u)
-                                        else next.add(u)
-                                        return next
-                                      })
-                                    }}
-                                    className={`relative flex-shrink-0 w-20 h-14 rounded-lg overflow-hidden border ${selected ? 'border-primary ring-2 ring-primary/50' : 'border-white/10 hover:border-white/30'} transition-apple`}
-                                    title={selected ? '已选中' : '点击选中'}
-                                  >
-                                    {(() => {
-                                      const resolved = resolveMediaUrl(u)
-                                      return resolved ? (
-                                        <img src={resolved} alt="ref" className="w-full h-full object-cover" />
-                                      ) : (
-                                        <div className="w-full h-full bg-black/30 flex items-center justify-center text-[10px] text-gray-400">
-                                          过期
-                                        </div>
-                                      )
-                                    })()}
-                                    {selected && (
-                                      <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-primary/80 flex items-center justify-center">
-                                        <CheckCircle size={12} className="text-white" />
-                                      </div>
-                                    )}
-                                  </button>
-                                )
-                              })}
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-                  <p className="text-[10px] text-gray-500">提示：建议优先选用 `/api/uploads/...` 的图片作为参考图，稳定不易过期。</p>
-                </div>
-              )}
-            </div>
-
-            <div className="p-4 border-t border-white/10 flex items-center justify-end gap-2">
-              <button className="px-3 py-2 glass-button rounded-xl text-sm" onClick={closeImportShotRefsModal} disabled={importingShotRefs}>
-                取消
-              </button>
-              <button
-                className="px-3 py-2 glass-button rounded-xl text-sm flex items-center gap-2 disabled:opacity-50"
-                onClick={handleImportShotRefs}
-                disabled={!importShotRefsSourceProjectId || !importShotRefsSourceProject || importShotRefsSelectedUrls.size === 0 || importingShotRefs}
-              >
-                {importingShotRefs ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-                导入到当前镜头（{importShotRefsSelectedUrls.size}）
-              </button>
-            </div>
-          </div>
-        </div>
+        <ImportShotRefsModal
+          agentProjects={agentProjects}
+          projectId={projectId}
+          importShotRefsSourceProjectId={importShotRefsSourceProjectId}
+          importShotRefsSourceProject={importShotRefsSourceProject}
+          importShotRefsSelectedUrls={importShotRefsSelectedUrls}
+          importingShotRefs={importingShotRefs}
+          onSetImportShotRefsSourceProjectId={setImportShotRefsSourceProjectId}
+          onSetImportShotRefsSelectedUrls={setImportShotRefsSelectedUrls}
+          onClose={closeImportShotRefsModal}
+          onImport={handleImportShotRefs}
+        />
       )}
 
       {/* 导出灵动岛 Toast */}

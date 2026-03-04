@@ -222,6 +222,7 @@ AGENT_ROLES: Dict[str, AgentRole] = {
         calls_per_episode="1-3",
         description="按场景和元素密度进行文本智能切片",
         system_prompt="请等待提示词模板加载。",
+        prompt_template=PromptTemplate(category="agents", name="clip"),
     ),
     "screenplay_converter": AgentRole(
         role_id="screenplay_converter",
@@ -232,6 +233,7 @@ AGENT_ROLES: Dict[str, AgentRole] = {
         calls_per_episode="1-3",
         description="将叙事文本转换为标准影视剧本格式",
         system_prompt="请等待提示词模板加载。",
+        prompt_template=PromptTemplate(category="functions", name="screenplay_conversion"),
     ),
     "cinematographer": AgentRole(
         role_id="cinematographer",
@@ -242,6 +244,7 @@ AGENT_ROLES: Dict[str, AgentRole] = {
         calls_per_episode="5-15",
         description="设计灯光、景深、色调等摄影参数",
         system_prompt="请等待提示词模板加载。",
+        prompt_template=PromptTemplate(category="agents", name="cinematographer"),
     ),
     "acting_director": AgentRole(
         role_id="acting_director",
@@ -272,6 +275,7 @@ AGENT_ROLES: Dict[str, AgentRole] = {
         calls_per_episode="1-3",
         description="从文本中提取场景资产并生成空间化描述",
         system_prompt="请等待提示词模板加载。",
+        prompt_template=PromptTemplate(category="functions", name="select_location"),
     ),
     "voice_analyst": AgentRole(
         role_id="voice_analyst",
