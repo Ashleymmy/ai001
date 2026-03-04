@@ -266,6 +266,7 @@ AGENT_ROLES: Dict[str, AgentRole] = {
         calls_per_episode="5-15",
         description="分析并生成5-8种创意镜头方案",
         system_prompt="请等待提示词模板加载。",
+        prompt_template=PromptTemplate(category="agents", name="shot_variant_analysis"),
     ),
     "location_extractor": AgentRole(
         role_id="location_extractor",

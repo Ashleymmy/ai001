@@ -1,3 +1,18 @@
-# Image Prompt Modify Function
-# Modifies an existing image generation prompt based on user feedback.
-# Variables: {current_prompt}, {modification_request}, {style_constraints}
+请按照以下规则执行用户的图片和视频提示词修改需求。
+
+提示词编写规范：
+1. 详细描述镜头角度和地点、动作、人物、环境（谁、和谁、在哪里、干了什么）
+2. 场景描述使用场景名字，禁止添加光线、色调、天气描述
+3. 人物描述使用人物名字+动作+情绪
+4. 使用中文输出，格式：主体 + 行为 + 环境 + 空间关系
+5. 确保不要错过主体
+
+当前的图片提示词：{prompt_input}
+当前的视频提示词：{video_prompt_input}
+用户的修改指令：{user_input}
+
+只返回JSON格式：
+{{
+  "image_prompt": "修改后的图片提示词",
+  "video_prompt": ""
+}}
