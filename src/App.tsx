@@ -13,7 +13,9 @@ import StoryboardPage from './pages/StoryboardPage'
 import VideoPage from './pages/VideoPage'
 import SettingsPage from './pages/SettingsPage'
 import AgentPage from './pages/AgentPage'
+import AgentPageV2 from './pages/AgentPageV2'
 import StudioPage from './pages/StudioPage'
+import StudioPageV2 from './pages/StudioPageV2'
 import ShortVideoWorkbenchPage from './pages/ShortVideoWorkbenchPage'
 import DigitalHumanWorkbenchPage from './pages/DigitalHumanWorkbenchPage'
 import WorkspaceOkrPage from './pages/WorkspaceOkrPage'
@@ -65,48 +67,63 @@ function KeepAliveOutlet() {
   }, [location.pathname])
 
   const currentPath = location.pathname
+  const normalizedPath = currentPath === '/' ? '/' : currentPath.replace(/\/+$/, '')
+  const isHomeRoute = normalizedPath === '/home'
+  const isScriptRoute = normalizedPath === '/home/script'
+  const isImageRoute = normalizedPath === '/home/image'
+  const isStoryboardRoute = normalizedPath === '/home/storyboard' || normalizedPath.startsWith('/home/storyboard/')
+  const isVideoRoute = normalizedPath === '/home/video'
+  const isSettingsRoute = normalizedPath === '/home/settings'
+  const isApiMonitorRoute = normalizedPath === '/home/api-monitor'
+  const isProjectRoute = normalizedPath.startsWith('/home/project/')
+  const isKnownRoute = isHomeRoute || isScriptRoute || isImageRoute || isStoryboardRoute || isVideoRoute || isSettingsRoute || isApiMonitorRoute || isProjectRoute
 
   // 渲染所有访问过的需要缓存的页面
   return (
     <>
       {/* 首页 - 不缓存 */}
-      <div style={{ display: currentPath === '/home' ? 'block' : 'none', height: '100%' }}>
-        {currentPath === '/home' && <HomePage />}
+      <div style={{ display: isHomeRoute ? 'block' : 'none', height: '100%' }}>
+        {isHomeRoute && <HomePage />}
       </div>
 
       {/* 剧本页 - 缓存 */}
-      <div style={{ display: currentPath === '/home/script' ? 'block' : 'none', height: '100%' }}>
-        {(visitedRoutes.has('/home/script') || currentPath === '/home/script') && <ScriptPage />}
+      <div style={{ display: isScriptRoute ? 'block' : 'none', height: '100%' }}>
+        {(visitedRoutes.has('/home/script') || isScriptRoute) && <ScriptPage />}
       </div>
 
       {/* 图像页 - 缓存 */}
-      <div style={{ display: currentPath === '/home/image' ? 'block' : 'none', height: '100%' }}>
-        {(visitedRoutes.has('/home/image') || currentPath === '/home/image') && <ImagePage />}
+      <div style={{ display: isImageRoute ? 'block' : 'none', height: '100%' }}>
+        {(visitedRoutes.has('/home/image') || isImageRoute) && <ImagePage />}
       </div>
 
       {/* 分镜页 - 缓存 */}
-      <div style={{ display: currentPath.startsWith('/home/storyboard') ? 'block' : 'none', height: '100%' }}>
-        {(visitedRoutes.has('/home/storyboard') || currentPath.startsWith('/home/storyboard')) && <StoryboardPage />}
+      <div style={{ display: isStoryboardRoute ? 'block' : 'none', height: '100%' }}>
+        {(visitedRoutes.has('/home/storyboard') || isStoryboardRoute) && <StoryboardPage />}
       </div>
 
       {/* 视频页 - 缓存 */}
-      <div style={{ display: currentPath === '/home/video' ? 'block' : 'none', height: '100%' }}>
-        {(visitedRoutes.has('/home/video') || currentPath === '/home/video') && <VideoPage />}
+      <div style={{ display: isVideoRoute ? 'block' : 'none', height: '100%' }}>
+        {(visitedRoutes.has('/home/video') || isVideoRoute) && <VideoPage />}
       </div>
 
       {/* 设置页 - 不缓存 */}
-      <div style={{ display: currentPath === '/home/settings' ? 'block' : 'none', height: '100%' }}>
-        {currentPath === '/home/settings' && <SettingsPage />}
+      <div style={{ display: isSettingsRoute ? 'block' : 'none', height: '100%' }}>
+        {isSettingsRoute && <SettingsPage />}
       </div>
 
       {/* API 监控页 - 不缓存 */}
-      <div style={{ display: currentPath === '/home/api-monitor' ? 'block' : 'none', height: '100%' }}>
-        {currentPath === '/home/api-monitor' && <ApiMonitorPage />}
+      <div style={{ display: isApiMonitorRoute ? 'block' : 'none', height: '100%' }}>
+        {isApiMonitorRoute && <ApiMonitorPage />}
       </div>
 
       {/* 项目页 - 不缓存 */}
-      <div style={{ display: currentPath.startsWith('/home/project/') ? 'block' : 'none', height: '100%' }}>
-        {currentPath.startsWith('/home/project/') && <ProjectPage />}
+      <div style={{ display: isProjectRoute ? 'block' : 'none', height: '100%' }}>
+        {isProjectRoute && <ProjectPage />}
+      </div>
+
+      {/* 兜底：避免未知 /home 子路径出现空黑屏 */}
+      <div style={{ display: !isKnownRoute ? 'block' : 'none', height: '100%' }}>
+        {!isKnownRoute && <HomePage />}
       </div>
     </>
   )
@@ -142,6 +159,8 @@ function App() {
         {/* Agent 模式 - 独立布局，需要首次访问检测 */}
         <Route path="agent" element={<RequireVisited><AgentPage /></RequireVisited>} />
         <Route path="agent/:projectId" element={<RequireVisited><AgentPage /></RequireVisited>} />
+        <Route path="agent-v2" element={<RequireVisited><AgentPageV2 /></RequireVisited>} />
+        <Route path="agent-v2/:projectId" element={<RequireVisited><AgentPageV2 /></RequireVisited>} />
         <Route path="auth" element={<RequireVisited><AuthPage /></RequireVisited>} />
         <Route path="workspace/okr" element={<RequireVisited><WorkspaceOkrPage /></RequireVisited>} />
         <Route path="workspace/dashboard" element={<RequireVisited><WorkspaceDashboardPage /></RequireVisited>} />
@@ -149,6 +168,9 @@ function App() {
         <Route path="studio" element={<RequireVisited><StudioPage /></RequireVisited>} />
         <Route path="studio/:seriesId" element={<RequireVisited><StudioPage /></RequireVisited>} />
         <Route path="studio/:seriesId/:episodeId" element={<RequireVisited><StudioPage /></RequireVisited>} />
+        <Route path="studio-v2" element={<RequireVisited><StudioPageV2 /></RequireVisited>} />
+        <Route path="studio-v2/:seriesId" element={<RequireVisited><StudioPageV2 /></RequireVisited>} />
+        <Route path="studio-v2/:seriesId/:episodeId" element={<RequireVisited><StudioPageV2 /></RequireVisited>} />
         <Route path="short-video" element={<RequireVisited><ShortVideoWorkbenchPage /></RequireVisited>} />
         <Route path="short-video/:seriesId" element={<RequireVisited><ShortVideoWorkbenchPage /></RequireVisited>} />
         <Route path="short-video/:seriesId/:episodeId" element={<RequireVisited><ShortVideoWorkbenchPage /></RequireVisited>} />

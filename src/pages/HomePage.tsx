@@ -8,6 +8,7 @@ import { Clock, ArrowRight, Plus, Trash2, FolderOpen, Sparkles, X, Film, Zap, Us
 import { useProjectStore } from '../store/projectStore'
 import { listAgentProjects, deleteAgentProject, type AgentProject } from '../services/api'
 import { MODULE_CARDS } from '../shared/moduleCards'
+import { UI_MIGRATION } from '../config/uiMigration'
 
 // 统一的项目类型
 interface UnifiedProject {
@@ -196,6 +197,41 @@ export default function HomePage() {
             </div>
           </button>
         </div>
+
+        {UI_MIGRATION.betaEnabled && (
+          <div className="mb-12 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <button
+              onClick={() => navigate('/agent-v2')}
+              className="glass-card p-5 text-left group hover-lift animate-fadeInUp delay-400 border border-cyan-500/30"
+            >
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/25">
+                  <Sparkles size={24} className="text-white drop-shadow-md" strokeWidth={2} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="font-semibold mb-0.5">Agent v2 Beta</h3>
+                  <p className="text-gray-400 text-xs">胶囊导航 + 阶段流式执行卡片</p>
+                </div>
+                <ArrowRight size={20} className="text-gray-500 group-hover:text-white group-hover:translate-x-1 transition-apple shrink-0" />
+              </div>
+            </button>
+            <button
+              onClick={() => navigate('/studio-v2')}
+              className="glass-card p-5 text-left group hover-lift animate-fadeInUp delay-500 border border-cyan-500/30"
+            >
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/25">
+                  <Film size={24} className="text-white drop-shadow-md" strokeWidth={2} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="font-semibold mb-0.5">Studio v2 Beta</h3>
+                  <p className="text-gray-400 text-xs">阶段化工作台 + 批量执行可视化</p>
+                </div>
+                <ArrowRight size={20} className="text-gray-500 group-hover:text-white group-hover:translate-x-1 transition-apple shrink-0" />
+              </div>
+            </button>
+          </div>
+        )}
 
         {/* 短视频 & 数字人工作台 */}
         <div className="mb-12 grid grid-cols-1 md:grid-cols-2 gap-4">

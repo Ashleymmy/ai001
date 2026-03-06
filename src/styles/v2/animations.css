@@ -1,0 +1,29 @@
+@keyframes v2-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes v2-fade-down {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.ui-v2 .v2-animate-fade-up {
+  animation: v2-fade-up 0.28s ease-out;
+}
+
+.ui-v2 .v2-animate-fade-down {
+  animation: v2-fade-down 0.28s ease-out;
+}

@@ -2,8 +2,8 @@
  * 功能模块：Agent 工作台页面模块，负责镜头编排、素材管理与生成流程编排
  */
 
-import { useState, useRef, useEffect, useCallback } from 'react'
-import { useNavigate, useLocation } from 'react-router-dom'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { useNavigate, useLocation, useSearchParams } from 'react-router-dom'
 import { saveAs } from 'file-saver'
 import { 
   Sparkles, Layers, Film, Clock, ChevronRight,
@@ -13,7 +13,7 @@ import {
   FileText, Music, Mic, Settings2, Eye, Download, Package
 } from 'lucide-react'
 import {
-  agentChat, agentPlanProject, agentGenerateElementPrompt,
+  agentChatStream, agentPlanProject, agentGenerateElementPrompt,
   createAgentProject, getAgentProject, updateAgentProject, listAgentProjects,
   applyAgentOperator,
   scriptDoctorAgentProject, completeAssetsAgentProject, audioCheckAgentProject,
@@ -67,10 +67,21 @@ import {
   createAgentChatSessionId,
   buildInitialAgentMessages,
 } from '../features/agent/mediaUtils'
+import CapsuleNav from '../components/ui-v2/CapsuleNav'
+import LLMStageStreamCard, { type LLMStageItem } from '../components/ui-v2/LLMStageStreamCard'
+import {
+  fromAgentElementStream,
+  fromAgentFrameStream,
+  fromAgentVideoStream,
+  type UnifiedStreamEvent,
+} from '../features/stream/streamEventBridge'
 
 export default function AgentPage() {
   const navigate = useNavigate()
   const location = useLocation()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const isV2Route = location.pathname.startsWith('/agent-v2')
+  const agentBaseRoute = isV2Route ? '/agent-v2' : '/agent'
   
   const urlProjectId = location.pathname.match(/\/agent\/([^/]+)/)?.[1] || null
   const initialAgentProjectId = urlProjectId && urlProjectId.startsWith('agent_') ? urlProjectId : null
@@ -134,6 +145,7 @@ export default function AgentPage() {
     stage?: string
     phase?: string
   } | null>(null)
+  const [v2StreamEvents, setV2StreamEvents] = useState<UnifiedStreamEvent[]>([])
 
   useEffect(() => {
     localStorage.setItem('agent_audio_gen_include_narration', audioGenIncludeNarration ? '1' : '0')
@@ -148,6 +160,24 @@ export default function AgentPage() {
       setAudioGenIncludeDialogue(false)
     }
   }, [audioGenIncludeDialogue, audioWorkflowResolved])
+
+  useEffect(() => {
+    if (!isV2Route) return
+    const stage = (searchParams.get('stage') || '').trim().toLowerCase()
+    if (stage === 'elements' || stage === 'storyboard' || stage === 'audio' || stage === 'timeline') {
+      setActiveModule(stage as ModuleType)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isV2Route, searchParams])
+
+  useEffect(() => {
+    if (!isV2Route) return
+    const current = (searchParams.get('stage') || '').trim().toLowerCase()
+    if (current === activeModule) return
+    const next = new URLSearchParams(searchParams)
+    next.set('stage', activeModule)
+    setSearchParams(next, { replace: true })
+  }, [activeModule, isV2Route, searchParams, setSearchParams])
 
   // 任务卡片展开状态
   const [expandedCards, setExpandedCards] = useState<Set<TaskCardType>>(new Set(['brief']))
@@ -498,7 +528,7 @@ export default function AgentPage() {
         if (urlProjectId.startsWith('agent_')) {
           console.log('[Agent] Agent project not found:', urlProjectId)
           resetAgentWorkspace({ showProjectList: true })
-          navigate('/agent', { replace: true })
+          navigate(agentBaseRoute, { replace: true })
           addMessage('assistant', '⚠️ 该 Agent 项目不存在或已被删除，已返回项目列表。')
           return null
         }
@@ -508,7 +538,7 @@ export default function AgentPage() {
         // 清除 projectId，让用户开始新项目
         setProjectId(null)
         // 更新 URL，移除无效的项目 ID
-        navigate('/agent', { replace: true })
+        navigate(agentBaseRoute, { replace: true })
         // 显示提示
         addMessage('assistant', `👋 欢迎使用 YuanYuan Agent！
 
@@ -558,6 +588,71 @@ export default function AgentPage() {
       })
     }
   }, [projectId, sessionId])
+
+  const runAgentChatReply = useCallback(async (
+    aiMessageContent: string,
+    chatHistory: Array<{ role: 'user' | 'assistant'; content: string }>,
+  ) => {
+    const assistantMessageId = `assistant_${Date.now()}`
+    setMessages(prev => [...prev, {
+      id: assistantMessageId,
+      role: 'assistant',
+      content: '',
+    }])
+
+    let streamedContent = ''
+    const result = await agentChatStream(
+      aiMessageContent,
+      projectId || undefined,
+      {
+        elements,
+        segments,
+        chat_history: chatHistory,
+      },
+      {
+        signal: abortControllerRef.current?.signal || undefined,
+        onDelta: (partial) => {
+          streamedContent = partial
+          setMessages(prev => prev.map(msg => (
+            msg.id === assistantMessageId ? { ...msg, content: partial } : msg
+          )))
+        },
+      },
+    )
+
+    const finalContent = (result.content || streamedContent || '').trim() || '（无回复）'
+    const isPatch = looksLikeAgentPatch(result.data)
+    const autoApplyPatch = isPatch && !result.confirmButton
+    const confirmButton = autoApplyPatch
+      ? undefined
+      : result.confirmButton ||
+        (isPatch
+          ? { label: '应用到故事板', action: 'apply_agent_patch', payload: result.data }
+          : undefined)
+
+    setMessages(prev => prev.map(msg => (
+      msg.id === assistantMessageId
+        ? {
+            ...msg,
+            content: finalContent,
+            data: result.data,
+            options: result.options,
+            confirmButton,
+            progress: result.progress,
+          }
+        : msg
+    )))
+
+    if (!projectId && sessionId) {
+      saveChatMessage(sessionId, 'agent', 'assistant', finalContent).catch(err => {
+        console.log('[AgentPage] 保存 session 消息失败:', err)
+      })
+    }
+
+    if (autoApplyPatch) {
+      await handleConfirmClick('apply_agent_patch', result.data)
+    }
+  }, [elements, handleConfirmClick, projectId, segments, sessionId])
 
   // 保存项目
   const handleSaveProject = useCallback(async (showAlert = true) => {
@@ -609,7 +704,7 @@ export default function AgentPage() {
         const newProject = await createAgentProject(projectName, creativeBrief)
         console.log('[AgentPage] 新项目已创建:', newProject)
         setProjectId(newProject.id)
-        navigate(`/agent/${newProject.id}`, { replace: true })
+        navigate(`${agentBaseRoute}/${newProject.id}`, { replace: true })
         // 创建后立即更新完整数据
         if (Object.keys(elements).length > 0 || segments.length > 0) {
           await updateAgentProject(newProject.id, projectData)
@@ -626,7 +721,7 @@ export default function AgentPage() {
         addMessage('assistant', `❌ 保存失败：${error instanceof Error ? error.message : '未知错误'}`)
       }
     }
-  }, [projectId, projectName, creativeBrief, elements, segments, visualAssets, messages, navigate, addMessage])
+  }, [projectId, projectName, creativeBrief, elements, segments, visualAssets, messages, navigate, addMessage, agentBaseRoute])
 
   const getBackTarget = () => {
     // 如果 URL 中的项目 ID 是 Agent 项目（以 agent_ 开头），返回首页
@@ -1519,6 +1614,11 @@ export default function AgentPage() {
     setInputMessage('')
     setUploadedFiles([]) // 清空上传的文件
     setSending(true)
+
+    const chatHistoryForAgent: Array<{ role: 'user' | 'assistant'; content: string }> = [
+      ...messages.slice(-19).map((m) => ({ role: m.role, content: m.content })),
+      { role: 'user', content: aiMessageContent },
+    ]
     
     // 创建新的 AbortController
     abortControllerRef.current = new AbortController()
@@ -1661,7 +1761,7 @@ export default function AgentPage() {
               elements: newElements,
               segments: newSegments
             })
-            navigate(`/agent/${newProject.id}`, { replace: true })
+            navigate(`${agentBaseRoute}/${newProject.id}`, { replace: true })
             console.log('[Agent] 项目已自动保存:', newProject.id)
           } catch (saveError) {
             console.error('[Agent] 自动保存失败:', saveError)
@@ -1712,50 +1812,16 @@ ${plan.elements.map(e => `- ${e.name} (${e.type})`).join('\n')}
           ])
         } else {
           setGenerationStage('idle')
-          const result = await agentChat(aiMessageContent, projectId || undefined, {
-            elements,
-            segments,
-            chat_history: messages.slice(-20).map((m) => ({ role: m.role, content: m.content }))
-          })
-          const isPatch = looksLikeAgentPatch(result.data)
-          const autoApplyPatch = isPatch && !result.confirmButton
-          const confirmButton = autoApplyPatch
-            ? undefined
-            : result.confirmButton ||
-              (isPatch
-                ? { label: '应用到故事板', action: 'apply_agent_patch', payload: result.data }
-                : undefined)
-          addMessage('assistant', result.content, result.data, result.options, confirmButton, result.progress)
-
-          if (autoApplyPatch) {
-            await handleConfirmClick('apply_agent_patch', result.data)
-          }
+          await runAgentChatReply(aiMessageContent, chatHistoryForAgent)
         }
       } else {
-        const result = await agentChat(aiMessageContent, projectId || undefined, {
-          elements,
-          segments,
-          chat_history: messages.slice(-20).map((m) => ({ role: m.role, content: m.content }))
-        })
-        const isPatch = looksLikeAgentPatch(result.data)
-        const autoApplyPatch = isPatch && !result.confirmButton
-        const confirmButton = autoApplyPatch
-          ? undefined
-          : result.confirmButton ||
-            (isPatch
-              ? { label: '应用到故事板', action: 'apply_agent_patch', payload: result.data }
-              : undefined)
-        addMessage('assistant', result.content, result.data, result.options, confirmButton, result.progress)
-
-        if (autoApplyPatch) {
-          await handleConfirmClick('apply_agent_patch', result.data)
-        }
+        await runAgentChatReply(aiMessageContent, chatHistoryForAgent)
       }
     } catch (error: unknown) {
       console.error('发送失败:', error)
       setGenerationStage('idle')
       // 忽略中断错误
-      if (error instanceof Error && error.name === 'AbortError') {
+      if (error instanceof Error && (error.name === 'AbortError' || error.name === 'CanceledError')) {
         return
       }
       addMessage('assistant', `❌ 出现错误：${error instanceof Error ? error.message : '未知错误'}`)
@@ -1796,6 +1862,7 @@ ${plan.elements.map(e => `- ${e.name} (${e.type})`).join('\n')}
           pid,
           creativeBrief.visualStyle || '吉卜力动画风格',
           (event) => {
+            pushV2StreamEvent(fromAgentElementStream(event))
             if (event.type === 'generating') {
               // 更新生成中状态
               setGeneratingElement(event.element_id || null)
@@ -1893,6 +1960,7 @@ ${plan.elements.map(e => `- ${e.name} (${e.type})`).join('\n')}
       projectId,
       creativeBrief.visualStyle || '吉卜力动画风格',
       (event: FrameStreamEvent) => {
+        pushV2StreamEvent(fromAgentFrameStream(event))
         switch (event.type) {
           case 'start':
             setGenerationProgress({
@@ -2042,6 +2110,7 @@ ${event.failed && event.failed > 0 ? `\n⚠️ ${event.failed} 个镜头生成�
       projectId,
       '720p',
       (event: VideoStreamEvent) => {
+        pushV2StreamEvent(fromAgentVideoStream(event))
         switch (event.type) {
           case 'start':
             setGenerationProgress({
@@ -3366,6 +3435,55 @@ ${result.success
     { id: 'timeline' as ModuleType, icon: Clock, label: '时间线' }
   ]
 
+  const pushV2StreamEvent = useCallback((event: UnifiedStreamEvent) => {
+    setV2StreamEvents((prev) => [...prev.slice(-59), event])
+  }, [])
+
+  const v2StageItems = useMemo<LLMStageItem[]>(() => {
+    const stageKeys: Array<{ id: string; title: string }> = [
+      { id: 'elements', title: '角色元素' },
+      { id: 'frames', title: '镜头首帧' },
+      { id: 'videos', title: '镜头视频' },
+      { id: 'audio', title: '音频资产' },
+    ]
+    return stageKeys.map((s) => {
+      const latest = [...v2StreamEvents].reverse().find((e) => e.stage === s.id)
+      const status = latest
+        ? latest.status
+        : generationStage === s.id
+          ? 'processing'
+          : generationStage === 'complete'
+            ? 'completed'
+            : 'pending'
+      return {
+        id: s.id,
+        title: s.title,
+        status,
+        progress: latest?.progress,
+        meta: latest?.message,
+      }
+    })
+  }, [generationStage, v2StreamEvents])
+
+  const capsuleItems = useMemo(() => (
+    modules.map((m) => ({
+      id: m.id,
+      label: m.label,
+      icon: <m.icon size={14} />,
+      status: activeModule === m.id
+        ? 'processing'
+        : m.id === 'elements' && Object.values(elements).some((e) => Boolean(e.cached_image_url || e.image_url))
+          ? 'done'
+          : m.id === 'storyboard' && segments.length > 0
+            ? 'done'
+            : m.id === 'audio' && audioAssets.some((a) => a.type === 'narration' || a.type === 'dialogue')
+              ? 'done'
+              : m.id === 'timeline' && visualAssets.some((a) => a.type === 'video')
+                ? 'done'
+                : 'idle',
+    }))
+  ), [activeModule, audioAssets, elements, modules, segments.length, visualAssets])
+
   const visualAssetGroups = (() => {
     const groups = new Map<string, { key: string; type: VisualAsset['type']; name: string; items: VisualAsset[] }>()
     const typeLabel: Record<VisualAsset['type'], string> = {
@@ -3453,7 +3571,7 @@ ${result.success
                   <button
                     key={project.id}
                     onClick={() => {
-                      navigate(`/agent/${project.id}`)
+                      navigate(`${agentBaseRoute}/${project.id}`)
                     }}
                     className="glass-card p-5 text-left hover-lift group"
                   >
@@ -3508,7 +3626,7 @@ ${result.success
   return (
     <div 
       ref={containerRef} 
-      className="flex h-screen w-screen animate-fadeIn bg-gradient-to-br from-[#0a0a12] via-[#0f0f1a] to-[#0a0a15]" 
+      className={`${isV2Route ? 'ui-v2' : ''} flex h-screen w-screen animate-fadeIn ${isV2Route ? '' : 'bg-gradient-to-br from-[#0a0a12] via-[#0f0f1a] to-[#0a0a15]'}`} 
       style={{ overflow: 'hidden', position: 'fixed', top: 0, left: 0 }}
     >
       {/* 退出确认对话框 */}
@@ -3775,6 +3893,16 @@ ${result.success
           </div>
         </header>
 
+        {isV2Route && (
+          <div className="px-5 py-2 border-b border-slate-200 bg-white/55 backdrop-blur-md">
+            <CapsuleNav
+              items={capsuleItems}
+              activeId={activeModule}
+              onChange={(id) => setActiveModule(id as ModuleType)}
+            />
+          </div>
+        )}
+
         <div 
           className="flex-1 min-h-0 overflow-y-auto p-5" 
           style={{ 
@@ -3906,6 +4034,17 @@ ${result.success
         >
           {/* 任务卡片 - 放在对话上方 */}
           <div className="px-4 pt-4 space-y-2">
+            {isV2Route && (
+              <LLMStageStreamCard
+                title="执行链路（v2）"
+                stages={v2StageItems}
+                activeMessage={generationProgress?.currentItem || undefined}
+                outputText={v2StreamEvents.length > 0 ? v2StreamEvents[v2StreamEvents.length - 1]?.message : ''}
+                mode={v2StreamEvents.length > 0 ? v2StreamEvents[v2StreamEvents.length - 1]?.mode : undefined}
+                taskId={v2StreamEvents.length > 0 ? v2StreamEvents[v2StreamEvents.length - 1]?.taskId : undefined}
+              />
+            )}
+
             {/* Creative Brief 卡片 */}
             {Object.keys(creativeBrief).length > 0 && (
               <TaskCard

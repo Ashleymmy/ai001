@@ -44,6 +44,9 @@ export interface StudioGenerationProgress {
   totalItems: number
   percent: number
   errors: string[]
+  mode?: 'legacy' | 'task_queue'
+  taskId?: string
+  lastEventTs?: string
 }
 
 export type StudioGenerationScope = 'none' | 'single' | 'batch'
@@ -83,6 +86,9 @@ function createInitialGenerationProgress(): StudioGenerationProgress {
     totalItems: 0,
     percent: 0,
     errors: [],
+    mode: undefined,
+    taskId: undefined,
+    lastEventTs: undefined,
   }
 }
 
@@ -1414,6 +1420,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
                       currentIndex: 0,
                       totalItems: total,
                       percent: 0,
+                      mode: event.mode || state.generationProgress.mode,
+                      taskId: event.task_id || state.generationProgress.taskId,
+                      lastEventTs: new Date().toISOString(),
                     },
                   }
                 })
@@ -1427,6 +1436,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
                     stage: mapBatchStage(event.stage),
                     currentItem: '',
                     totalItems: normalizeProgressNumber(event.total, state.generationProgress.totalItems),
+                    mode: event.mode || state.generationProgress.mode,
+                    taskId: event.task_id || state.generationProgress.taskId,
+                    lastEventTs: new Date().toISOString(),
                   },
                 }))
                 return
@@ -1447,6 +1459,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
                     ),
                     totalItems: normalizeProgressNumber(event.total, state.generationProgress.totalItems),
                     percent: Math.min(100, normalizeProgressNumber(event.percent, state.generationProgress.percent)),
+                    mode: event.mode || state.generationProgress.mode,
+                    taskId: event.task_id || state.generationProgress.taskId,
+                    lastEventTs: new Date().toISOString(),
                   },
                 }))
                 return
@@ -1467,6 +1482,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
                       totalItems: normalizeProgressNumber(event.total, state.generationProgress.totalItems),
                       percent: Math.min(100, normalizeProgressNumber(event.percent, state.generationProgress.percent)),
                       errors: errorList,
+                      mode: event.mode || state.generationProgress.mode,
+                      taskId: event.task_id || state.generationProgress.taskId,
+                      lastEventTs: new Date().toISOString(),
                     },
                   }
                 })
@@ -1486,6 +1504,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
                       currentIndex: total > 0 ? total : current,
                       totalItems: total,
                       percent: 100,
+                      mode: event.mode || state.generationProgress.mode,
+                      taskId: event.task_id || state.generationProgress.taskId,
+                      lastEventTs: new Date().toISOString(),
                     },
                   }
                 })
@@ -1501,6 +1522,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
                     stage: 'error',
                     currentItem: message,
                     errors: [...state.generationProgress.errors, message],
+                    mode: event.mode || state.generationProgress.mode,
+                    taskId: event.task_id || state.generationProgress.taskId,
+                    lastEventTs: new Date().toISOString(),
                   },
                 }))
                 rejectOnce(new Error(message))

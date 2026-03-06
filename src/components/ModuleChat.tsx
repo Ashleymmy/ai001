@@ -188,40 +188,80 @@ export default function ModuleChat({
 
     try {
       const moduleContext = `[${config.title}模式] ${context || ''}`
+      const assistantMessageId = (Date.now() + 1).toString()
+      let streamedReply = ''
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: assistantMessageId,
+          role: 'assistant',
+          content: ''
+        }
+      ])
+
       const response = await chatWithAI(messageContent, moduleContext, {
         scope: `${moduleType}:${sessionId}`,
-        llm: settings.llm
+        llm: settings.llm,
+        stream: true,
+        onDelta: (partial) => {
+          streamedReply = partial
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantMessageId
+                ? { ...msg, content: partial }
+                : msg
+            )
+          )
+        }
       })
 
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: response
-      }
-      setMessages((prev) => [...prev, assistantMessage])
-
-      // 保存助手消息到后端
-      try {
-        await saveChatMessage(
-          sessionId,
-          moduleType,
-          'assistant',
-          assistantMessage.content
+      const finalReply = (streamedReply || response || '').trim()
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantMessageId
+            ? { ...msg, content: finalReply || '抱歉，我没有生成有效回复。' }
+            : msg
         )
-      } catch (e) {
-        console.error('保存助手消息失败:', e)
+      )
+
+      if (finalReply) {
+        // 保存助手消息到后端
+        try {
+          await saveChatMessage(
+            sessionId,
+            moduleType,
+            'assistant',
+            finalReply
+          )
+        } catch (e) {
+          console.error('保存助手消息失败:', e)
+        }
       }
     } catch (error: unknown) {
       if (error instanceof Error && error.name === 'CanceledError') {
+        setMessages((prev) => prev.filter((m) => !(m.role === 'assistant' && !m.content)))
         return // 用户主动取消
       }
       console.error('对话失败:', error)
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: '抱歉，出现了问题。请检查设置中的 API 配置。'
-      }
-      setMessages((prev) => [...prev, errorMessage])
+      setMessages((prev) => {
+        const hasEmptyAssistant = prev.some((m) => m.role === 'assistant' && !m.content)
+        if (hasEmptyAssistant) {
+          return prev.map((m) =>
+            m.role === 'assistant' && !m.content
+              ? { ...m, content: '抱歉，出现了问题。请检查设置中的 API 配置。' }
+              : m
+          )
+        }
+        return [
+          ...prev,
+          {
+            id: (Date.now() + 1).toString(),
+            role: 'assistant',
+            content: '抱歉，出现了问题。请检查设置中的 API 配置。'
+          }
+        ]
+      })
     } finally {
       setIsLoading(false)
     }

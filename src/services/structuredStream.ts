@@ -54,6 +54,12 @@ export interface ConsumeStreamOptions<T> {
   onError?: (error: string) => void
   /** AbortController signal for cancellation */
   signal?: AbortSignal
+  /** Optional request override (supports POST streaming) */
+  request?: {
+    method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+    body?: unknown
+    headers?: Record<string, string>
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +92,7 @@ export async function consumeStructuredStream<T = unknown>(
   url: string,
   options: ConsumeStreamOptions<T> = {},
 ): Promise<T | null> {
-  const { onDelta, onProgress, onComplete, onError, signal } = options
+  const { onDelta, onProgress, onComplete, onError, signal, request } = options
 
   // Build full URL – accept both absolute and relative paths
   const fullUrl = url.startsWith('http') ? url : `${BACKEND_ORIGIN}${url}`
@@ -100,7 +106,24 @@ export async function consumeStructuredStream<T = unknown>(
   const workspaceId = getStoredWorkspaceId()
   if (workspaceId) headers['X-Workspace-Id'] = workspaceId
 
-  const response = await fetch(fullUrl, { headers, signal })
+  if (request?.headers) {
+    for (const [key, value] of Object.entries(request.headers)) {
+      headers[key] = value
+    }
+  }
+
+  const method = request?.method || 'GET'
+  const fetchOptions: RequestInit = { method, headers, signal }
+  if (request?.body !== undefined) {
+    if (!headers['Content-Type']) {
+      headers['Content-Type'] = 'application/json'
+    }
+    fetchOptions.body = typeof request.body === 'string'
+      ? request.body
+      : JSON.stringify(request.body)
+  }
+
+  const response = await fetch(fullUrl, fetchOptions)
 
   if (!response.ok) {
     const message = `Stream request failed: ${response.status} ${response.statusText}`

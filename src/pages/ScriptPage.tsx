@@ -205,39 +205,66 @@ export default function ScriptPage() {
       const context = script 
         ? `[剧本助手模式] 当前剧本标题：${title}\n当前剧本内容：${script.slice(0, 1000)}` 
         : '[剧本助手模式] 用户正在开始创作新剧本'
-      
+      const assistantMessageId = (Date.now() + 1).toString()
+      let streamedReply = ''
+      setMessages(prev => [...prev, {
+        id: assistantMessageId,
+        role: 'assistant',
+        content: ''
+      }])
+
       const response = await chatWithAI(messageText, context, {
         scope: chatScope,
-        llm: settings.llm
+        llm: settings.llm,
+        stream: true,
+        onDelta: (partial) => {
+          streamedReply = partial
+          setMessages(prev => prev.map(msg => (
+            msg.id === assistantMessageId
+              ? { ...msg, content: partial }
+              : msg
+          )))
+          setPendingContent(partial)
+        }
       })
-
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: response
-      }
-      setMessages(prev => [...prev, assistantMessage])
-      setPendingContent(response)
+      const finalReply = (streamedReply || response || '').trim()
+      setMessages(prev => prev.map(msg => (
+        msg.id === assistantMessageId
+          ? { ...msg, content: finalReply || '抱歉，我没有生成有效回复。' }
+          : msg
+      )))
+      setPendingContent(finalReply)
 
       setTimeline(prev => {
         const filtered = prev.filter(item => item.type !== 'ai_thinking')
         return [...filtered, {
           id: `tl-${Date.now() + 2}`,
           type: 'ai_output',
-          content: response.slice(0, 100) + '...',
+          content: finalReply.slice(0, 100) + '...',
           timestamp: new Date()
         }]
       })
     } catch (error: unknown) {
       if (error instanceof Error && error.name === 'CanceledError') {
+        setMessages(prev => prev.filter(msg => !(msg.role === 'assistant' && !msg.content)))
         setTimeline(prev => prev.filter(item => item.type !== 'ai_thinking'))
         return // 用户主动取消
       }
-      setMessages(prev => [...prev, {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: '抱歉，出现了问题。请检查设置中的 API 配置。'
-      }])
+      setMessages(prev => {
+        const hasEmptyAssistant = prev.some(msg => msg.role === 'assistant' && !msg.content)
+        if (hasEmptyAssistant) {
+          return prev.map(msg => (
+            msg.role === 'assistant' && !msg.content
+              ? { ...msg, content: '抱歉，出现了问题。请检查设置中的 API 配置。' }
+              : msg
+          ))
+        }
+        return [...prev, {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: '抱歉，出现了问题。请检查设置中的 API 配置。'
+        }]
+      })
       setTimeline(prev => prev.filter(item => item.type !== 'ai_thinking'))
     } finally {
       setIsLoading(false)

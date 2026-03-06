@@ -6,9 +6,13 @@ import axios from 'axios'
 import type { ModelConfig } from '../store/settingsStore'
 
 const runtimeHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost'
+const runtimeOrigin = typeof window !== 'undefined' ? window.location.origin : ''
 const backendPort = import.meta.env.VITE_BACKEND_PORT || '18001'
-export const BACKEND_ORIGIN = import.meta.env.VITE_API_BASE || `http://${runtimeHost}:${backendPort}`
-const API_BASE = BACKEND_ORIGIN
+const explicitApiBase = (import.meta.env.VITE_API_BASE || '').trim()
+const useDevProxy = Boolean(import.meta.env.DEV && !explicitApiBase && runtimeOrigin)
+const fallbackBackendOrigin = `http://${runtimeHost}:${backendPort}`
+export const BACKEND_ORIGIN = useDevProxy ? runtimeOrigin : (explicitApiBase || fallbackBackendOrigin)
+const API_BASE = useDevProxy ? '' : BACKEND_ORIGIN
 const AUTH_ACCESS_TOKEN_KEY = 'studio.collab.access_token'
 const AUTH_REFRESH_TOKEN_KEY = 'studio.collab.refresh_token'
 const AUTH_WORKSPACE_ID_KEY = 'studio.collab.workspace_id'
@@ -446,6 +450,8 @@ export async function healthCheck(): Promise<boolean> {
 interface ChatWithAIOptions {
   scope?: string
   llm?: ModelConfig
+  stream?: boolean
+  onDelta?: (partial: string, delta: string) => void
 }
 
 // AI 对话 - 按 scope 独立取消，避免不同模块互相中断
@@ -466,17 +472,144 @@ export async function chatWithAI(
   chatAbortControllers.set(scope, controller)
 
   try {
-    const response = await api.post(
-      '/api/chat',
-      { message, context, llm: options?.llm },
-      { signal: controller.signal }
-    )
-    return response.data.reply
+    const streamEnabled = options?.stream !== false
+    if (streamEnabled) {
+      try {
+        return await chatWithAIStream(message, context, options?.llm, controller.signal, options?.onDelta)
+      } catch (error: unknown) {
+        if (isCanceledError(error)) throw error
+        if (!isStreamEndpointUnavailable(error)) throw error
+      }
+    }
+
+    const response = await api.post('/api/chat', { message, context, llm: options?.llm }, { signal: controller.signal })
+    return response.data.reply || ''
   } finally {
     if (chatAbortControllers.get(scope) === controller) {
       chatAbortControllers.delete(scope)
     }
   }
+}
+
+function isCanceledError(error: unknown): boolean {
+  if (!error) return false
+  if (axios.isCancel?.(error)) return true
+  if (error instanceof DOMException && error.name === 'AbortError') return true
+  if (error instanceof Error && (error.name === 'AbortError' || error.name === 'CanceledError')) return true
+  return false
+}
+
+function isStreamEndpointUnavailable(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return /\[chat-stream-http:(404|405|406|415)\]/.test(error.message)
+}
+
+function createCanceledError(): Error {
+  const err = new Error('Request aborted')
+  err.name = 'CanceledError'
+  return err
+}
+
+type ChatStreamEvent =
+  | { type: 'delta'; content?: string; accumulated?: string }
+  | { type: 'complete'; content?: string; parsed?: unknown }
+  | { type: 'error'; message?: string }
+  | { type: string; [key: string]: unknown }
+
+function parseSSEPayload(rawBlock: string): string | null {
+  const lines = rawBlock.split('\n')
+  const dataLines: string[] = []
+  for (const line of lines) {
+    if (line.startsWith(':')) continue
+    if (line.startsWith('data:')) dataLines.push(line.slice(line.charAt(5) === ' ' ? 6 : 5))
+  }
+  if (dataLines.length === 0) return null
+  const payload = dataLines.join('\n')
+  if (!payload || payload === '[DONE]') return null
+  return payload
+}
+
+async function chatWithAIStream(
+  message: string,
+  context: string | undefined,
+  llm: ModelConfig | undefined,
+  signal: AbortSignal,
+  onDelta?: (partial: string, delta: string) => void
+): Promise<string> {
+  const headers: Record<string, string> = {
+    Accept: 'text/event-stream',
+    'Content-Type': 'application/json',
+  }
+  const token = getStoredAccessToken()
+  if (token) headers.Authorization = `Bearer ${token}`
+  const workspaceId = getStoredWorkspaceId()
+  if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+
+  let response: Response
+  try {
+    response = await fetch(`${BACKEND_ORIGIN}/api/chat/stream`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ message, context, llm }),
+      signal,
+    })
+  } catch (error: unknown) {
+    if (isCanceledError(error)) throw createCanceledError()
+    throw error instanceof Error ? error : new Error(String(error))
+  }
+
+  if (!response.ok) {
+    throw new Error(`[chat-stream-http:${response.status}] ${response.statusText}`)
+  }
+  if (!response.body) {
+    throw new Error('Chat stream body is not readable')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let accumulated = ''
+  let completed = ''
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      const blocks = buffer.split('\n\n')
+      buffer = blocks.pop() ?? ''
+
+      for (const block of blocks) {
+        const payload = parseSSEPayload(block)
+        if (!payload) continue
+        let event: ChatStreamEvent
+        try {
+          event = JSON.parse(payload) as ChatStreamEvent
+        } catch {
+          continue
+        }
+
+        if (event.type === 'delta') {
+          const delta = typeof event.content === 'string' ? event.content : ''
+          accumulated = typeof event.accumulated === 'string' ? event.accumulated : `${accumulated}${delta}`
+          onDelta?.(accumulated, delta)
+        } else if (event.type === 'complete') {
+          completed = typeof event.content === 'string' ? event.content : accumulated
+        } else if (event.type === 'error') {
+          throw new Error(typeof event.message === 'string' ? event.message : '流式对话失败')
+        }
+      }
+    }
+  } catch (error: unknown) {
+    if (isCanceledError(error)) throw createCanceledError()
+    throw error instanceof Error ? error : new Error(String(error))
+  } finally {
+    reader.releaseLock()
+  }
+
+  if (completed) return completed
+  return accumulated
 }
 
 export function stopChatGeneration(scope?: string) {
@@ -518,6 +651,7 @@ export async function generateVideo(
   videoUrl: string | null
   duration: number
   seed: number
+  mode?: 'legacy' | 'task_queue'
   error?: string
 }> {
   const response = await api.post('/api/generate-video', {
@@ -544,6 +678,7 @@ export async function checkVideoTaskStatus(taskId: string): Promise<{
   status: string
   videoUrl: string | null
   progress?: number
+  mode?: 'legacy' | 'task_queue'
   error?: string
 }> {
   const response = await api.post('/api/video-task-status', { taskId })
@@ -1261,6 +1396,105 @@ export async function agentChat(
   return response.data
 }
 
+interface AgentChatStreamOptions {
+  signal?: AbortSignal
+  onDelta?: (partial: string, delta: string) => void
+}
+
+type AgentChatStreamEvent =
+  | { type: 'delta'; content?: string; accumulated?: string }
+  | { type: 'complete'; content?: string; parsed?: AgentChatResponse }
+  | { type: 'error'; message?: string }
+  | { type: string; [key: string]: unknown }
+
+export async function agentChatStream(
+  message: string,
+  projectId?: string,
+  context?: Record<string, unknown>,
+  options?: AgentChatStreamOptions,
+): Promise<AgentChatResponse> {
+  const headers: Record<string, string> = {
+    Accept: 'text/event-stream',
+    'Content-Type': 'application/json',
+  }
+  const token = getStoredAccessToken()
+  if (token) headers.Authorization = `Bearer ${token}`
+  const workspaceId = getStoredWorkspaceId()
+  if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+
+  let response: Response
+  try {
+    response = await fetch(`${BACKEND_ORIGIN}/api/agent/chat/stream`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ message, projectId, context }),
+      signal: options?.signal,
+    })
+  } catch (error: unknown) {
+    if (isCanceledError(error)) throw createCanceledError()
+    throw error instanceof Error ? error : new Error(String(error))
+  }
+
+  if (!response.ok) {
+    throw new Error(`[agent-chat-stream-http:${response.status}] ${response.statusText}`)
+  }
+  if (!response.body) {
+    throw new Error('Agent chat stream body is not readable')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let accumulated = ''
+  let completed: AgentChatResponse | null = null
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      const blocks = buffer.split('\n\n')
+      buffer = blocks.pop() ?? ''
+
+      for (const block of blocks) {
+        const payload = parseSSEPayload(block)
+        if (!payload) continue
+
+        let event: AgentChatStreamEvent
+        try {
+          event = JSON.parse(payload) as AgentChatStreamEvent
+        } catch {
+          continue
+        }
+
+        if (event.type === 'delta') {
+          const delta = typeof event.content === 'string' ? event.content : ''
+          accumulated = typeof event.accumulated === 'string' ? event.accumulated : `${accumulated}${delta}`
+          options?.onDelta?.(accumulated, delta)
+        } else if (event.type === 'complete') {
+          const parsed = event.parsed
+          if (parsed && typeof parsed === 'object' && typeof parsed.content === 'string') {
+            completed = parsed
+          } else {
+            const content = typeof event.content === 'string' ? event.content : accumulated
+            completed = { type: 'text', content }
+          }
+        } else if (event.type === 'error') {
+          throw new Error(typeof event.message === 'string' ? event.message : 'Agent 流式对话失败')
+        }
+      }
+    }
+  } catch (error: unknown) {
+    if (isCanceledError(error)) throw createCanceledError()
+    throw error instanceof Error ? error : new Error(String(error))
+  } finally {
+    reader.releaseLock()
+  }
+
+  return completed || { type: 'text', content: accumulated }
+}
+
 // Agent 项目规划
 export async function agentPlanProject(
   userRequest: string,
@@ -1564,6 +1798,8 @@ export interface ProjectStatus {
 // 流式生成事件类型
 export interface GenerateStreamEvent {
   type: 'start' | 'generating' | 'complete' | 'skip' | 'error' | 'done'
+  task_id?: string
+  mode?: 'legacy' | 'task_queue'
   element_id?: string
   element_name?: string
   image_url?: string
@@ -1642,6 +1878,8 @@ export async function generateProjectFrames(
 // 起始帧流式生成事件类型
 export interface FrameStreamEvent {
   type: 'start' | 'skip' | 'generating' | 'complete' | 'error' | 'done'
+  task_id?: string
+  mode?: 'legacy' | 'task_queue'
   shot_id?: string
   shot_name?: string
   image_url?: string
@@ -1749,6 +1987,7 @@ export async function generateProjectVideos(
 // 视频流式生成事件类型
 export interface VideoStreamEvent {
   type: 'start' | 'skip' | 'submitting' | 'submitted' | 'complete' | 'error' | 'polling_start' | 'polling' | 'timeout' | 'done'
+  mode?: 'legacy' | 'task_queue'
   shot_id?: string
   shot_name?: string
   task_id?: string
@@ -3044,6 +3283,8 @@ export async function studioInpaintShotFrame(
 
 export interface StudioBatchGenerateStreamEvent {
   type: 'start' | 'stage_start' | 'item_start' | 'item_complete' | 'done' | 'error'
+  mode?: 'legacy' | 'task_queue'
+  task_id?: string
   episode_id?: string
   stages?: string[]
   video_generate_audio?: boolean

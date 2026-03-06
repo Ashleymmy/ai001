@@ -54,7 +54,62 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [activeTab, setActiveTab] = useState<'models' | 'local'>('models')
-  const ttsProvider = (settings.tts.provider || 'volc_tts_v1_http').trim() || 'volc_tts_v1_http'
+  const tts = {
+    provider: settings?.tts?.provider || 'volc_tts_v1_http',
+    volc: {
+      appid: '',
+      accessToken: '',
+      endpoint: 'https://openspeech.bytedance.com/api/v1/tts',
+      cluster: 'volcano_tts',
+      model: 'seed-tts-1.1',
+      encoding: 'mp3',
+      rate: 24000,
+      speedRatio: 1,
+      narratorVoiceType: '',
+      dialogueMaleVoiceType: '',
+      dialogueFemaleVoiceType: '',
+      dialogueVoiceType: '',
+      ...(settings?.tts?.volc || {}),
+    },
+    fish: {
+      apiKey: '',
+      baseUrl: 'https://api.fish.audio',
+      model: 'speech-1.5',
+      encoding: 'mp3',
+      rate: 24000,
+      speedRatio: 1,
+      narratorVoiceType: '',
+      dialogueMaleVoiceType: '',
+      dialogueFemaleVoiceType: '',
+      dialogueVoiceType: '',
+      ...(settings?.tts?.fish || {}),
+    },
+    bailian: {
+      apiKey: '',
+      baseUrl: 'wss://dashscope.aliyuncs.com/api-ws/v1/inference',
+      workspace: '',
+      model: 'cosyvoice-v1',
+      encoding: 'mp3',
+      rate: 24000,
+      speedRatio: 1,
+      narratorVoiceType: '',
+      dialogueMaleVoiceType: '',
+      dialogueFemaleVoiceType: '',
+      dialogueVoiceType: '',
+      ...(settings?.tts?.bailian || {}),
+    },
+    custom: {
+      encoding: 'mp3',
+      rate: 24000,
+      speedRatio: 1,
+      narratorVoiceType: '',
+      dialogueMaleVoiceType: '',
+      dialogueFemaleVoiceType: '',
+      dialogueVoiceType: '',
+      ...(settings?.tts?.custom || {}),
+    },
+  }
+  const ttsProvider = (tts.provider || 'volc_tts_v1_http').trim() || 'volc_tts_v1_http'
   const isFishTTS = ttsProvider.startsWith('fish')
   const isVolcTTS = ttsProvider === 'volc_tts_v1_http'
   const isBailianTTS = ttsProvider === 'aliyun_bailian_tts_v2'
@@ -76,6 +131,13 @@ export default function SettingsPage() {
     video: [],
     tts: []
   })
+  const customProviderGroups = {
+    llm: Array.isArray(customProviders?.llm) ? customProviders.llm : [],
+    image: Array.isArray(customProviders?.image) ? customProviders.image : [],
+    storyboard: Array.isArray(customProviders?.storyboard) ? customProviders.storyboard : [],
+    video: Array.isArray(customProviders?.video) ? customProviders.video : [],
+    tts: Array.isArray(customProviders?.tts) ? customProviders.tts : [],
+  }
   const [modalOpen, setModalOpen] = useState(false)
   const [editingProvider, setEditingProvider] = useState<CustomProvider | null>(null)
   const [editingCategory, setEditingCategory] = useState<string>('llm')
@@ -86,18 +148,18 @@ export default function SettingsPage() {
     setTtsTest({ status: 'testing' })
     try {
       const defaults = isFishTTS
-        ? settings.tts.fish
+        ? tts.fish
         : isBailianTTS
-          ? settings.tts.bailian
+          ? tts.bailian
           : isCustomTTS
-            ? settings.tts.custom
-            : settings.tts.volc
+            ? tts.custom
+            : tts.volc
       const voiceType =
         defaults.narratorVoiceType ||
         defaults.dialogueMaleVoiceType ||
         defaults.dialogueFemaleVoiceType ||
         defaults.dialogueVoiceType
-      const result = await testTTSConnection(settings.tts, voiceType, '测试语音合成')
+      const result = await testTTSConnection(tts, voiceType, '测试语音合成')
       setTtsTest({ status: result.success ? 'success' : 'error', message: result.message })
     } catch (error) {
       const message =
@@ -132,7 +194,7 @@ export default function SettingsPage() {
 
   const loadCustomProviders = async () => {
     try {
-      const [llm, image, video, tts] = await Promise.all([
+      const [llm, image, video, ttsProviders] = await Promise.all([
         listCustomProviders('llm'),
         listCustomProviders('image'),
         listCustomProviders('video'),
@@ -143,7 +205,7 @@ export default function SettingsPage() {
         image,
         storyboard: image, // storyboard 和 image 共用
         video,
-        tts
+        tts: ttsProviders
       })
     } catch (error) {
       console.error('加载自定义配置失败:', error)
@@ -205,7 +267,7 @@ export default function SettingsPage() {
         image: settings.image,
         storyboard: settings.storyboard,
         video: settings.video,
-        tts: settings.tts,
+        tts,
         local: settings.local
       })
       setSaveStatus('success')
@@ -275,7 +337,7 @@ export default function SettingsPage() {
                 icon={MessageSquare}
                 config={settings.llm}
                 providers={LLM_PROVIDERS}
-                customProviders={customProviders.llm}
+                customProviders={customProviderGroups.llm}
                 category="llm"
                 testState={testStates.llm}
                 onTestConnection={() => handleTestConnection('llm', settings.llm)}
@@ -300,7 +362,7 @@ export default function SettingsPage() {
                 icon={Image}
                 config={settings.image}
                 providers={IMAGE_PROVIDERS}
-                customProviders={customProviders.image}
+                customProviders={customProviderGroups.image}
                 category="image"
                 testState={testStates.image}
                 onTestConnection={() => handleTestConnection('image', settings.image)}
@@ -325,7 +387,7 @@ export default function SettingsPage() {
                 icon={Film}
                 config={settings.storyboard}
                 providers={IMAGE_PROVIDERS}
-                customProviders={customProviders.storyboard}
+                customProviders={customProviderGroups.storyboard}
                 category="storyboard"
                 testState={testStates.storyboard}
                 onTestConnection={() => handleTestConnection('storyboard', settings.storyboard)}
@@ -350,7 +412,7 @@ export default function SettingsPage() {
                 icon={Video}
                 config={settings.video}
                 providers={VIDEO_PROVIDERS}
-                customProviders={customProviders.video}
+                customProviders={customProviderGroups.video}
                 category="video"
                 testState={testStates.video}
                 onTestConnection={() => handleTestConnection('video', settings.video)}
@@ -390,7 +452,7 @@ export default function SettingsPage() {
                         const provider = e.target.value
                         updateTTS({ provider })
                         if (provider.startsWith('fish')) {
-                          const cur = (settings.tts.fish.model || '').trim()
+                          const cur = (tts.fish.model || '').trim()
                           if (!cur || cur.startsWith('seed-')) {
                             updateFishTTS({ model: 'speech-1.5' })
                           }
@@ -401,10 +463,10 @@ export default function SettingsPage() {
                       <option value="volc_tts_v1_http" className="bg-gray-900 text-white">Volc OpenSpeech</option>
                       <option value="fish_tts_v1" className="bg-gray-900 text-white">Fish Audio</option>
                       <option value="aliyun_bailian_tts_v2" className="bg-gray-900 text-white">阿里百炼（通用语音）</option>
-                      {customProviders.tts.length > 0 && (
+                      {customProviderGroups.tts.length > 0 && (
                         <option disabled className="bg-gray-900 text-gray-500">────────</option>
                       )}
-                      {customProviders.tts.map((p) => (
+                      {customProviderGroups.tts.map((p) => (
                         <option key={p.id} value={p.id} className="bg-gray-900 text-white">
                           {p.name}
                         </option>
@@ -413,11 +475,11 @@ export default function SettingsPage() {
                     {isCustomTTS && (
                       <div className="flex items-center gap-2 mt-2">
                         <div className="text-xs text-gray-500 truncate flex-1">
-                          当前自定义：{customProviders.tts.find((p) => p.id === ttsProvider)?.name || ttsProvider}
+                          当前自定义：{customProviderGroups.tts.find((p) => p.id === ttsProvider)?.name || ttsProvider}
                         </div>
-                        {customProviders.tts.find((p) => p.id === ttsProvider) && (
+                        {customProviderGroups.tts.find((p) => p.id === ttsProvider) && (
                           <button
-                            onClick={() => handleEditCustom(customProviders.tts.find((p) => p.id === ttsProvider)!)}
+                            onClick={() => handleEditCustom(customProviderGroups.tts.find((p) => p.id === ttsProvider)!)}
                             className="text-xs text-gray-200 hover:text-white glass-button px-3 py-1.5 rounded-lg"
                           >
                             编辑
@@ -432,7 +494,7 @@ export default function SettingsPage() {
                       <label className="block text-sm text-gray-400 mb-2">Base URL</label>
                       <input
                         type="text"
-                        value={settings.tts.fish.baseUrl}
+                        value={tts.fish.baseUrl}
                         onChange={(e) => updateFishTTS({ baseUrl: e.target.value })}
                         placeholder="https://api.fish.audio"
                         className="w-full glass-input p-3 text-sm"
@@ -443,7 +505,7 @@ export default function SettingsPage() {
                       <label className="block text-sm text-gray-400 mb-2">WebSocket URL（可选）</label>
                       <input
                         type="text"
-                        value={settings.tts.bailian.baseUrl}
+                        value={tts.bailian.baseUrl}
                         onChange={(e) => updateBailianTTS({ baseUrl: e.target.value })}
                         placeholder="wss://dashscope.aliyuncs.com/api-ws/v1/inference"
                         className="w-full glass-input p-3 text-sm"
@@ -454,7 +516,7 @@ export default function SettingsPage() {
                       <label className="block text-sm text-gray-400 mb-2">API Base URL（自定义）</label>
                       <input
                         type="text"
-                        value={customProviders.tts.find((p) => p.id === ttsProvider)?.baseUrl || ''}
+                        value={customProviderGroups.tts.find((p) => p.id === ttsProvider)?.baseUrl || ''}
                         readOnly
                         placeholder="请点击“编辑”在自定义配置里设置"
                         className="w-full glass-input p-3 text-sm opacity-80"
@@ -465,7 +527,7 @@ export default function SettingsPage() {
                       <label className="block text-sm text-gray-400 mb-2">AppID</label>
                       <input
                         type="text"
-                        value={settings.tts.volc.appid}
+                        value={tts.volc.appid}
                         onChange={(e) => updateVolcTTS({ appid: e.target.value })}
                         placeholder="控制台 AppID"
                         className="w-full glass-input p-3 text-sm"
@@ -492,10 +554,10 @@ export default function SettingsPage() {
                           type="password"
                           value={
                             isFishTTS
-                              ? settings.tts.fish.apiKey
+                              ? tts.fish.apiKey
                               : isBailianTTS
-                                ? settings.tts.bailian.apiKey
-                                : settings.tts.volc.accessToken
+                                ? tts.bailian.apiKey
+                                : tts.volc.accessToken
                           }
                           onChange={(e) => {
                             const v = e.target.value
@@ -513,7 +575,7 @@ export default function SettingsPage() {
                           <label className="block text-sm text-gray-400 mb-2">Model (Header: model)</label>
                           <input
                             type="text"
-                            value={settings.tts.fish.model}
+                            value={tts.fish.model}
                             onChange={(e) => updateFishTTS({ model: e.target.value })}
                             placeholder="speech-1.5 或 s1"
                             className="w-full glass-input p-3 text-sm"
@@ -524,7 +586,7 @@ export default function SettingsPage() {
                           <label className="block text-sm text-gray-400 mb-2">Model</label>
                           <input
                             type="text"
-                            value={settings.tts.bailian.model}
+                            value={tts.bailian.model}
                             onChange={(e) => updateBailianTTS({ model: e.target.value })}
                             placeholder="cosyvoice-v1"
                             className="w-full glass-input p-3 text-sm"
@@ -535,7 +597,7 @@ export default function SettingsPage() {
                           <label className="block text-sm text-gray-400 mb-2">Cluster</label>
                           <input
                             type="text"
-                            value={settings.tts.volc.cluster}
+                            value={tts.volc.cluster}
                             onChange={(e) => updateVolcTTS({ cluster: e.target.value })}
                             placeholder="volcano_tts"
                             className="w-full glass-input p-3 text-sm"
@@ -549,7 +611,7 @@ export default function SettingsPage() {
                         <label className="block text-sm text-gray-400 mb-2">Workspace（可选）</label>
                         <input
                           type="text"
-                          value={settings.tts.bailian.workspace}
+                          value={tts.bailian.workspace}
                           onChange={(e) => updateBailianTTS({ workspace: e.target.value })}
                           placeholder="百炼 workspace id（可留空）"
                           className="w-full glass-input p-3 text-sm"
@@ -562,7 +624,7 @@ export default function SettingsPage() {
                         <label className="block text-sm text-gray-400 mb-2">模型版本</label>
                         <input
                           type="text"
-                          value={settings.tts.volc.model}
+                          value={tts.volc.model}
                           onChange={(e) => updateVolcTTS({ model: e.target.value })}
                           placeholder="seed-tts-1.1"
                           className="w-full glass-input p-3 text-sm"
@@ -581,12 +643,12 @@ export default function SettingsPage() {
                       type="text"
                       value={
                         isFishTTS
-                          ? settings.tts.fish.narratorVoiceType
+                          ? tts.fish.narratorVoiceType
                           : isBailianTTS
-                            ? settings.tts.bailian.narratorVoiceType
+                            ? tts.bailian.narratorVoiceType
                             : isCustomTTS
-                              ? settings.tts.custom.narratorVoiceType
-                              : settings.tts.volc.narratorVoiceType
+                              ? tts.custom.narratorVoiceType
+                              : tts.volc.narratorVoiceType
                       }
                       onChange={(e) => {
                         const v = e.target.value
@@ -613,12 +675,12 @@ export default function SettingsPage() {
                       type="text"
                       value={
                         isFishTTS
-                          ? settings.tts.fish.dialogueMaleVoiceType
+                          ? tts.fish.dialogueMaleVoiceType
                           : isBailianTTS
-                            ? settings.tts.bailian.dialogueMaleVoiceType
+                            ? tts.bailian.dialogueMaleVoiceType
                             : isCustomTTS
-                              ? settings.tts.custom.dialogueMaleVoiceType
-                              : settings.tts.volc.dialogueMaleVoiceType
+                              ? tts.custom.dialogueMaleVoiceType
+                              : tts.volc.dialogueMaleVoiceType
                       }
                       onChange={(e) => {
                         const v = e.target.value
@@ -645,12 +707,12 @@ export default function SettingsPage() {
                       type="text"
                       value={
                         isFishTTS
-                          ? settings.tts.fish.dialogueFemaleVoiceType
+                          ? tts.fish.dialogueFemaleVoiceType
                           : isBailianTTS
-                            ? settings.tts.bailian.dialogueFemaleVoiceType
+                            ? tts.bailian.dialogueFemaleVoiceType
                             : isCustomTTS
-                              ? settings.tts.custom.dialogueFemaleVoiceType
-                              : settings.tts.volc.dialogueFemaleVoiceType
+                              ? tts.custom.dialogueFemaleVoiceType
+                              : tts.volc.dialogueFemaleVoiceType
                       }
                       onChange={(e) => {
                         const v = e.target.value
@@ -679,12 +741,12 @@ export default function SettingsPage() {
                     type="text"
                     value={
                       isFishTTS
-                        ? settings.tts.fish.dialogueVoiceType
+                        ? tts.fish.dialogueVoiceType
                         : isBailianTTS
-                          ? settings.tts.bailian.dialogueVoiceType
+                          ? tts.bailian.dialogueVoiceType
                           : isCustomTTS
-                            ? settings.tts.custom.dialogueVoiceType
-                            : settings.tts.volc.dialogueVoiceType
+                            ? tts.custom.dialogueVoiceType
+                            : tts.volc.dialogueVoiceType
                     }
                     onChange={(e) => {
                       const v = e.target.value
@@ -721,7 +783,7 @@ export default function SettingsPage() {
                               <label className="block text-sm text-gray-400 mb-2">AppID</label>
                               <input
                                 type="text"
-                                value={settings.tts.volc.appid}
+                                value={tts.volc.appid}
                                 onChange={(e) => updateVolcTTS({ appid: e.target.value })}
                                 placeholder="控制台 AppID"
                                 className="w-full glass-input p-3 text-sm"
@@ -731,7 +793,7 @@ export default function SettingsPage() {
                               <label className="block text-sm text-gray-400 mb-2">Access Token</label>
                               <input
                                 type="password"
-                                value={settings.tts.volc.accessToken}
+                                value={tts.volc.accessToken}
                                 onChange={(e) => updateVolcTTS({ accessToken: e.target.value })}
                                 placeholder="控制台 Access Token"
                                 className="w-full glass-input p-3 text-sm"
@@ -744,7 +806,7 @@ export default function SettingsPage() {
                               <label className="block text-sm text-gray-400 mb-2">Endpoint</label>
                               <input
                                 type="text"
-                                value={settings.tts.volc.endpoint}
+                                value={tts.volc.endpoint}
                                 onChange={(e) => updateVolcTTS({ endpoint: e.target.value })}
                                 placeholder="https://openspeech.bytedance.com/api/v1/tts"
                                 className="w-full glass-input p-3 text-sm"
@@ -754,7 +816,7 @@ export default function SettingsPage() {
                               <label className="block text-sm text-gray-400 mb-2">Cluster</label>
                               <input
                                 type="text"
-                                value={settings.tts.volc.cluster}
+                                value={tts.volc.cluster}
                                 onChange={(e) => updateVolcTTS({ cluster: e.target.value })}
                                 placeholder="volcano_tts"
                                 className="w-full glass-input p-3 text-sm"
@@ -764,7 +826,7 @@ export default function SettingsPage() {
                               <label className="block text-sm text-gray-400 mb-2">模型版本</label>
                               <input
                                 type="text"
-                                value={settings.tts.volc.model}
+                                value={tts.volc.model}
                                 onChange={(e) => updateVolcTTS({ model: e.target.value })}
                                 placeholder="seed-tts-1.1"
                                 className="w-full glass-input p-3 text-sm"
@@ -777,7 +839,7 @@ export default function SettingsPage() {
                               <label className="block text-sm text-gray-400 mb-2">默认旁白 voice_type</label>
                               <input
                                 type="text"
-                                value={settings.tts.volc.narratorVoiceType}
+                                value={tts.volc.narratorVoiceType}
                                 onChange={(e) => updateVolcTTS({ narratorVoiceType: e.target.value })}
                                 placeholder="例如：zh_female_cancan_mars_bigtts"
                                 className="w-full glass-input p-3 text-sm"
@@ -787,7 +849,7 @@ export default function SettingsPage() {
                               <label className="block text-sm text-gray-400 mb-2">默认对白（男）voice_type</label>
                               <input
                                 type="text"
-                                value={settings.tts.volc.dialogueMaleVoiceType}
+                                value={tts.volc.dialogueMaleVoiceType}
                                 onChange={(e) => updateVolcTTS({ dialogueMaleVoiceType: e.target.value })}
                                 placeholder="例如：zh_male_M392_conversation_wvae_bigtts"
                                 className="w-full glass-input p-3 text-sm"
@@ -797,7 +859,7 @@ export default function SettingsPage() {
                               <label className="block text-sm text-gray-400 mb-2">默认对白（女）voice_type</label>
                               <input
                                 type="text"
-                                value={settings.tts.volc.dialogueFemaleVoiceType}
+                                value={tts.volc.dialogueFemaleVoiceType}
                                 onChange={(e) => updateVolcTTS({ dialogueFemaleVoiceType: e.target.value })}
                                 placeholder="例如：zh_female_meilinyyou_moon_bigtts"
                                 className="w-full glass-input p-3 text-sm"
@@ -809,7 +871,7 @@ export default function SettingsPage() {
                             <label className="block text-sm text-gray-400 mb-2">默认对白（通用/兼容旧）voice_type（可选）</label>
                             <input
                               type="text"
-                              value={settings.tts.volc.dialogueVoiceType}
+                              value={tts.volc.dialogueVoiceType}
                               onChange={(e) => updateVolcTTS({ dialogueVoiceType: e.target.value })}
                               placeholder="可留空：未配置时将根据角色名/描述自动匹配内置音色库"
                               className="w-full glass-input p-3 text-sm"
@@ -823,7 +885,7 @@ export default function SettingsPage() {
                               <label className="block text-sm text-gray-400 mb-2">Base URL</label>
                               <input
                                 type="text"
-                                value={settings.tts.fish.baseUrl}
+                                value={tts.fish.baseUrl}
                                 onChange={(e) => updateFishTTS({ baseUrl: e.target.value })}
                                 placeholder="https://api.fish.audio"
                                 className="w-full glass-input p-3 text-sm"
@@ -833,7 +895,7 @@ export default function SettingsPage() {
                               <label className="block text-sm text-gray-400 mb-2">API Key</label>
                               <input
                                 type="password"
-                                value={settings.tts.fish.apiKey}
+                                value={tts.fish.apiKey}
                                 onChange={(e) => updateFishTTS({ apiKey: e.target.value })}
                                 placeholder="Fish API Key"
                                 className="w-full glass-input p-3 text-sm"
@@ -846,7 +908,7 @@ export default function SettingsPage() {
                               <label className="block text-sm text-gray-400 mb-2">Model (Header: model)</label>
                               <input
                                 type="text"
-                                value={settings.tts.fish.model}
+                                value={tts.fish.model}
                                 onChange={(e) => updateFishTTS({ model: e.target.value })}
                                 placeholder="speech-1.5 或 s1"
                                 className="w-full glass-input p-3 text-sm"
@@ -855,9 +917,9 @@ export default function SettingsPage() {
                             <div>
                               <button
                                 onClick={() => setFishLibraryOpen(true)}
-                                disabled={!settings.tts.fish.apiKey}
+                                disabled={!tts.fish.apiKey}
                                 className="w-full glass-button px-4 py-2 rounded-xl text-sm text-gray-200 hover:text-white disabled:opacity-50"
-                                title={settings.tts.fish.apiKey ? '列出 Fish voice models，并可上传音频创建 voice clone' : '请先填写 Fish.apiKey'}
+                                title={tts.fish.apiKey ? '列出 Fish voice models，并可上传音频创建 voice clone' : '请先填写 Fish.apiKey'}
                               >
                                 音色库
                               </button>
@@ -869,7 +931,7 @@ export default function SettingsPage() {
                               <label className="block text-sm text-gray-400 mb-2">默认旁白 reference_id</label>
                               <input
                                 type="text"
-                                value={settings.tts.fish.narratorVoiceType}
+                                value={tts.fish.narratorVoiceType}
                                 onChange={(e) => updateFishTTS({ narratorVoiceType: e.target.value })}
                                 placeholder="例如：802e3bc2b27e49c2995d23ef70e6ac89"
                                 className="w-full glass-input p-3 text-sm"
@@ -879,7 +941,7 @@ export default function SettingsPage() {
                               <label className="block text-sm text-gray-400 mb-2">默认对白（男）reference_id</label>
                               <input
                                 type="text"
-                                value={settings.tts.fish.dialogueMaleVoiceType}
+                                value={tts.fish.dialogueMaleVoiceType}
                                 onChange={(e) => updateFishTTS({ dialogueMaleVoiceType: e.target.value })}
                                 placeholder="例如：802e3bc2b27e49c2995d23ef70e6ac89"
                                 className="w-full glass-input p-3 text-sm"
@@ -889,7 +951,7 @@ export default function SettingsPage() {
                               <label className="block text-sm text-gray-400 mb-2">默认对白（女）reference_id</label>
                               <input
                                 type="text"
-                                value={settings.tts.fish.dialogueFemaleVoiceType}
+                                value={tts.fish.dialogueFemaleVoiceType}
                                 onChange={(e) => updateFishTTS({ dialogueFemaleVoiceType: e.target.value })}
                                 placeholder="例如：802e3bc2b27e49c2995d23ef70e6ac89"
                                 className="w-full glass-input p-3 text-sm"
@@ -901,7 +963,7 @@ export default function SettingsPage() {
                             <label className="block text-sm text-gray-400 mb-2">默认对白（通用/兼容旧）reference_id（可选）</label>
                             <input
                               type="text"
-                              value={settings.tts.fish.dialogueVoiceType}
+                              value={tts.fish.dialogueVoiceType}
                               onChange={(e) => updateFishTTS({ dialogueVoiceType: e.target.value })}
                               placeholder="可留空：建议优先填男女默认 reference_id"
                               className="w-full glass-input p-3 text-sm"
@@ -915,9 +977,9 @@ export default function SettingsPage() {
                   <div className="flex items-center gap-3">
                   <button
                     onClick={() => setFishLibraryOpen(true)}
-                    disabled={!settings.tts.fish.apiKey}
+                    disabled={!tts.fish.apiKey}
                     className="glass-button px-4 py-2 rounded-xl text-sm text-gray-200 hover:text-white disabled:opacity-50"
-                    title={settings.tts.fish.apiKey ? '列出 Fish voice models，并可上传音频创建 voice clone' : '请先填写 Fish.apiKey'}
+                    title={tts.fish.apiKey ? '列出 Fish voice models，并可上传音频创建 voice clone' : '请先填写 Fish.apiKey'}
                   >
                     音色库
                   </button>

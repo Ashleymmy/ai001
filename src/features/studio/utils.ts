@@ -27,6 +27,7 @@ export function isPromptFieldKey(value: string): value is PromptFieldKey {
 
 export function resolveRouteBase(pathname: string, fallback: string = '/studio'): string {
   const path = (pathname || '').toLowerCase()
+  if (path.startsWith('/studio-v2')) return '/studio-v2'
   if (path.startsWith('/short-video')) return '/short-video'
   if (path.startsWith('/digital-human')) return '/digital-human'
   return fallback

@@ -4,7 +4,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { MessageCircle, X, User, Loader2, Minimize2 } from 'lucide-react'
-import { agentChat } from '../services/api'
+import { agentChatStream } from '../services/api'
 import ChatInput from './ChatInput'
 
 interface Message {
@@ -124,26 +124,44 @@ export default function AIChatPanel() {
     setInput('')
     setIsLoading(true)
 
+    const assistantMessageId = (Date.now() + 1).toString()
+    setMessages(prev => [...prev, {
+      id: assistantMessageId,
+      role: 'assistant',
+      content: ''
+    }])
+
     try {
-      const response = await agentChat(input, undefined, {
-        assistant_mode: 'manager',
-        chat_history: messages.slice(-20).map((m) => ({ role: m.role, content: m.content }))
-      })
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: response.content || ''
-      }
-      setMessages(prev => [...prev, assistantMessage])
+      let streamed = ''
+      const response = await agentChatStream(
+        input,
+        undefined,
+        {
+          assistant_mode: 'manager',
+          chat_history: [...messages.slice(-19).map((m) => ({ role: m.role, content: m.content })), { role: 'user', content: input }],
+        },
+        {
+          onDelta: (partial) => {
+            streamed = partial
+            setMessages(prev => prev.map(msg => (
+              msg.id === assistantMessageId ? { ...msg, content: partial } : msg
+            )))
+          },
+        },
+      )
+      const finalContent = (response.content || streamed || '').trim() || '（无回复）'
+      setMessages(prev => prev.map(msg => (
+        msg.id === assistantMessageId ? { ...msg, content: finalContent } : msg
+      )))
     } catch (error: unknown) {
       if (error instanceof Error && error.name === 'CanceledError') {
         return
       }
-      setMessages(prev => [...prev, {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: '抱歉，出现了问题。请检查设置中的 API 配置。'
-      }])
+      setMessages(prev => prev.map(msg => (
+        msg.id === assistantMessageId
+          ? { ...msg, content: '抱歉，出现了问题。请检查设置中的 API 配置。' }
+          : msg
+      )))
     } finally {
       setIsLoading(false)
     }

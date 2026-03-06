@@ -1,0 +1,724 @@
+/* ==========================================================================
+   WelcomePage.css — 全屏滚动创意落地页 (丝滑过渡版)
+   ========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   CSS Custom Properties
+   --------------------------------------------------------------------------- */
+.welcome-page {
+  --wl-blue: #4A90D9;
+  --wl-sky: #87CEEB;
+  --wl-pink: #FF6B9D;
+  --wl-green: #4ECDC4;
+  --wl-yellow: #FFD93D;
+  --wl-purple: #6C5CE7;
+  --wl-text: #2D3436;
+  --wl-text-light: #636E72;
+  --wl-white: #FFFFFF;
+}
+
+/* ---------------------------------------------------------------------------
+   Body override
+   --------------------------------------------------------------------------- */
+body.welcome-active {
+  background-color: #fff !important;
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------------------
+   Full-screen scroll container
+   --------------------------------------------------------------------------- */
+.wl-scroll-container {
+  height: 100vh;
+  overflow-y: auto;
+  scroll-snap-type: y mandatory;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: none;
+}
+
+.wl-scroll-container::-webkit-scrollbar {
+  width: 0;
+  display: none;
+}
+
+/* ---------------------------------------------------------------------------
+   Each section = full viewport
+   --------------------------------------------------------------------------- */
+.wl-section {
+  height: 100vh;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  position: relative;
+  overflow: hidden;
+  padding: 60px 40px;
+  box-sizing: border-box;
+}
+
+/* ---------------------------------------------------------------------------
+   Section inner content wrapper — GPU-accelerated parallax
+   --------------------------------------------------------------------------- */
+.wl-section-inner {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  max-width: 1200px;
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  /* No CSS transition — updated every rAF frame by JS */
+}
+
+/* ---------------------------------------------------------------------------
+   Background color blending layer
+   --------------------------------------------------------------------------- */
+.wl-bg-blend {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  transition: background-color 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Make sections transparent so bg-blend shows through */
+.wl-section {
+  background: transparent !important;
+  position: relative;
+  z-index: 1;
+}
+
+/* ---------------------------------------------------------------------------
+   Section background colors (used by JS for blending)
+   --------------------------------------------------------------------------- */
+/* Colors defined in JS: SECTION_COLORS array */
+
+/* ---------------------------------------------------------------------------
+   Text animations: fade-in / slide-up
+   --------------------------------------------------------------------------- */
+.wl-fade-in {
+  opacity: 0;
+  transform: translateY(40px);
+  transition: opacity 1s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 1s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.wl-fade-in.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.wl-fade-in-left {
+  opacity: 0;
+  transform: translateX(-60px);
+  transition: opacity 1s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 1s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.wl-fade-in-left.visible {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.wl-fade-in-right {
+  opacity: 0;
+  transform: translateX(60px);
+  transition: opacity 1s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 1s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.wl-fade-in-right.visible {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.wl-scale-in {
+  opacity: 0;
+  transform: scale(0.85);
+  transition: opacity 0.9s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.9s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.wl-scale-in.visible {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* Stagger delays */
+.wl-delay-1 { transition-delay: 0.1s; }
+.wl-delay-2 { transition-delay: 0.2s; }
+.wl-delay-3 { transition-delay: 0.35s; }
+.wl-delay-4 { transition-delay: 0.5s; }
+.wl-delay-5 { transition-delay: 0.65s; }
+.wl-delay-6 { transition-delay: 0.8s; }
+
+/* ---------------------------------------------------------------------------
+   Keyword highlight boxes
+   --------------------------------------------------------------------------- */
+.wl-keyword {
+  display: inline-block;
+  padding: 4px 16px;
+  border-radius: 8px;
+  position: relative;
+  font-weight: 700;
+  color: #fff;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.wl-keyword:hover {
+  transform: scale(1.08);
+}
+
+.wl-keyword--green { background: var(--wl-green); }
+.wl-keyword--pink { background: var(--wl-pink); }
+.wl-keyword--blue { background: var(--wl-blue); }
+.wl-keyword--purple { background: var(--wl-purple); }
+
+/* ---------------------------------------------------------------------------
+   Horizontal Marquee (keyword tiling)
+   --------------------------------------------------------------------------- */
+@keyframes wl-marquee-left {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+@keyframes wl-marquee-right {
+  0% { transform: translateX(-50%); }
+  100% { transform: translateX(0); }
+}
+
+.wl-marquee {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 20px;
+  pointer-events: none;
+  /* Marquee has its own opacity, not affected by section-inner parallax */
+  will-change: opacity;
+  transition: opacity 0.6s ease;
+}
+
+.wl-marquee-row {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  will-change: transform;
+}
+
+.wl-marquee-row--left {
+  animation: wl-marquee-left 25s linear infinite;
+}
+
+.wl-marquee-row--right {
+  animation: wl-marquee-right 25s linear infinite;
+}
+
+.wl-marquee-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 32px;
+  font-size: 5rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  opacity: 0.12;
+  color: var(--wl-text);
+  user-select: none;
+  letter-spacing: 0.05em;
+}
+
+.wl-marquee-item svg {
+  width: 60px;
+  height: 60px;
+  flex-shrink: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Floating card (tagline section)
+   --------------------------------------------------------------------------- */
+.wl-float-card {
+  background: #fff;
+  border-radius: 24px;
+  padding: 48px 56px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.12);
+  max-width: 700px;
+  text-align: center;
+  position: relative;
+  z-index: 2;
+  transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.wl-float-card:hover {
+  transform: translateY(-6px);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.16);
+}
+
+/* ---------------------------------------------------------------------------
+   Bottom fixed navigation
+   --------------------------------------------------------------------------- */
+.wl-bottom-nav {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 90;
+  display: flex;
+  gap: 12px;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  padding: 10px 20px;
+  border-radius: 999px;
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.wl-nav-dot {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: #f0f0f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--wl-text-light);
+}
+
+.wl-nav-dot:hover {
+  transform: scale(1.18);
+  background: #e0e0e0;
+}
+
+.wl-nav-dot.active {
+  background: var(--wl-purple);
+  color: #fff;
+  border-color: var(--wl-purple);
+  box-shadow: 0 0 0 4px rgba(108, 92, 231, 0.25);
+  transform: scale(1.1);
+}
+
+/* Nav tooltip */
+.wl-nav-tooltip {
+  position: absolute;
+  bottom: 54px;
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  background: var(--wl-text);
+  color: #fff;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease, transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.wl-nav-dot:hover .wl-nav-tooltip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ---------------------------------------------------------------------------
+   Showcase color blocks
+   --------------------------------------------------------------------------- */
+.wl-blocks-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 20px;
+  max-width: 900px;
+  width: 100%;
+}
+
+.wl-block {
+  aspect-ratio: 1;
+  border-radius: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.wl-block:hover {
+  transform: scale(1.06) translateY(-4px);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.18);
+}
+
+/* Block floating animation */
+@keyframes wl-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+
+.wl-block--float {
+  animation: wl-float 4s ease-in-out infinite;
+}
+
+.wl-block--float:nth-child(2) { animation-delay: 0.5s; }
+.wl-block--float:nth-child(3) { animation-delay: 1s; }
+.wl-block--float:nth-child(4) { animation-delay: 1.5s; }
+.wl-block--float:nth-child(5) { animation-delay: 0.3s; }
+.wl-block--float:nth-child(6) { animation-delay: 0.8s; }
+.wl-block--float:nth-child(7) { animation-delay: 1.3s; }
+.wl-block--float:nth-child(8) { animation-delay: 1.8s; }
+
+/* Block fly-in animation */
+.wl-block-fly {
+  opacity: 0;
+  transform: translateY(80px) scale(0.8);
+  transition: opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.wl-block-fly.visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+/* Block overlay on hover */
+.wl-block-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  border-radius: 20px;
+  padding: 16px;
+}
+
+.wl-block:hover .wl-block-overlay {
+  opacity: 1;
+}
+
+/* ---------------------------------------------------------------------------
+   Two-column method layout
+   --------------------------------------------------------------------------- */
+.wl-method-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 60px;
+  max-width: 1000px;
+  width: 100%;
+  align-items: center;
+}
+
+/* ---------------------------------------------------------------------------
+   CTA round button
+   --------------------------------------------------------------------------- */
+.wl-cta-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 40px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 1.1rem;
+  cursor: pointer;
+  border: none;
+  transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+              background 0.3s ease,
+              color 0.3s ease;
+}
+
+.wl-cta-btn:active {
+  transform: scale(0.96);
+}
+
+.wl-cta-btn--primary {
+  background: var(--wl-text);
+  color: #fff;
+}
+
+.wl-cta-btn--primary:hover {
+  transform: scale(1.06);
+  box-shadow: 0 10px 35px rgba(0, 0, 0, 0.2);
+}
+
+.wl-cta-btn--white {
+  background: #fff;
+  color: var(--wl-text);
+}
+
+.wl-cta-btn--white:hover {
+  transform: scale(1.06);
+  box-shadow: 0 10px 35px rgba(0, 0, 0, 0.12);
+}
+
+.wl-cta-btn--outline {
+  background: transparent;
+  color: #fff;
+  border: 2px solid #fff;
+}
+
+.wl-cta-btn--outline:hover {
+  background: #fff;
+  color: var(--wl-text);
+  transform: scale(1.06);
+}
+
+/* ---------------------------------------------------------------------------
+   Philosophy card
+   --------------------------------------------------------------------------- */
+.wl-philosophy-card {
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 24px;
+  padding: 48px;
+  max-width: 600px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.1);
+  transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.wl-philosophy-card:hover {
+  transform: translateY(-6px);
+}
+
+/* ---------------------------------------------------------------------------
+   Scroll indicator
+   --------------------------------------------------------------------------- */
+@keyframes wl-scroll-bounce {
+  0%, 100% { transform: translateY(0); opacity: 1; }
+  50% { transform: translateY(10px); opacity: 0.5; }
+}
+
+.wl-scroll-hint {
+  position: absolute;
+  bottom: 30px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  color: rgba(0, 0, 0, 0.35);
+  font-size: 12px;
+  z-index: 5;
+  transition: opacity 0.4s ease;
+}
+
+.wl-scroll-hint svg {
+  animation: wl-scroll-bounce 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Dark section scroll hint */
+.wl-section--method .wl-scroll-hint,
+.wl-section--quality .wl-scroll-hint,
+.wl-section--cta .wl-scroll-hint {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+/* ---------------------------------------------------------------------------
+   Page transition overlay
+   --------------------------------------------------------------------------- */
+@keyframes wl-spinner {
+  to { transform: rotate(360deg); }
+}
+
+.wl-transition-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(8, 8, 14, 0.92);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.wl-transition-overlay.visible {
+  opacity: 1;
+}
+
+.wl-transition-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  opacity: 0;
+  transform: scale(0.92) translateY(10px);
+  transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.wl-transition-overlay.visible .wl-transition-box {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+}
+
+.wl-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: wl-spinner 0.8s linear infinite;
+}
+
+/* ---------------------------------------------------------------------------
+   Service cards in method section
+   --------------------------------------------------------------------------- */
+.wl-service-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.wl-service-item {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 20px 24px;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  transition: background 0.35s ease,
+              transform 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+  cursor: default;
+}
+
+.wl-service-item:hover {
+  background: rgba(255, 255, 255, 0.22);
+  transform: translateX(8px);
+}
+
+.wl-service-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Hero section typography
+   --------------------------------------------------------------------------- */
+.wl-hero-title {
+  font-size: 2.8rem;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--wl-text);
+  text-align: center;
+  max-width: 800px;
+}
+
+/* ---------------------------------------------------------------------------
+   Section-specific class markers (for scroll hint color logic)
+   --------------------------------------------------------------------------- */
+.wl-section--hero,
+.wl-section--creativity,
+.wl-section--tagline,
+.wl-section--method,
+.wl-section--quality,
+.wl-section--showcase,
+.wl-section--philosophy,
+.wl-section--cta {
+  /* Markers only — backgrounds handled by .wl-bg-blend */
+}
+
+/* ---------------------------------------------------------------------------
+   Responsive
+   --------------------------------------------------------------------------- */
+@media (max-width: 768px) {
+  .wl-section {
+    padding: 40px 20px;
+  }
+
+  .wl-hero-title {
+    font-size: 1.8rem;
+  }
+
+  .wl-blocks-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+
+  .wl-method-grid {
+    grid-template-columns: 1fr;
+    gap: 30px;
+  }
+
+  .wl-float-card {
+    padding: 32px 24px;
+  }
+
+  .wl-philosophy-card {
+    padding: 32px 24px;
+  }
+
+  .wl-marquee-item {
+    font-size: 3rem;
+  }
+
+  .wl-marquee-item svg {
+    width: 36px;
+    height: 36px;
+  }
+
+  .wl-bottom-nav {
+    bottom: 12px;
+    gap: 8px;
+    padding: 8px 14px;
+  }
+
+  .wl-nav-dot {
+    width: 36px;
+    height: 36px;
+    font-size: 10px;
+  }
+
+  .wl-nav-tooltip {
+    display: none;
+  }
+
+  .wl-cta-btn {
+    padding: 14px 28px;
+    font-size: 1rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .wl-hero-title {
+    font-size: 1.5rem;
+  }
+
+  .wl-marquee-item {
+    font-size: 2rem;
+    padding: 0 16px;
+    gap: 10px;
+  }
+
+  .wl-marquee-item svg {
+    width: 24px;
+    height: 24px;
+  }
+}

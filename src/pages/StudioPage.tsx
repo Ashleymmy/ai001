@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
-import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   ArrowLeft, Settings2, Plus, Film, Users, MapPin, Package,
   Loader2, Play, RefreshCw, ChevronRight,
@@ -20,6 +20,7 @@ import type {
   StudioElementRenderMode,
   StudioElementReferenceMode,
   StudioPromptBatchCheckItem,
+  StudioBatchGenerateStreamEvent,
 } from '../services/api'
 import type {
   StudioEpisode,
@@ -64,6 +65,9 @@ import type {
   DigitalHumanProfileDraft,
   PromptFieldKey,
 } from '../features/studio/types'
+import CapsuleNav from '../components/ui-v2/CapsuleNav'
+import LLMStageStreamCard from '../components/ui-v2/LLMStageStreamCard'
+import { fromStudioBatchStream, type UnifiedStreamEvent } from '../features/stream/streamEventBridge'
 export type { WorkbenchMode } from '../features/studio/types'
 import {
   isPromptFieldKey,
@@ -105,8 +109,6 @@ const PROMPT_FIELD_META: Array<{ field: PromptFieldKey; label: string }> = [
   { field: 'video_prompt', label: '视频提示词' },
 ]
 
-import type { WorkbenchMode } from '../features/studio/types'
-
 
 // ============================================================
 // StudioPage - 长篇制作工作台
@@ -114,12 +116,13 @@ import type { WorkbenchMode } from '../features/studio/types'
 
 interface StudioPageProps {
   forcedWorkbenchMode?: WorkbenchMode
-  routeBase?: '/studio' | '/short-video' | '/digital-human'
+  routeBase?: '/studio' | '/short-video' | '/digital-human' | '/studio-v2'
 }
 
 export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPageProps = {}) {
   const location = useLocation()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { seriesId, episodeId } = useParams()
   const store = useStudioStore()
   const workspaceInitialized = useWorkspaceStore((state) => state.initialized)
@@ -128,6 +131,7 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
   const workspaces = useWorkspaceStore((state) => state.workspaces)
   const setWorkspaceId = useWorkspaceStore((state) => state.setCurrentWorkspaceId)
   const routePrefix = routeBase || resolveRouteBase(location.pathname, '/studio')
+  const isV2Route = routePrefix === '/studio-v2' || location.pathname.startsWith('/studio-v2')
   const workbenchMode: WorkbenchMode = forcedWorkbenchMode || inferModeByRoute(routePrefix)
   const workbenchLabel = getWorkbenchLabel(workbenchMode)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
@@ -144,6 +148,7 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
   const [agentExportOptions, setAgentExportOptions] = useState<AgentExportOptions>(createDefaultAgentExportOptions)
   const [selectedAgentProjectId, setSelectedAgentProjectId] = useState('')
   const [exportProgress, setExportProgress] = useState<StudioExportProgress | null>(null)
+  const [v2StreamEvents, setV2StreamEvents] = useState<UnifiedStreamEvent[]>([])
   const exportHideTimerRef = useRef<number | null>(null)
   const [toasts, setToasts] = useState<StudioToast[]>([])
   const [networkIssue, setNetworkIssue] = useState<string | null>(null)
@@ -295,6 +300,78 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
     store.planning,
     store.sharedElements.length,
   ])
+
+  const v2Stage = useMemo(() => {
+    const raw = (searchParams.get('stage') || '').trim().toLowerCase()
+    if (raw === 'series' || raw === 'episode' || raw === 'assets' || raw === 'shots' || raw === 'batch' || raw === 'history' || raw === 'export') {
+      return raw
+    }
+    return 'series'
+  }, [searchParams])
+
+  const setV2Stage = useCallback((stage: string) => {
+    const next = new URLSearchParams(searchParams)
+    next.set('stage', stage)
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
+
+  const v2StageItems = useMemo(() => {
+    const progress = store.generationProgress
+    const stageByProgress =
+      progress.stage === 'generating_elements' ? 'assets' :
+      progress.stage === 'generating_frames' || progress.stage === 'generating_key_frames' || progress.stage === 'generating_end_frames' ? 'shots' :
+      progress.stage === 'generating_videos' || progress.stage === 'generating_audio' ? 'batch' :
+      progress.stage === 'complete' ? 'export' :
+      progress.stage === 'error' ? 'batch' :
+      null
+
+    const items = [
+      { id: 'series', label: '系列' },
+      { id: 'episode', label: '分集' },
+      { id: 'assets', label: '元素' },
+      { id: 'shots', label: '镜头' },
+      { id: 'batch', label: '批量' },
+      { id: 'history', label: '历史' },
+      { id: 'export', label: '导出' },
+    ]
+    return items.map((item) => ({
+      ...item,
+      status: stageByProgress === item.id ? 'processing' as const : 'idle' as const,
+    }))
+  }, [store.generationProgress])
+
+  const v2ConsoleStages = useMemo(() => {
+    const p = store.generationProgress
+    return [
+      { id: 'elements', title: '元素生成', status: p.stage === 'generating_elements' ? 'processing' : p.stage === 'complete' ? 'completed' : 'pending', progress: p.stage === 'generating_elements' ? p.percent : undefined, meta: p.currentItem || '' },
+      { id: 'frames', title: '画面生成', status: p.stage === 'generating_frames' || p.stage === 'generating_key_frames' || p.stage === 'generating_end_frames' ? 'processing' : p.stage === 'complete' ? 'completed' : 'pending', progress: (p.stage === 'generating_frames' || p.stage === 'generating_key_frames' || p.stage === 'generating_end_frames') ? p.percent : undefined, meta: p.currentItem || '' },
+      { id: 'videos', title: '视频生成', status: p.stage === 'generating_videos' ? 'processing' : p.stage === 'complete' ? 'completed' : 'pending', progress: p.stage === 'generating_videos' ? p.percent : undefined, meta: p.currentItem || '' },
+      { id: 'audio', title: '音频生成', status: p.stage === 'generating_audio' ? 'processing' : p.stage === 'complete' ? 'completed' : 'pending', progress: p.stage === 'generating_audio' ? p.percent : undefined, meta: p.currentItem || '' },
+    ] as const
+  }, [store.generationProgress])
+
+  useEffect(() => {
+    const p = store.generationProgress
+    if (p.stage === 'idle') return
+    const mappedStage: StudioBatchGenerateStreamEvent['stage'] =
+      p.stage === 'generating_elements' ? 'elements' :
+      p.stage === 'generating_frames' ? 'frames' :
+      p.stage === 'generating_key_frames' ? 'key_frames' :
+      p.stage === 'generating_end_frames' ? 'end_frames' :
+      p.stage === 'generating_videos' ? 'videos' :
+      p.stage === 'generating_audio' ? 'audio' :
+      undefined
+    if (!mappedStage) return
+    const event = fromStudioBatchStream({
+      type: p.stage === 'error' ? 'error' : p.stage === 'complete' ? 'done' : 'item_start',
+      stage: mappedStage,
+      item_name: p.currentItem,
+      percent: p.percent,
+      mode: p.mode,
+      task_id: p.taskId,
+    })
+    setV2StreamEvents((prev) => [...prev.slice(-59), event])
+  }, [store.generationProgress])
 
   const pushToast = useCallback((toast: Omit<StudioToast, 'id'>) => {
     const id = `toast_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
@@ -1046,7 +1123,7 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
   }
 
   return (
-    <div className="h-screen flex flex-col bg-gray-950 text-gray-100">
+    <div className={`${isV2Route ? 'ui-v2' : ''} h-screen flex flex-col ${isV2Route ? '' : 'bg-gray-950 text-gray-100'}`}>
       {/* 顶部工具栏 */}
       <header className="flex items-center justify-between h-12 px-4 bg-gray-900 border-b border-gray-800 shrink-0">
         <div className="flex items-center gap-3">
@@ -1195,6 +1272,12 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
           </button>
         </div>
       </header>
+
+      {isV2Route && (
+        <div className="px-4 py-2 border-b border-slate-200 bg-white/60 backdrop-blur-md">
+          <CapsuleNav items={v2StageItems} activeId={v2Stage} onChange={setV2Stage} />
+        </div>
+      )}
 
       {showRecoveryCenter && (
         <RecoveryCenterPanel
@@ -1528,6 +1611,19 @@ export default function StudioPage({ forcedWorkbenchMode, routeBase }: StudioPag
           toasts={toasts}
           onClose={removeToast}
         />
+      )}
+
+      {isV2Route && store.generating && store.generationScope === 'batch' && (
+        <div className="fixed right-4 top-[96px] z-[68] w-[360px] max-w-[42vw]">
+          <LLMStageStreamCard
+            title="Studio 执行链路（v2）"
+            stages={v2ConsoleStages}
+            activeMessage={store.generationProgress.currentItem || undefined}
+            outputText={v2StreamEvents.length > 0 ? v2StreamEvents[v2StreamEvents.length - 1]?.message : ''}
+            mode={store.generationProgress.mode}
+            taskId={store.generationProgress.taskId}
+          />
+        </div>
       )}
 
       <StudioDynamicIsland indicator={activityIndicator} />
