@@ -1,0 +1,81 @@
+name: ai001-isolated
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ai001_redis_data:/data
+    networks:
+      - ai001_net
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - redis
+    environment:
+      AI_STORYBOARDER_PORT: "8001"
+      TZ: ${TZ:-Asia/Shanghai}
+      USE_TASK_QUEUE: ${USE_TASK_QUEUE:-false}
+      TASK_QUEUE_REDIS_HOST: "redis"
+      TASK_QUEUE_REDIS_PORT: "6379"
+    ports:
+      - "${BACKEND_HOST_PORT:-18011}:8001"
+    volumes:
+      - ai001_backend_data:/app/backend/data
+      - ai001_backend_outputs:/app/backend/outputs
+      - ai001_backend_uploads:/app/backend/uploads
+    networks:
+      - ai001_net
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - redis
+    working_dir: /app/backend
+    command: ["arq", "services.studio.task_queue.queue_manager.WorkerSettings"]
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      TASK_QUEUE_REDIS_HOST: "redis"
+      TASK_QUEUE_REDIS_PORT: "6379"
+    volumes:
+      - ai001_backend_data:/app/backend/data
+      - ai001_backend_outputs:/app/backend/outputs
+      - ai001_backend_uploads:/app/backend/uploads
+    networks:
+      - ai001_net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+      args:
+        VITE_BACKEND_PORT: ${BACKEND_HOST_PORT:-18011}
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${FRONTEND_HOST_PORT:-5184}:80"
+    networks:
+      - ai001_net
+
+networks:
+  ai001_net:
+    name: ai001_isolated_net
+    driver: bridge
+
+volumes:
+  ai001_redis_data:
+  ai001_backend_data:
+  ai001_backend_outputs:
+  ai001_backend_uploads:

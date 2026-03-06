@@ -117,11 +117,106 @@ npm run dev
 
 访问 **http://localhost:5174** 开始使用（后端端口：`18001`）
 
+#### 任务队列模式（可选）
+
+默认走 legacy 同步链路。若需启用任务队列链路（`task_queue`）：
+
+```bash
+# 终端 1 - Redis
+redis-server
+
+# 终端 2 - Worker
+cd backend
+TASK_QUEUE_REDIS_HOST=127.0.0.1 TASK_QUEUE_REDIS_PORT=6379 arq services.studio.task_queue.queue_manager.WorkerSettings
+
+# 终端 3 - Backend（开启队列）
+cd backend
+USE_TASK_QUEUE=true TASK_QUEUE_REDIS_HOST=127.0.0.1 TASK_QUEUE_REDIS_PORT=6379 python -m uvicorn main:app --reload --port 18001
+```
+
+运行时开关支持：
+
+- `USE_TASK_QUEUE`
+- `USE_TASK_QUEUE_STUDIO`
+- `USE_TASK_QUEUE_AGENT`
+- `USE_TASK_QUEUE_MODULE`
+- `TASK_QUEUE_POLL_INTERVAL_MS`
+- `TASK_QUEUE_WAIT_TIMEOUT_SEC`
+- `CORS_ALLOW_ORIGINS`
+
+队列健康检查：`GET /api/health/queue`
+
+安全治理约束：当 `AUTH_REQUIRED=true` 时，必须显式设置 `COLLAB_JWT_SECRET`（不能使用默认值）。
+
 #### Electron 桌面模式
 
 ```bash
 npm run electron:dev
 ```
+
+### 4. Docker 隔离部署（与现有 Web 服务端口隔离）
+
+项目提供独立编排文件：`docker-compose.isolated.yml`，默认端口与本地开发端口错开：
+
+- 前端（容器）：`5184`
+- 后端（容器）：`18011`
+- 本地开发默认：`5174/18001`
+
+```bash
+# 1) 可选：复制端口配置（按需改端口）
+cp .env.docker.example .env.docker
+
+# 2) 构建并启动
+docker compose --env-file .env.docker -f docker-compose.isolated.yml up -d --build
+
+# 3) 查看状态
+docker compose -f docker-compose.isolated.yml ps
+```
+
+如需容器内启用任务队列，设置环境变量：
+
+```bash
+USE_TASK_QUEUE=true docker compose --env-file .env.docker -f docker-compose.isolated.yml up -d --build
+```
+
+访问地址：
+
+- 前端：`http://localhost:5184`
+- 后端文档：`http://localhost:18011/docs`
+
+停止与清理：
+
+```bash
+docker compose -f docker-compose.isolated.yml down
+```
+
+如需同时保留容器内数据卷（`backend/data`、`outputs`、`uploads`），不要加 `-v`。
+
+---
+
+## 测试与验收
+
+项目提供一键验收脚本（构建 + 后端编译检查 + Studio 测试）：
+
+```bash
+# macOS / Linux / WSL
+./scripts/qa/run_acceptance.sh
+```
+
+```bat
+:: Windows
+scripts\windows\run_acceptance.bat
+```
+
+首次机器可追加 `--install-backend-deps` 自动安装后端依赖（包含 `pytest`）。
+
+前端迁移 smoke（Studio/Agent v2）可追加：
+
+```bash
+python scripts/qa/run_acceptance.py --ui-v2-smoke --skip-backend-tests
+```
+
+完整说明见：`docs/TESTING.md`
 
 ---
 
@@ -215,7 +310,12 @@ ai001/
 | `/home/api-monitor` | ApiMonitorPage | API 监控 |
 | `/home/project/:id` | ProjectPage | 项目详情 |
 | `/agent` | AgentPage | Agent 对话创作 |
+| `/agent-v2` | AgentPageV2 | Agent 新版灰度路由（胶囊导航 + 执行链路卡） |
+| `/agent-v2/:projectId` | AgentPageV2 | Agent 新版项目路由 |
 | `/studio` | StudioPage | Studio 长篇工作台 |
+| `/studio-v2` | StudioPageV2 | Studio 新版灰度路由（阶段导航 + 执行链路卡） |
+| `/studio-v2/:seriesId` | StudioPageV2 | Studio 新版系列路由 |
+| `/studio-v2/:seriesId/:episodeId` | StudioPageV2 | Studio 新版项目路由 |
 | `/short-video` | ShortVideoWorkbenchPage | 短视频工作台 |
 | `/digital-human` | DigitalHumanWorkbenchPage | 数字人工作台 |
 | `/auth` | AuthPage | 登录/注册 |

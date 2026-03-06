@@ -11,6 +11,7 @@
 - `音频agent脚本解析.md`
 - `API监控-火山配额配置与使用.md`
 - `BUILD.md`
+- `TESTING.md`
 
 ## 归档资料
 
