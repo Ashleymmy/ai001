@@ -209,6 +209,82 @@ class LLMService:
             print(f"[Chat] 调用失败: {e}")
             return f"调用 {self.provider} API 失败: {str(e)}\n\n请检查 API Key 和网络连接。"
 
+    async def stream_chat(
+        self,
+        message: str,
+        context: Optional[str] = None,
+    ) -> AsyncGenerator[dict, None]:
+        """流式对话接口，输出 delta/complete/error 事件。"""
+        print(f"[ChatStream] 收到消息: {message[:50]}...")
+        print(f"[ChatStream] API Key: {'已配置' if self.api_key else '未配置'}, Provider: {self.provider}")
+
+        if not self.client:
+            reply = self._simple_chat(message)
+            yield {"type": "delta", "content": reply, "accumulated": reply}
+            yield {"type": "complete", "content": reply, "parsed": None}
+            return
+
+        system_prompt = """你是一位专业的影视分镜助手，擅长：
+1. 优化和改进剧情描述
+2. 提供分镜创意和建议
+3. 解释镜头语言和画面构图
+4. 帮助用户完善视频脚本
+
+请用简洁、专业的语言回答用户问题。"""
+
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+        if context:
+            messages.append({
+                "role": "system",
+                "content": f"当前项目上下文：{context}"
+            })
+        messages.append({"role": "user", "content": message})
+
+        accumulated = ""
+        try:
+            stream = await self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=1000,
+                stream=True,
+            )
+
+            async for chunk in stream:
+                choice = chunk.choices[0] if chunk.choices else None
+                if choice is None:
+                    continue
+
+                delta_content = choice.delta.content if choice.delta else None
+                if delta_content:
+                    accumulated += delta_content
+                    yield {
+                        "type": "delta",
+                        "content": delta_content,
+                        "accumulated": accumulated,
+                    }
+
+                if choice.finish_reason is not None:
+                    break
+
+            if not accumulated:
+                accumulated = "抱歉，我没有理解你的问题。"
+            yield {
+                "type": "complete",
+                "content": accumulated,
+                "parsed": None,
+            }
+        except asyncio.CancelledError:
+            if accumulated:
+                yield {
+                    "type": "complete",
+                    "content": accumulated,
+                    "parsed": None,
+                }
+        except Exception as e:
+            print(f"[ChatStream] 调用失败: {e}")
+            yield {"type": "error", "message": f"调用 {self.provider} API 失败: {str(e)}"}
+
     async def generate_text(
         self,
         prompt: str,

@@ -55,7 +55,6 @@ from schemas.settings import (
     KBAssemblePreviewRequest,
 )
 import dependencies as deps
-from dependencies import USE_TASK_QUEUE
 
 router = APIRouter(prefix="/api/studio", tags=["studio"])
 
@@ -1413,7 +1412,7 @@ async def studio_batch_generate_stream(
 
     async def event_generator():
         # ── Phase 4: 任务队列路径 ──
-        if USE_TASK_QUEUE:
+        if deps.resolve_runtime_mode("studio", "/api/studio/episodes/{episode_id}/batch-generate-stream") == "task_queue":
             async for chunk in _studio_batch_generate_via_queue(
                 service, episode_id, episode, stage_list, parallel_cfg,
                 video_generate_audio, image_width, image_height,
@@ -1679,6 +1678,7 @@ async def studio_save_settings(
 
     # 重新配置服务
     service.configure(deps.studio_current_settings)
+    deps.sync_runtime_service_refs()
     return {"ok": True, "settings": deps.studio_current_settings}
 
 
@@ -2749,131 +2749,397 @@ async def _studio_batch_generate_via_queue(
     element_reference_mode,
     request,
 ):
-    """通过任务队列执行批量生成，以 SSE 事件流形式推送进度。
-
-    将每个 shot 的生成拆为独立 Task 入队，SSE 从 TaskEventBus 读取事件。
-    支持 Last-Event-ID 重连重放。
-    """
-    import os
-    from services.studio.task_queue.storage import TaskStorage
+    """通过任务队列执行批量生成，SSE 通过 task_events 持久层轮询推送。"""
     from services.studio.task_queue.types import CreateTaskInput
-    from services.studio.task_queue.event_bus import TaskEventBus
 
-    db_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "data", "task_queue.db",
-    )
-    task_storage = TaskStorage(db_path)
-    event_bus = TaskEventBus(task_storage)
+    def _parse_last_event_id() -> int:
+        raw = request.headers.get("Last-Event-ID", "0") if hasattr(request, "headers") else "0"
+        try:
+            return max(0, int(raw))
+        except Exception:
+            return 0
 
+    def _decode_result(raw: Any) -> Dict[str, Any]:
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+    def _apply_result(task_obj, payload: Dict[str, Any]) -> None:
+        target_id = str(task_obj.target_id or "").strip()
+        if not target_id:
+            return
+        if task_obj.type == "image_frame":
+            image_url = str(payload.get("image_url") or "").strip()
+            if not image_url:
+                return
+            if task_obj.target_type == "element":
+                service.storage.update_shared_element(target_id, {"image_url": image_url})
+                return
+            stage_token = str(task_obj.payload.get("stage") or "start_frame")
+            if stage_token == "key_frame":
+                service.storage.update_shot(target_id, {"key_frame_url": image_url, "status": "key_frame_ready"})
+            elif stage_token == "end_frame":
+                service.storage.update_shot(target_id, {"end_image_url": image_url, "status": "end_frame_ready"})
+            else:
+                service.storage.update_shot(target_id, {"start_image_url": image_url, "status": "frame_ready"})
+            return
+        if task_obj.type == "video_panel":
+            video_url = str(payload.get("video_url") or "").strip()
+            updates = {"status": "video_ready" if video_url else "video_failed"}
+            if video_url:
+                updates["video_url"] = video_url
+            service.storage.update_shot(target_id, updates)
+
+    task_storage = deps.get_task_queue_storage(required=True)
+    submitter = deps.get_task_queue_submitter("studio", "/api/studio/episodes/{episode_id}/batch-generate-stream", required=True)
+    poll_interval = max(0.1, deps.TASK_QUEUE_POLL_INTERVAL_MS / 1000.0)
+    timeout_sec = max(120, deps.TASK_QUEUE_WAIT_TIMEOUT_SEC)
+    queued_stuck_timeout = min(30.0, max(8.0, timeout_sec / 4))
     series_id = str(episode.get("series_id", ""))
+    queue_stages = [stage for stage in stage_list if stage in {"elements", "frames", "key_frames", "end_frames", "videos"}]
 
-    # 解析 Last-Event-ID 用于重连重放
-    last_event_id = 0
-    raw_last_id = request.headers.get("Last-Event-ID", "0") if hasattr(request, "headers") else "0"
-    try:
-        last_event_id = int(raw_last_id)
-    except (ValueError, TypeError):
-        pass
-
-    # 重放历史事件
-    if last_event_id > 0:
-        replayed = await event_bus.replay_after(episode_id, last_event_id)
-        for ev in replayed:
-            payload = {
-                "type": ev.event_type,
-                "task_id": ev.task_id,
-                **ev.payload,
-            }
-            yield f"id: {ev.id}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-    # 获取 shot 列表
-    shots = service.storage.list_shots(episode_id)
-    if not shots:
-        yield f"data: {json.dumps({'type': 'done', 'generated': 0, 'total': 0}, ensure_ascii=False)}\n\n"
-        return
-
-    # 为每个需要生成的 shot 创建任务
-    task_ids = []
-    total = len(shots)
-    yield f"data: {json.dumps({'type': 'start', 'total': total, 'percent': 0, 'mode': 'task_queue'}, ensure_ascii=False)}\n\n"
-
-    for shot in shots:
-        shot_id = shot.get("id", "")
-
-        # 根据 stage_list 决定 task type
-        task_type = "image_frame"
-        queue_type = "image"
-        payload = {
-            "prompt": shot.get("prompt", ""),
-            "description": shot.get("description", ""),
-            "shot_id": shot_id,
-            "episode_id": episode_id,
-            "stages": stage_list,
-        }
-        if image_width:
-            payload["width"] = image_width
-        if image_height:
-            payload["height"] = image_height
-        if element_use_reference is not None:
-            payload["element_use_reference"] = element_use_reference
-        if element_reference_mode:
-            payload["element_reference_mode"] = element_reference_mode
-
-        dedupe_key = f"studio:{episode_id}:{shot_id}:{task_type}"
-
-        inp = CreateTaskInput(
-            type=task_type,
-            queue_type=queue_type,
-            target_type="shot",
-            target_id=shot_id,
-            series_id=series_id,
-            episode_id=episode_id,
-            runtime="studio",
-            priority=0,
-            max_attempts=3,
-            payload=payload,
-            dedupe_key=dedupe_key,
-        )
-        task = task_storage.create_task(inp)
-        task_ids.append(task.id)
-
-    # 订阅事件并推送 SSE
-    sub_queue = event_bus.subscribe(episode_id)
     completed = 0
     failed = 0
+    skipped = 0
+    total = 0
+    last_event_id = _parse_last_event_id()
 
-    try:
-        import asyncio
-        timeout_count = 0
-        max_idle_timeouts = 1200  # 10 分钟 (0.5s * 1200)
+    yield f"data: {json.dumps({'type': 'start', 'total': total, 'percent': 0, 'mode': 'task_queue'}, ensure_ascii=False)}\n\n"
 
-        while completed + failed < total and timeout_count < max_idle_timeouts:
-            try:
-                ev = await asyncio.wait_for(sub_queue.get(), timeout=0.5)
-                timeout_count = 0
+    for stage_index, stage_name in enumerate(queue_stages, start=1):
+        stage_task_ids: List[str] = []
+        stage_skipped = 0
+        stage_meta: Dict[str, Dict[str, Any]] = {}
 
-                payload = {
-                    "type": ev.event_type,
-                    "task_id": ev.task_id,
-                    **ev.payload,
-                }
+        shots = service.storage.get_shots(episode_id)
+        elements = service.storage.get_shared_elements(series_id) if series_id else []
 
-                if ev.event_type == "completed":
+        if stage_name == "elements":
+            for element in elements:
+                element_id = str(element.get("id") or "").strip()
+                if not element_id:
+                    continue
+                prompt = str(element.get("description") or element.get("name") or "").strip()
+                if not prompt:
+                    stage_skipped += 1
+                    continue
+                item_name = str(element.get("name") or element_id)
+                task, _ = await submitter.submit_task(CreateTaskInput(
+                    type="image_frame",
+                    queue_type="image",
+                    target_type="element",
+                    target_id=element_id,
+                    series_id=series_id,
+                    episode_id=episode_id,
+                    runtime="studio",
+                    max_attempts=3,
+                    dedupe_key=f"studio:{episode_id}:{element_id}:element",
+                    payload={
+                        "prompt": prompt,
+                        "stage": "element",
+                        "width": image_width or 1024,
+                        "height": image_height or 576,
+                    },
+                ))
+                stage_task_ids.append(task.id)
+                stage_meta[task.id] = {"stage": stage_name, "item_id": element_id, "item_name": item_name}
+
+        elif stage_name in {"frames", "key_frames", "end_frames"}:
+            stage_token = {
+                "frames": "start_frame",
+                "key_frames": "key_frame",
+                "end_frames": "end_frame",
+            }[stage_name]
+            for shot in shots:
+                shot_id = str(shot.get("id") or "").strip()
+                if not shot_id:
+                    continue
+                if stage_token == "key_frame":
+                    prompt = str(shot.get("key_frame_prompt") or shot.get("prompt") or shot.get("description") or "").strip()
+                elif stage_token == "end_frame":
+                    prompt = str(shot.get("end_prompt") or shot.get("prompt") or shot.get("description") or "").strip()
+                else:
+                    prompt = str(shot.get("prompt") or shot.get("description") or "").strip()
+                if not prompt:
+                    stage_skipped += 1
+                    continue
+                item_name = str(shot.get("name") or shot_id)
+                task, _ = await submitter.submit_task(CreateTaskInput(
+                    type="image_frame",
+                    queue_type="image",
+                    target_type="shot",
+                    target_id=shot_id,
+                    series_id=series_id,
+                    episode_id=episode_id,
+                    runtime="studio",
+                    max_attempts=3,
+                    dedupe_key=f"studio:{episode_id}:{shot_id}:{stage_token}",
+                    payload={
+                        "prompt": prompt,
+                        "shot_id": shot_id,
+                        "stage": stage_token,
+                        "width": image_width or 1024,
+                        "height": image_height or 576,
+                        "element_use_reference": element_use_reference,
+                        "element_reference_mode": element_reference_mode or "none",
+                    },
+                ))
+                stage_task_ids.append(task.id)
+                stage_meta[task.id] = {"stage": stage_name, "item_id": shot_id, "item_name": item_name}
+
+        elif stage_name == "videos":
+            for shot in shots:
+                shot_id = str(shot.get("id") or "").strip()
+                image_url = str(shot.get("start_image_url") or "").strip()
+                if not shot_id or not image_url:
+                    stage_skipped += 1
+                    continue
+                prompt = str(shot.get("video_prompt") or shot.get("prompt") or shot.get("description") or "").strip()
+                item_name = str(shot.get("name") or shot_id)
+                task, _ = await submitter.submit_task(CreateTaskInput(
+                    type="video_panel",
+                    queue_type="video",
+                    target_type="shot",
+                    target_id=shot_id,
+                    series_id=series_id,
+                    episode_id=episode_id,
+                    runtime="studio",
+                    max_attempts=3,
+                    dedupe_key=f"studio:{episode_id}:{shot_id}:video",
+                    payload={
+                        "image_url": image_url,
+                        "prompt": prompt,
+                        "duration": shot.get("duration", 5),
+                        "resolution": "720p",
+                    },
+                ))
+                stage_task_ids.append(task.id)
+                stage_meta[task.id] = {"stage": stage_name, "item_id": shot_id, "item_name": item_name}
+
+        skipped += stage_skipped
+        total += len(stage_task_ids) + stage_skipped
+        yield f"data: {json.dumps({'type': 'stage_start', 'stage': stage_name, 'stage_total': len(stage_task_ids), 'stage_index': stage_index, 'processed': completed + failed, 'failed': failed, 'skipped': skipped, 'total': total, 'percent': int(((completed + failed + skipped) / total) * 100) if total else 0, 'mode': 'task_queue'}, ensure_ascii=False)}\n\n"
+
+        if not stage_task_ids:
+            continue
+
+        pending = set(stage_task_ids)
+        queued_since = {task_id: datetime.now().timestamp() for task_id in stage_task_ids}
+        deadline = datetime.now().timestamp() + timeout_sec
+
+        while pending and datetime.now().timestamp() < deadline:
+            events = task_storage.list_events_after_for_tasks(stage_task_ids, last_event_id, limit=200)
+            if events:
+                for ev in events:
+                    last_event_id = max(last_event_id, ev.id)
+                    meta = stage_meta.get(ev.task_id, {"stage": stage_name, "item_id": "", "item_name": ""})
+                    if ev.event_type in {"created", "processing", "retry"}:
+                        if ev.event_type == "processing":
+                            queued_since.pop(ev.task_id, None)
+                        payload = {
+                            "type": "item_start",
+                            "task_id": ev.task_id,
+                            "stage": meta.get("stage"),
+                            "item_id": meta.get("item_id"),
+                            "item_name": meta.get("item_name"),
+                            "processed": completed + failed,
+                            "failed": failed,
+                            "total": total,
+                            "percent": int(((completed + failed + skipped) / total) * 100) if total else 0,
+                            "mode": "task_queue",
+                            **ev.payload,
+                        }
+                        yield f"id: {ev.id}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                        continue
+
+                    if ev.event_type == "completed":
+                        if ev.task_id in pending:
+                            pending.remove(ev.task_id)
+                            completed += 1
+                        task = task_storage.get_task(ev.task_id)
+                        if task:
+                            _apply_result(task, ev.payload)
+                        payload = {
+                            "type": "item_complete",
+                            "task_id": ev.task_id,
+                            "stage": meta.get("stage"),
+                            "item_id": meta.get("item_id"),
+                            "item_name": meta.get("item_name"),
+                            "ok": True,
+                            "processed": completed + failed,
+                            "failed": failed,
+                            "skipped": skipped,
+                            "total": total,
+                            "percent": int(((completed + failed + skipped) / total) * 100) if total else 100,
+                            "mode": "task_queue",
+                            **ev.payload,
+                        }
+                        yield f"id: {ev.id}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                        continue
+
+                    if ev.event_type == "failed":
+                        if ev.task_id in pending:
+                            pending.remove(ev.task_id)
+                            failed += 1
+                        task = task_storage.get_task(ev.task_id)
+                        if task and task.type == "video_panel":
+                            service.storage.update_shot(str(task.target_id or ""), {"status": "video_failed"})
+                        payload = {
+                            "type": "error",
+                            "task_id": ev.task_id,
+                            "stage": meta.get("stage"),
+                            "item_id": meta.get("item_id"),
+                            "item_name": meta.get("item_name"),
+                            "ok": False,
+                            "error": ev.payload.get("error_message", ""),
+                            "processed": completed + failed,
+                            "failed": failed,
+                            "skipped": skipped,
+                            "total": total,
+                            "percent": int(((completed + failed + skipped) / total) * 100) if total else 100,
+                            "mode": "task_queue",
+                        }
+                        yield f"id: {ev.id}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                continue
+
+            now_ts = datetime.now().timestamp()
+            for task_id in list(pending):
+                task = task_storage.get_task(task_id)
+                if not task:
+                    continue
+                meta = stage_meta.get(task_id, {"stage": stage_name, "item_id": task.target_id, "item_name": task.target_id})
+                if task.status == "completed":
+                    pending.remove(task_id)
                     completed += 1
-                    payload["percent"] = int(((completed + failed) / total) * 100)
-                elif ev.event_type == "failed":
+                    data = _decode_result(task.result)
+                    _apply_result(task, data)
+                    payload = {
+                        "type": "item_complete",
+                        "task_id": task_id,
+                        "stage": meta.get("stage"),
+                        "item_id": meta.get("item_id"),
+                        "item_name": meta.get("item_name"),
+                        "ok": True,
+                        "processed": completed + failed,
+                        "failed": failed,
+                        "skipped": skipped,
+                        "total": total,
+                        "percent": int(((completed + failed + skipped) / total) * 100) if total else 100,
+                        "mode": "task_queue",
+                        **data,
+                    }
+                    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                elif task.status == "failed":
+                    pending.remove(task_id)
                     failed += 1
-                    payload["percent"] = int(((completed + failed) / total) * 100)
+                    if task.type == "video_panel":
+                        service.storage.update_shot(str(task.target_id or ""), {"status": "video_failed"})
+                    payload = {
+                        "type": "error",
+                        "task_id": task_id,
+                        "stage": meta.get("stage"),
+                        "item_id": meta.get("item_id"),
+                        "item_name": meta.get("item_name"),
+                        "ok": False,
+                        "error": task.error_message or "",
+                        "processed": completed + failed,
+                        "failed": failed,
+                        "skipped": skipped,
+                        "total": total,
+                        "percent": int(((completed + failed + skipped) / total) * 100) if total else 100,
+                        "mode": "task_queue",
+                    }
+                    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                elif task.status == "processing":
+                    queued_since.pop(task_id, None)
+                elif task.status == "queued":
+                    queued_for = now_ts - queued_since.get(task_id, now_ts)
+                    if queued_for >= queued_stuck_timeout:
+                        pending.remove(task_id)
+                        failed += 1
+                        payload = {
+                            "type": "error",
+                            "task_id": task_id,
+                            "stage": meta.get("stage"),
+                            "item_id": meta.get("item_id"),
+                            "item_name": meta.get("item_name"),
+                            "ok": False,
+                            "error": "任务长时间未被消费，请检查 worker 是否已启动",
+                            "processed": completed + failed,
+                            "failed": failed,
+                            "skipped": skipped,
+                            "total": total,
+                            "percent": int(((completed + failed + skipped) / total) * 100) if total else 100,
+                            "mode": "task_queue",
+                        }
+                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(poll_interval)
+            yield ": keep-alive\n\n"
 
-                yield f"id: {ev.id}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        if pending:
+            for task_id in list(pending):
+                pending.remove(task_id)
+                failed += 1
+                meta = stage_meta.get(task_id, {"stage": stage_name, "item_id": task_id, "item_name": task_id})
+                payload = {
+                    "type": "error",
+                    "task_id": task_id,
+                    "stage": meta.get("stage"),
+                    "item_id": meta.get("item_id"),
+                    "item_name": meta.get("item_name"),
+                    "ok": False,
+                    "error": "任务执行超时",
+                    "processed": completed + failed,
+                    "failed": failed,
+                    "skipped": skipped,
+                    "total": total,
+                    "percent": int(((completed + failed + skipped) / total) * 100) if total else 100,
+                    "mode": "task_queue",
+                }
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
+    # audio 阶段暂时走 legacy 同步执行，确保功能完整
+    if "audio" in stage_list:
+        progress_q: asyncio.Queue = asyncio.Queue()
+
+        async def on_audio_progress(event: Dict[str, Any]) -> None:
+            await progress_q.put(event)
+
+        worker = asyncio.create_task(
+            service.batch_generate_episode(
+                episode_id=episode_id,
+                stages=["audio"],
+                parallel=parallel_cfg,
+                video_generate_audio=video_generate_audio,
+                image_width=image_width,
+                image_height=image_height,
+                element_use_reference=element_use_reference,
+                element_reference_mode=element_reference_mode or "none",
+                progress_callback=on_audio_progress,
+            )
+        )
+        while True:
+            if worker.done() and progress_q.empty():
+                break
+            try:
+                ev = await asyncio.wait_for(progress_q.get(), timeout=poll_interval)
+                ev["mode"] = "legacy"
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
             except asyncio.TimeoutError:
-                timeout_count += 1
                 yield ": keep-alive\n\n"
+        try:
+            await worker
+        except Exception as exc:
+            payload = exc.to_payload() if isinstance(exc, StudioServiceError) else deps._studio_error_payload(str(exc), "studio_internal_error")
+            payload["type"] = "error"
+            payload["mode"] = "legacy"
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-    finally:
-        event_bus.unsubscribe(episode_id, sub_queue)
-
-    yield f"data: {json.dumps({'type': 'done', 'generated': completed, 'failed': failed, 'total': total, 'percent': 100, 'mode': 'task_queue'}, ensure_ascii=False)}\n\n"
-
+    processed = completed + failed + skipped
+    yield f"data: {json.dumps({'type': 'done', 'processed': processed, 'generated': completed, 'failed': failed, 'skipped': skipped, 'total': total, 'percent': 100, 'mode': 'task_queue'}, ensure_ascii=False)}\n\n"

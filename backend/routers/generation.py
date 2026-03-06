@@ -1,5 +1,9 @@
 """Generation routes: /api/parse-story, /api/generate, /api/regenerate, /api/generate-image, /api/generate-video, /api/video-task-status, /api/videos/history."""
 
+import asyncio
+import json
+import time
+from datetime import datetime, timezone
 import uuid
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, HTTPException
@@ -8,7 +12,6 @@ from pydantic import BaseModel
 from services.storage_service import storage
 
 import dependencies as deps
-from dependencies import USE_TASK_QUEUE
 from schemas.settings import (
     ModelConfig,
     LocalConfig,
@@ -101,8 +104,8 @@ async def regenerate_image(request: RegenerateRequest):
 
 @router.post("/generate-image")
 async def generate_single_image(request: GenerateImageRequest):
-    # ── Phase 4: 任务队列路径 ──
-    if USE_TASK_QUEUE:
+    runtime = "agent" if (request.scope or "module") == "agent" else "module"
+    if deps.resolve_runtime_mode(runtime, "/api/generate-image") == "task_queue":
         return await _module_generate_image_via_queue(request)
 
     # ── 原有路径 ──
@@ -164,8 +167,8 @@ async def generate_single_image(request: GenerateImageRequest):
 
 @router.post("/generate-video")
 async def generate_video(request: VideoRequest):
-    # ── Phase 4: 任务队列路径 ──
-    if USE_TASK_QUEUE:
+    runtime = "agent" if (request.scope or "module") == "agent" else "module"
+    if deps.resolve_runtime_mode(runtime, "/api/generate-video") == "task_queue":
         return await _module_generate_video_via_queue(request)
 
     # ── 原有路径 ──
@@ -223,6 +226,46 @@ async def generate_video(request: VideoRequest):
 
 @router.post("/video-task-status")
 async def check_video_task_status(request: VideoTaskStatusRequest):
+    # 兼容任务队列内部 task_id
+    task_storage = deps.get_task_queue_storage(required=False)
+    if task_storage is not None:
+        task = task_storage.get_task(request.taskId)
+        if task:
+            queued_timeout_sec = min(45.0, max(10.0, deps.TASK_QUEUE_WAIT_TIMEOUT_SEC / 4))
+            queued_age = _seconds_since_iso(task.queued_at or task.created_at)
+            if task.status == "queued" and queued_age is not None and queued_age >= queued_timeout_sec:
+                error_message = "任务长时间未被消费，请检查 worker 是否已启动"
+                storage.update_video_status(request.taskId, "error")
+                return {
+                    "taskId": request.taskId,
+                    "status": "error",
+                    "videoUrl": None,
+                    "progress": task.progress or 0,
+                    "error": error_message,
+                    "mode": "task_queue",
+                }
+            result_payload = _decode_task_result(task.result)
+            status_map = {
+                "queued": "processing",
+                "processing": "processing",
+                "completed": "completed",
+                "failed": "error",
+            }
+            mapped_status = status_map.get(task.status, task.status)
+            video_url = str(result_payload.get("video_url") or "")
+            if mapped_status == "completed" and video_url:
+                storage.update_video_status(request.taskId, "completed", video_url)
+            elif mapped_status == "error":
+                storage.update_video_status(request.taskId, "error")
+            return {
+                "taskId": request.taskId,
+                "status": mapped_status,
+                "videoUrl": video_url or None,
+                "progress": task.progress or 0,
+                "error": task.error_message,
+                "mode": "task_queue",
+            }
+
     service = deps.video_task_services.get(request.taskId) or deps.get_module_video_service()
     try:
         result = await service.check_task_status(request.taskId)
@@ -272,20 +315,58 @@ async def delete_videos_batch(request: DeleteVideosRequest):
 # Phase 4: Module 任务队列路径
 # ---------------------------------------------------------------------------
 
+def _decode_task_result(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _seconds_since_iso(value: Optional[str]) -> Optional[float]:
+    ts = str(value or "").strip()
+    if not ts:
+        return None
+    try:
+        normalized = ts.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds())
+    except Exception:
+        return None
+
+
+async def _wait_for_queue_task(task_id: str, timeout_sec: Optional[int] = None):
+    task_storage = deps.get_task_queue_storage(required=True)
+    poll_interval = max(0.1, deps.TASK_QUEUE_POLL_INTERVAL_MS / 1000.0)
+    wait_timeout = timeout_sec or deps.TASK_QUEUE_WAIT_TIMEOUT_SEC
+    deadline = time.monotonic() + wait_timeout
+    queued_deadline = time.monotonic() + min(15.0, max(5.0, wait_timeout / 4))
+
+    while time.monotonic() < deadline:
+        task = task_storage.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=500, detail="任务不存在或已丢失")
+        if task.status == "completed":
+            return task, _decode_task_result(task.result)
+        if task.status == "failed":
+            msg = task.error_message or "任务执行失败"
+            raise HTTPException(status_code=500, detail=msg)
+        if task.status == "queued" and time.monotonic() > queued_deadline:
+            raise HTTPException(status_code=503, detail="任务长时间未被消费，请检查 worker 是否已启动")
+        await asyncio.sleep(poll_interval)
+
+    raise HTTPException(status_code=504, detail="任务执行超时")
+
+
 async def _module_generate_image_via_queue(request: GenerateImageRequest):
     """通过任务队列提交图片生成任务，同步等待结果返回。"""
-    import os
-    import asyncio
-    from services.studio.task_queue.storage import TaskStorage
     from services.studio.task_queue.types import CreateTaskInput
-    from services.studio.task_queue.event_bus import TaskEventBus
-
-    db_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "data", "task_queue.db",
-    )
-    task_storage = TaskStorage(db_path)
-    event_bus = TaskEventBus(task_storage)
 
     final_prompt = request.prompt
     if request.style and request.style in deps.STYLE_PRESETS:
@@ -313,49 +394,42 @@ async def _module_generate_image_via_queue(request: GenerateImageRequest):
             "reference_images": request.referenceImages,
         },
     )
-    task = task_storage.create_task(inp)
+    submitter = deps.get_task_queue_submitter(runtime, "/api/generate-image", required=True)
+    task, _ = await submitter.submit_task(inp)
+    _, result_data = await _wait_for_queue_task(task.id)
 
-    # 等待完成事件
-    sub_queue = event_bus.subscribe("")
-    try:
-        timeout_count = 0
-        max_wait = 600  # 5 分钟
-        while timeout_count < max_wait * 2:
-            try:
-                ev = await asyncio.wait_for(sub_queue.get(), timeout=0.5)
-                if ev.task_id == task.id and ev.event_type in ("completed", "failed"):
-                    if ev.event_type == "failed":
-                        raise HTTPException(status_code=500, detail=f"图像生成失败: {ev.payload.get('error_message', '')}")
-                    result_data = ev.payload
-                    image_url = result_data.get("image_url", "")
-                    actual_seed = result_data.get("seed")
-                    return {
-                        "imageUrl": image_url,
-                        "seed": actual_seed,
-                        "width": request.width,
-                        "height": request.height,
-                        "steps": request.steps,
-                        "taskId": task.id,
-                    }
-            except asyncio.TimeoutError:
-                timeout_count += 1
-    finally:
-        event_bus.unsubscribe("", sub_queue)
-
-    raise HTTPException(status_code=504, detail="图像生成超时")
+    image_url = str(result_data.get("image_url") or "")
+    if not image_url:
+        raise HTTPException(status_code=500, detail="图像生成成功但返回结果缺少 image_url")
+    actual_seed = result_data.get("seed")
+    image_service = deps.get_image_service() if runtime == "agent" else deps.get_module_image_service()
+    storage.save_generated_image(
+        prompt=request.prompt,
+        image_url=image_url,
+        negative_prompt=request.negativePrompt or "",
+        provider=image_service.provider,
+        model=image_service.model or "",
+        width=request.width,
+        height=request.height,
+        steps=request.steps,
+        seed=actual_seed or 0,
+        style=request.style,
+        project_id=request.projectId,
+    )
+    return {
+        "imageUrl": image_url,
+        "seed": actual_seed,
+        "width": request.width,
+        "height": request.height,
+        "steps": request.steps,
+        "taskId": task.id,
+        "mode": "task_queue",
+    }
 
 
 async def _module_generate_video_via_queue(request):
     """通过任务队列提交视频生成任务，返回任务 ID。"""
-    import os
-    from services.studio.task_queue.storage import TaskStorage
     from services.studio.task_queue.types import CreateTaskInput
-
-    db_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "data", "task_queue.db",
-    )
-    task_storage = TaskStorage(db_path)
 
     runtime = "agent" if (request.scope or "module") == "agent" else "module"
 
@@ -377,13 +451,29 @@ async def _module_generate_video_via_queue(request):
             "ratio": request.ratio,
         },
     )
-    task = task_storage.create_task(inp)
+    submitter = deps.get_task_queue_submitter(runtime, "/api/generate-video", required=True)
+    task, _ = await submitter.submit_task(inp)
+
+    video_service = deps.get_video_service() if runtime == "agent" else deps.get_module_video_service()
+    storage.save_generated_video(
+        source_image=request.imageUrl or "",
+        prompt=request.prompt or "",
+        video_url=None,
+        task_id=task.id,
+        status="processing",
+        provider=video_service.provider,
+        model=video_service.model or "",
+        duration=request.duration,
+        seed=request.seed or 0,
+        project_id=request.projectId,
+    )
 
     return {
         "taskId": task.id,
-        "status": "queued",
+        "status": "processing",
         "videoUrl": None,
         "duration": request.duration,
         "seed": request.seed,
         "audioDisabled": False,
+        "mode": "task_queue",
     }

@@ -6,6 +6,7 @@ import math
 import json
 import uuid
 import asyncio
+import time
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone, timedelta
 from time import perf_counter
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from services.storage_service import storage
 from services.agent_service import AgentService, AgentProject, AgentExecutor
+from services.llm_service import create_structured_sse_response
 from services.tts_service import (
     DashScopeTTSConfig,
     DashScopeTTSService,
@@ -38,9 +40,143 @@ from schemas.settings import (
     ExecutePipelineV2Request,
 )
 import dependencies as deps
-from dependencies import USE_TASK_QUEUE
+
+
+# ---------------------------------------------------------------------------
+# Agent-specific Pydantic models (were in main.py, not in schemas/)
+# ---------------------------------------------------------------------------
+
+class AgentChatRequest(BaseModel):
+    message: str
+    projectId: Optional[str] = None
+    context: Optional[dict] = None
+
+
+class AgentPlanRequest(BaseModel):
+    userRequest: str
+    style: str = "吉卜力2D"
+
+
+class AgentElementPromptRequest(BaseModel):
+    elementName: str
+    elementType: str  # character / object / scene
+    baseDescription: str
+    visualStyle: str = "吉卜力动画风格"
+
+
+class AgentShotPromptRequest(BaseModel):
+    shotName: str
+    shotType: str  # standard / quick / closeup / wide / montage
+    shotDescription: str
+    elements: List[str]
+    visualStyle: str
+    narration: str
+
+
+class AgentProjectRequest(BaseModel):
+    name: str
+    creativeBrief: Optional[dict] = None
+
+
+class AgentElementRequest(BaseModel):
+    elementId: str
+    name: str
+    elementType: str
+    description: str
+    imageUrl: Optional[str] = None
+
+
+class AgentSegmentRequest(BaseModel):
+    segmentId: str
+    name: str
+    description: str
+
+
+class AgentShotRequest(BaseModel):
+    segmentId: str
+    shotId: str
+    name: str
+    shotType: str
+    description: str
+    prompt: str
+    narration: str
+    duration: float = 5.0
+
+
+class AgentScriptDoctorRequest(BaseModel):
+    mode: str = "expand"  # light / expand
+    apply: bool = True
+
+
+class AgentAssetCompletionRequest(BaseModel):
+    apply: bool = True
+
+
+class AgentRefineSplitVisualsRequest(BaseModel):
+    parentShotId: str
+
+
+class AgentAudioCheckRequest(BaseModel):
+    includeNarration: bool = True
+    includeDialogue: bool = True
+    speed: float = 1.0
+    apply: bool = False
+
+
+class AgentOperatorApplyRequest(BaseModel):
+    kind: str = Field(default="actions", description="actions | patch")
+    payload: Any
+    executeRegenerate: bool = True
+
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
+
+
+def _persist_agent_chat_memory(
+    *,
+    project_id: Optional[str],
+    project_data: Optional[Dict[str, Any]],
+    user_message: str,
+    result: Dict[str, Any],
+) -> None:
+    if not project_id or not project_data:
+        return
+    try:
+        project_obj = AgentProject.from_dict(project_data)
+
+        ts = int(time.time() * 1000)
+        now = datetime.utcnow().isoformat() + "Z"
+
+        user_turn = {
+            "id": f"mem_u_{ts}",
+            "role": "user",
+            "content": user_message,
+            "created_at": now
+        }
+        assistant_turn = {
+            "id": f"mem_a_{ts + 1}",
+            "role": "assistant",
+            "content": result.get("content", ""),
+            "created_at": now,
+            "meta": {
+                "type": result.get("type"),
+                "action": result.get("action")
+            }
+        }
+
+        project_obj.agent_memory = project_obj.agent_memory or []
+
+        last = project_obj.agent_memory[-1] if project_obj.agent_memory else None
+        if not (isinstance(last, dict) and last.get("role") == user_turn["role"] and last.get("content") == user_turn["content"]):
+            project_obj.agent_memory.append(user_turn)
+
+        last2 = project_obj.agent_memory[-1] if project_obj.agent_memory else None
+        if not (isinstance(last2, dict) and last2.get("role") == assistant_turn["role"] and last2.get("content") == assistant_turn["content"]):
+            project_obj.agent_memory.append(assistant_turn)
+
+        storage.save_agent_project(project_obj.to_dict())
+    except Exception as e:
+        print(f"[Agent] 保存 agent_memory 失败: {e}")
 
 @router.get("/prompts")
 async def get_agent_prompts(includeContent: bool = False):
@@ -84,46 +220,58 @@ async def agent_chat(request: AgentChatRequest):
      
     result = await service.chat(request.message, context)
 
-    # 将对话写入项目的 agent_memory，供后续“基于上下文回答”使用（减少幻觉）
-    if request.projectId and project_data:
-        try:
-            project_obj = AgentProject.from_dict(project_data)
-
-            ts = int(time.time() * 1000)
-            now = datetime.utcnow().isoformat() + "Z"
-
-            user_turn = {
-                "id": f"mem_u_{ts}",
-                "role": "user",
-                "content": request.message,
-                "created_at": now
-            }
-            assistant_turn = {
-                "id": f"mem_a_{ts + 1}",
-                "role": "assistant",
-                "content": result.get("content", ""),
-                "created_at": now,
-                "meta": {
-                    "type": result.get("type"),
-                    "action": result.get("action")
-                }
-            }
-
-            project_obj.agent_memory = project_obj.agent_memory or []
-
-            last = project_obj.agent_memory[-1] if project_obj.agent_memory else None
-            if not (isinstance(last, dict) and last.get("role") == user_turn["role"] and last.get("content") == user_turn["content"]):
-                project_obj.agent_memory.append(user_turn)
-
-            last2 = project_obj.agent_memory[-1] if project_obj.agent_memory else None
-            if not (isinstance(last2, dict) and last2.get("role") == assistant_turn["role"] and last2.get("content") == assistant_turn["content"]):
-                project_obj.agent_memory.append(assistant_turn)
-
-            storage.save_agent_project(project_obj.to_dict())
-        except Exception as e:
-            print(f"[Agent] 保存 agent_memory 失败: {e}")
+    _persist_agent_chat_memory(
+        project_id=request.projectId,
+        project_data=project_data,
+        user_message=request.message,
+        result=result,
+    )
 
     return result
+
+
+@router.post("/chat/stream")
+async def agent_chat_stream(request: AgentChatRequest, raw_request: Request):
+    """Agent 对话流式接口（SSE）。"""
+    service = deps.get_agent_service()
+
+    context = request.context or {}
+    if not isinstance(context, dict):
+        context = {}
+
+    project_data = None
+    if request.projectId:
+        project_data = storage.get_agent_project(request.projectId)
+        if project_data:
+            context["project"] = project_data
+
+    if not project_data and "project" not in context:
+        elements = context.get("elements")
+        segments = context.get("segments")
+        if isinstance(elements, dict) or isinstance(segments, list):
+            context["project"] = {
+                "id": "unsaved",
+                "name": "unsaved",
+                "creative_brief": context.get("creative_brief") or context.get("creativeBrief") or {},
+                "elements": elements if isinstance(elements, dict) else {},
+                "segments": segments if isinstance(segments, list) else [],
+                "updated_at": datetime.utcnow().isoformat() + "Z",
+            }
+
+    async def _stream_with_memory():
+        async for event in service.stream_chat(request.message, context):
+            if event.get("type") == "complete":
+                parsed = event.get("parsed")
+                if isinstance(parsed, dict):
+                    _persist_agent_chat_memory(
+                        project_id=request.projectId,
+                        project_data=project_data,
+                        user_message=request.message,
+                        result=parsed,
+                    )
+            yield event
+
+    return create_structured_sse_response(_stream_with_memory(), request=raw_request)
 
 
 @router.post("/plan")
@@ -889,6 +1037,7 @@ async def generate_project_frames(project_id: str, request: GenerateFramesReques
 @router.get("/projects/{project_id}/generate-frames-stream")
 async def generate_project_frames_stream(
     project_id: str,
+    request: Request,
     visualStyle: str = "吉卜力动画风格",
     excludeShotIds: Optional[str] = None,
     mode: str = "missing"
@@ -906,10 +1055,10 @@ async def generate_project_frames_stream(
 
     async def event_generator():
         # ── Phase 4: 任务队列路径 ──
-        if USE_TASK_QUEUE:
+        if deps.resolve_runtime_mode("agent", "/api/agent/projects/{project_id}/generate-frames-stream") == "task_queue":
             async for chunk in _agent_generate_frames_via_queue(
                 project, executor, project_id, visualStyle,
-                excludeShotIds, mode,
+                excludeShotIds, mode, request,
             ):
                 yield chunk
             return
@@ -2520,7 +2669,7 @@ async def extract_audio_from_project_videos(project_id: str, request: ExtractVid
 
 
 @router.get("/projects/{project_id}/generate-videos-stream")
-async def generate_project_videos_stream(project_id: str, resolution: str = "720p"):
+async def generate_project_videos_stream(project_id: str, request: Request, resolution: str = "720p"):
     """流式生成项目的所有视频 (SSE)
 
     每提交一个视频任务就推送进度，然后持续轮询直到完成
@@ -2543,9 +2692,9 @@ async def generate_project_videos_stream(project_id: str, resolution: str = "720
 
     async def event_generator():
         # ── Phase 4: 任务队列路径 ──
-        if USE_TASK_QUEUE:
+        if deps.resolve_runtime_mode("agent", "/api/agent/projects/{project_id}/generate-videos-stream") == "task_queue":
             async for chunk in _agent_generate_videos_via_queue(
-                project, executor, project_id, resolution,
+                project, executor, project_id, resolution, request,
             ):
                 yield chunk
             return
@@ -2946,22 +3095,132 @@ class WorkspaceEpisodeReviewRequest(BaseModel):
 # Phase 4: Agent 任务队列路径
 # ---------------------------------------------------------------------------
 
+
+def _parse_last_event_id(request: Optional[Request]) -> int:
+    if request is None:
+        return 0
+    raw = request.headers.get("Last-Event-ID", "0")
+    try:
+        return max(0, int(raw))
+    except Exception:
+        return 0
+
+
+def _decode_task_result_payload(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _find_project_shot(project: AgentProject, shot_id: str) -> Optional[Dict[str, Any]]:
+    for segment in project.segments:
+        if not isinstance(segment, dict):
+            continue
+        for shot in segment.get("shots", []):
+            if isinstance(shot, dict) and str(shot.get("id") or "") == shot_id:
+                return shot
+    return None
+
+
+def _append_visual_asset_if_missing(project: AgentProject, asset: Dict[str, Any]) -> None:
+    asset_id = str(asset.get("id") or "")
+    asset_url = str(asset.get("url") or "")
+    for existing in project.visual_assets:
+        if not isinstance(existing, dict):
+            continue
+        if asset_id and str(existing.get("id") or "") == asset_id:
+            return
+        if asset_url and str(existing.get("url") or "") == asset_url:
+            return
+    project.visual_assets.append(asset)
+
+
+def _apply_agent_frame_result(project: AgentProject, payload: Dict[str, Any]) -> bool:
+    shot_id = str(payload.get("target_id") or payload.get("shot_id") or "").strip()
+    image_url = str(payload.get("image_url") or "").strip()
+    if not shot_id or not image_url:
+        return False
+    shot = _find_project_shot(project, shot_id)
+    if not shot:
+        return False
+
+    image_id = f"img_{int(time.time() * 1000)}"
+    history = shot.get("start_image_history")
+    if not isinstance(history, list):
+        history = []
+    history.insert(0, {
+        "id": image_id,
+        "url": image_url,
+        "source_url": image_url,
+        "created_at": datetime.now().isoformat(),
+        "is_favorite": False,
+    })
+    shot["start_image_history"] = history
+    shot["start_image_url"] = image_url
+    shot["cached_start_image_url"] = image_url if image_url.startswith("/api/uploads/") else None
+    shot["status"] = "frame_ready"
+
+    _append_visual_asset_if_missing(project, {
+        "id": f"frame_{shot_id}_{image_id}",
+        "url": image_url,
+        "type": "start_frame",
+        "shot_id": shot_id,
+    })
+    return True
+
+
+def _apply_agent_video_result(project: AgentProject, payload: Dict[str, Any]) -> bool:
+    shot_id = str(payload.get("target_id") or payload.get("shot_id") or "").strip()
+    video_url = str(payload.get("video_url") or "").strip()
+    if not shot_id or not video_url:
+        return False
+    shot = _find_project_shot(project, shot_id)
+    if not shot:
+        return False
+
+    shot["video_url"] = video_url
+    shot["status"] = "video_ready"
+    if payload.get("external_id"):
+        shot["video_task_id"] = payload.get("external_id")
+    _append_visual_asset_if_missing(project, {
+        "id": f"video_{shot_id}",
+        "url": video_url,
+        "type": "video",
+        "shot_id": shot_id,
+        "duration": shot.get("duration"),
+    })
+    return True
+
+
+def _mark_agent_task_failed(project: AgentProject, task_storage, task_id: str, status: str) -> bool:
+    task = task_storage.get_task(task_id)
+    if not task:
+        return False
+    shot_id = str(task.target_id or "").strip()
+    if not shot_id:
+        return False
+    shot = _find_project_shot(project, shot_id)
+    if not shot:
+        return False
+    shot["status"] = status
+    return True
+
+
 async def _agent_generate_frames_via_queue(
     project, executor, project_id: str, visual_style: str,
-    exclude_shot_ids_str, mode: str,
+    exclude_shot_ids_str, mode: str, request: Optional[Request] = None,
 ):
     """通过任务队列生成帧，以 SSE 事件流形式推送进度。"""
-    import os
-    from services.studio.task_queue.storage import TaskStorage
     from services.studio.task_queue.types import CreateTaskInput
-    from services.studio.task_queue.event_bus import TaskEventBus
-
-    db_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "data", "task_queue.db",
-    )
-    task_storage = TaskStorage(db_path)
-    event_bus = TaskEventBus(task_storage)
+    task_storage = deps.get_task_queue_storage(required=True)
+    submitter = deps.get_task_queue_submitter("agent", "/api/agent/projects/{project_id}/generate-frames-stream", required=True)
+    poll_interval = max(0.1, deps.TASK_QUEUE_POLL_INTERVAL_MS / 1000.0)
 
     regenerate = (mode or "").strip().lower() in ("regenerate", "regen", "force", "all")
     excluded_shot_ids = set()
@@ -2987,11 +3246,14 @@ async def _agent_generate_frames_via_queue(
     yield f"data: {json.dumps({'type': 'start', 'total': total, 'percent': 0, 'mode': 'task_queue'})}\n\n"
 
     task_ids = []
+    skipped = 0
     for shot in all_shots:
         shot_id = shot.get("id", "")
         if shot_id in excluded_shot_ids:
+            skipped += 1
             continue
         if not regenerate and shot.get("start_image_url") and executor._should_skip_existing_image(shot.get("start_image_url")):
+            skipped += 1
             continue
 
         prompt = shot.get("prompt") if isinstance(shot.get("prompt"), str) else ""
@@ -3018,54 +3280,105 @@ async def _agent_generate_frames_via_queue(
             },
             dedupe_key=dedupe_key,
         )
-        task = task_storage.create_task(inp)
+        task, _ = await submitter.submit_task(inp)
         task_ids.append(task.id)
 
-    # 订阅事件
-    sub_queue = event_bus.subscribe(project_id)
     expected = len(task_ids)
     completed = 0
     failed = 0
+    last_event_id = _parse_last_event_id(request)
+    pending = set(task_ids)
+    queued_since = {task_id: perf_counter() for task_id in task_ids}
+    dirty_project = False
+    deadline = perf_counter() + deps.TASK_QUEUE_WAIT_TIMEOUT_SEC
+    queued_timeout = min(30.0, max(8.0, deps.TASK_QUEUE_WAIT_TIMEOUT_SEC / 4))
 
-    try:
-        timeout_count = 0
-        max_idle = 1200
-        while completed + failed < expected and timeout_count < max_idle:
-            try:
-                ev = await asyncio.wait_for(sub_queue.get(), timeout=0.5)
-                timeout_count = 0
-                payload = {"type": ev.event_type, "task_id": ev.task_id, **ev.payload}
+    while pending and perf_counter() < deadline:
+        events = task_storage.list_events_after_for_tasks(task_ids, last_event_id, limit=200)
+        if events:
+            for ev in events:
+                last_event_id = max(last_event_id, ev.id)
+                if ev.event_type == "processing":
+                    queued_since.pop(ev.task_id, None)
+                mapped_type = {
+                    "created": "generating",
+                    "processing": "generating",
+                    "retry": "generating",
+                }.get(ev.event_type, ev.event_type)
+                payload = {"type": mapped_type, "task_id": ev.task_id, **ev.payload, "mode": "task_queue"}
                 if ev.event_type == "completed":
-                    completed += 1
+                    if ev.task_id in pending:
+                        pending.remove(ev.task_id)
+                        completed += 1
+                    if _apply_agent_frame_result(project, ev.payload):
+                        dirty_project = True
+                    payload["type"] = "complete"
                     payload["percent"] = int(((completed + failed) / expected) * 100) if expected else 100
                 elif ev.event_type == "failed":
-                    failed += 1
+                    if ev.task_id in pending:
+                        pending.remove(ev.task_id)
+                        failed += 1
+                    if _mark_agent_task_failed(project, task_storage, ev.task_id, "frame_failed"):
+                        dirty_project = True
+                    payload["type"] = "error"
+                    payload["error"] = ev.payload.get("error_message", "")
                     payload["percent"] = int(((completed + failed) / expected) * 100) if expected else 100
                 yield f"id: {ev.id}\ndata: {json.dumps(payload)}\n\n"
-            except asyncio.TimeoutError:
-                timeout_count += 1
-                yield ": keep-alive\n\n"
-    finally:
-        event_bus.unsubscribe(project_id, sub_queue)
+        else:
+            # 兜底：事件缺失时直接读取任务状态，避免 SSE 假等待
+            for task_id in list(pending):
+                task = task_storage.get_task(task_id)
+                if not task:
+                    continue
+                if task.status == "completed":
+                    pending.remove(task_id)
+                    completed += 1
+                    data = _decode_task_result_payload(task.result)
+                    if _apply_agent_frame_result(project, data):
+                        dirty_project = True
+                    percent = int(((completed + failed) / expected) * 100) if expected else 100
+                    yield f"data: {json.dumps({'type': 'complete', 'task_id': task_id, **data, 'percent': percent, 'mode': 'task_queue'})}\n\n"
+                elif task.status == "failed":
+                    pending.remove(task_id)
+                    failed += 1
+                    if _mark_agent_task_failed(project, task_storage, task_id, "frame_failed"):
+                        dirty_project = True
+                    percent = int(((completed + failed) / expected) * 100) if expected else 100
+                    yield f"data: {json.dumps({'type': 'error', 'task_id': task_id, 'error': task.error_message or '', 'percent': percent, 'mode': 'task_queue'})}\n\n"
+                elif task.status == "processing":
+                    queued_since.pop(task_id, None)
+                elif task.status == "queued":
+                    queued_for = perf_counter() - queued_since.get(task_id, perf_counter())
+                    if queued_for >= queued_timeout:
+                        pending.remove(task_id)
+                        failed += 1
+                        if _mark_agent_task_failed(project, task_storage, task_id, "frame_failed"):
+                            dirty_project = True
+                        percent = int(((completed + failed) / expected) * 100) if expected else 100
+                        yield f"data: {json.dumps({'type': 'error', 'task_id': task_id, 'error': '任务长时间未被消费，请检查 worker 是否已启动', 'percent': percent, 'mode': 'task_queue'})}\n\n"
+            await asyncio.sleep(poll_interval)
+            yield ": keep-alive\n\n"
 
-    yield f"data: {json.dumps({'type': 'done', 'generated': completed, 'failed': failed, 'total': total, 'percent': 100, 'mode': 'task_queue'})}\n\n"
+    if pending:
+        failed += len(pending)
+        for task_id in list(pending):
+            if _mark_agent_task_failed(project, task_storage, task_id, "frame_failed"):
+                dirty_project = True
+
+    if dirty_project:
+        storage.save_agent_project(project.to_dict())
+    yield f"data: {json.dumps({'type': 'done', 'generated': completed, 'failed': failed, 'skipped': skipped, 'total': total, 'percent': 100, 'mode': 'task_queue'})}\n\n"
 
 
 async def _agent_generate_videos_via_queue(
     project, executor, project_id: str, resolution: str,
+    request: Optional[Request] = None,
 ):
     """通过任务队列生成视频，以 SSE 事件流形式推送进度。"""
-    import os
-    from services.studio.task_queue.storage import TaskStorage
     from services.studio.task_queue.types import CreateTaskInput
-    from services.studio.task_queue.event_bus import TaskEventBus
-
-    db_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "data", "task_queue.db",
-    )
-    task_storage = TaskStorage(db_path)
-    event_bus = TaskEventBus(task_storage)
+    task_storage = deps.get_task_queue_storage(required=True)
+    submitter = deps.get_task_queue_submitter("agent", "/api/agent/projects/{project_id}/generate-videos-stream", required=True)
+    poll_interval = max(0.1, deps.TASK_QUEUE_POLL_INTERVAL_MS / 1000.0)
 
     # 收集所有有起始帧的镜头
     all_shots = []
@@ -3107,37 +3420,90 @@ async def _agent_generate_videos_via_queue(
             },
             dedupe_key=dedupe_key,
         )
-        task = task_storage.create_task(inp)
+        task, _ = await submitter.submit_task(inp)
         task_ids.append(task.id)
 
-    # 订阅事件
-    sub_queue = event_bus.subscribe(project_id)
     expected = len(task_ids)
     completed = 0
     failed = 0
+    last_event_id = _parse_last_event_id(request)
+    pending = set(task_ids)
+    queued_since = {task_id: perf_counter() for task_id in task_ids}
+    dirty_project = False
+    deadline = perf_counter() + max(deps.TASK_QUEUE_WAIT_TIMEOUT_SEC, 1200)
+    queued_timeout = min(45.0, max(12.0, deps.TASK_QUEUE_WAIT_TIMEOUT_SEC / 3))
 
-    try:
-        timeout_count = 0
-        max_idle = 2400  # 20 分钟
-        while completed + failed < expected and timeout_count < max_idle:
-            try:
-                ev = await asyncio.wait_for(sub_queue.get(), timeout=0.5)
-                timeout_count = 0
-                payload = {"type": ev.event_type, "task_id": ev.task_id, **ev.payload}
+    while pending and perf_counter() < deadline:
+        events = task_storage.list_events_after_for_tasks(task_ids, last_event_id, limit=200)
+        if events:
+            for ev in events:
+                last_event_id = max(last_event_id, ev.id)
+                if ev.event_type == "processing":
+                    queued_since.pop(ev.task_id, None)
+                mapped_type = {
+                    "created": "submitted",
+                    "processing": "polling",
+                    "retry": "polling",
+                }.get(ev.event_type, ev.event_type)
+                payload = {"type": mapped_type, "task_id": ev.task_id, **ev.payload, "mode": "task_queue"}
                 if ev.event_type == "completed":
-                    completed += 1
+                    if ev.task_id in pending:
+                        pending.remove(ev.task_id)
+                        completed += 1
+                    if _apply_agent_video_result(project, ev.payload):
+                        dirty_project = True
+                    payload["type"] = "complete"
                     payload["percent"] = 50 + int((completed / expected) * 50) if expected else 100
                 elif ev.event_type == "failed":
-                    failed += 1
+                    if ev.task_id in pending:
+                        pending.remove(ev.task_id)
+                        failed += 1
+                    if _mark_agent_task_failed(project, task_storage, ev.task_id, "video_failed"):
+                        dirty_project = True
+                    payload["type"] = "error"
+                    payload["error"] = ev.payload.get("error_message", "")
                     payload["percent"] = 50 + int(((completed + failed) / expected) * 50) if expected else 100
                 yield f"id: {ev.id}\ndata: {json.dumps(payload)}\n\n"
-            except asyncio.TimeoutError:
-                timeout_count += 1
-                yield ": keep-alive\n\n"
-    finally:
-        event_bus.unsubscribe(project_id, sub_queue)
+        else:
+            for task_id in list(pending):
+                task = task_storage.get_task(task_id)
+                if not task:
+                    continue
+                if task.status == "completed":
+                    pending.remove(task_id)
+                    completed += 1
+                    data = _decode_task_result_payload(task.result)
+                    if _apply_agent_video_result(project, data):
+                        dirty_project = True
+                    percent = 50 + int((completed / expected) * 50) if expected else 100
+                    yield f"data: {json.dumps({'type': 'complete', 'task_id': task_id, **data, 'percent': percent, 'mode': 'task_queue'})}\n\n"
+                elif task.status == "failed":
+                    pending.remove(task_id)
+                    failed += 1
+                    if _mark_agent_task_failed(project, task_storage, task_id, "video_failed"):
+                        dirty_project = True
+                    percent = 50 + int(((completed + failed) / expected) * 50) if expected else 100
+                    yield f"data: {json.dumps({'type': 'error', 'task_id': task_id, 'error': task.error_message or '', 'percent': percent, 'mode': 'task_queue'})}\n\n"
+                elif task.status == "processing":
+                    queued_since.pop(task_id, None)
+                elif task.status == "queued":
+                    queued_for = perf_counter() - queued_since.get(task_id, perf_counter())
+                    if queued_for >= queued_timeout:
+                        pending.remove(task_id)
+                        failed += 1
+                        if _mark_agent_task_failed(project, task_storage, task_id, "video_failed"):
+                            dirty_project = True
+                        percent = 50 + int(((completed + failed) / expected) * 50) if expected else 100
+                        yield f"data: {json.dumps({'type': 'error', 'task_id': task_id, 'error': '任务长时间未被消费，请检查 worker 是否已启动', 'percent': percent, 'mode': 'task_queue'})}\n\n"
+            await asyncio.sleep(poll_interval)
+            yield ": keep-alive\n\n"
 
-    storage.save_agent_project(project.to_dict())
+    if pending:
+        failed += len(pending)
+        for task_id in list(pending):
+            if _mark_agent_task_failed(project, task_storage, task_id, "video_failed"):
+                dirty_project = True
+
+    if dirty_project:
+        storage.save_agent_project(project.to_dict())
     yield f"data: {json.dumps({'type': 'done', 'completed': completed, 'failed': failed, 'skipped': skipped, 'total': total, 'percent': 100, 'mode': 'task_queue'})}\n\n"
-
-

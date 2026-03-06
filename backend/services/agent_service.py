@@ -16,7 +16,7 @@ import hashlib
 import math
 import copy
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List, Dict, Any, Callable
+from typing import Optional, List, Dict, Any, Callable, AsyncGenerator, Tuple
 from urllib.parse import urlparse, parse_qs
 
 import httpx
@@ -1597,6 +1597,109 @@ class AgentService:
             self._init_client()
         return self.client is not None
     
+    def _build_chat_messages(
+        self,
+        message: str,
+        context: Optional[Dict] = None,
+    ) -> Tuple[List[Dict[str, str]], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        messages: List[Dict[str, str]] = [
+            {"role": "system", "content": self._get_prompt("agent.system_prompt", DEFAULT_AGENT_SYSTEM_PROMPT)}
+        ]
+
+        ctx = context or {}
+        project = ctx.get("project") if isinstance(ctx, dict) else None
+
+        if isinstance(ctx, dict):
+            mode = ctx.get("assistant_mode") or ctx.get("assistantMode") or ctx.get("mode") or ctx.get("module")
+            if mode == "manager":
+                messages.append({
+                    "role": "system",
+                    "content": self._get_prompt("agent.manager_system_prompt", DEFAULT_MANAGER_SYSTEM_PROMPT)
+                })
+
+        scene = self._detect_scene(message)
+        if isinstance(project, dict) and self._looks_like_operator_request(message, project):
+            scene = "operator"
+        messages.append({"role": "system", "content": self._scene_system_prompt(scene)})
+
+        if isinstance(project, dict):
+            shortcut = self._maybe_frame_generation_shortcut(message, project)
+            if shortcut:
+                return messages, project, shortcut
+
+            snapshot = self._project_snapshot(project)
+            messages.append({
+                "role": "system",
+                "content": "项目上下文（仅作为事实来源，缺失则先问，不要脑补）：\n"
+                + json.dumps(snapshot, ensure_ascii=False, indent=2)
+            })
+
+            memory = project.get("agent_memory", []) or []
+            if isinstance(memory, list) and memory:
+                memory_tail = memory[-20:]
+                for m in memory_tail:
+                    if not isinstance(m, dict):
+                        continue
+                    role = m.get("role")
+                    content = m.get("content")
+                    if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+                        c = content.strip()
+                        if len(c) > 1200:
+                            c = c[:1200] + "…"
+                        messages.append({"role": role, "content": c})
+
+        if not (
+            isinstance(project, dict)
+            and isinstance(project.get("agent_memory"), list)
+            and project.get("agent_memory")
+        ):
+            history = None
+            if isinstance(ctx, dict):
+                for key in ("chat_history", "chatHistory", "history", "agent_memory", "agentMemory"):
+                    cand = ctx.get(key)
+                    if isinstance(cand, list) and cand:
+                        history = cand
+                        break
+
+            if isinstance(history, list) and history:
+                for h in history[-20:]:
+                    if not isinstance(h, dict):
+                        continue
+                    h_role = h.get("role")
+                    h_content = h.get("content")
+                    if h_role in ("user", "assistant") and isinstance(h_content, str) and h_content.strip():
+                        c = h_content.strip()
+                        if len(c) > 1200:
+                            c = c[:1200] + "..."
+                        messages.append({"role": h_role, "content": c})
+
+        messages.append({"role": "user", "content": message})
+        return messages, project if isinstance(project, dict) else None, None
+
+    def _post_process_chat_reply(self, reply: str, project: Optional[Dict[str, Any]], message: str) -> Dict[str, Any]:
+        if isinstance(project, dict):
+            bundle = self._try_parse_action_bundle(reply)
+            if bundle:
+                validated = self._validate_actions(bundle.get("actions", []), project, message)
+                if validated:
+                    has_regen = any(a.get("type") == "regenerate_shot_frame" for a in validated if isinstance(a, dict))
+                    return {
+                        "type": "text",
+                        "content": bundle.get("reply", ""),
+                        "data": {"actions": validated},
+                        "confirmButton": {
+                            "label": "只修改错误点并重生成" if has_regen else "只修改错误点",
+                            "action": "apply_agent_actions",
+                            "payload": validated
+                        }
+                    }
+                return {
+                    "type": "text",
+                    "content": bundle.get("reply", "") + "\n\n（为避免推翻重来：我需要你明确一个要修改的镜头 ID（如 Shot_03）或元素 ID（如 Element_WOLF），我会只改这一个。）"
+                }
+
+        return self._parse_response(reply)
+
     async def chat(self, message: str, context: Optional[Dict] = None) -> Dict[str, Any]:
         """对话接口 - 处理用户消息并返回结构化响应"""
         if not self._ensure_client():
@@ -1604,126 +1707,84 @@ class AgentService:
                 "type": "text",
                 "content": "请先在设置中配置 LLM API Key 以启用 AI 助手功能。"
             }
-        
+
         try:
-            messages = [{"role": "system", "content": self._get_prompt("agent.system_prompt", DEFAULT_AGENT_SYSTEM_PROMPT)}]
+            messages, project, shortcut = self._build_chat_messages(message, context)
+            if shortcut:
+                return shortcut
 
-            ctx = context or {}
-            project = ctx.get("project") if isinstance(ctx, dict) else None
-            # Optional global “manager/supervisor” mode (floating assistant)
-            if isinstance(ctx, dict):
-                mode = ctx.get("assistant_mode") or ctx.get("assistantMode") or ctx.get("mode") or ctx.get("module")
-                if mode == "manager":
-                    messages.append({
-                        "role": "system",
-                        "content": self._get_prompt("agent.manager_system_prompt", DEFAULT_MANAGER_SYSTEM_PROMPT)
-                    })
-            scene = self._detect_scene(message)
-            if isinstance(project, dict) and self._looks_like_operator_request(message, project):
-                scene = "operator"
-            messages.append({"role": "system", "content": self._scene_system_prompt(scene)})
-
-            # 项目事实快照（禁止模型脑补）
-            if isinstance(project, dict):
-                shortcut = self._maybe_frame_generation_shortcut(message, project)
-                if shortcut:
-                    return shortcut
-
-                snapshot = self._project_snapshot(project)
-                messages.append({
-                    "role": "system",
-                    "content": "项目上下文（仅作为事实来源，缺失则先问，不要脑补）：\n"
-                               + json.dumps(snapshot, ensure_ascii=False, indent=2)
-                })
-
-                # 追加对话记忆（仅最近 N 条）
-                memory = project.get("agent_memory", []) or []
-                if isinstance(memory, list) and memory:
-                    memory_tail = memory[-20:]
-                    for m in memory_tail:
-                        if not isinstance(m, dict):
-                            continue
-                        role = m.get("role")
-                        content = m.get("content")
-                        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
-                            c = content.strip()
-                            if len(c) > 1200:
-                                c = c[:1200] + "…"
-                            messages.append({"role": role, "content": c})
-
-            # Support stateless chat: allow passing recent chat history via context
-            # so the assistant doesn't "forget" previous turns before a project exists.
-            if not (
-                isinstance(project, dict)
-                and isinstance(project.get("agent_memory"), list)
-                and project.get("agent_memory")
-            ):
-                history = None
-                if isinstance(ctx, dict):
-                    for key in ("chat_history", "chatHistory", "history", "agent_memory", "agentMemory"):
-                        cand = ctx.get(key)
-                        if isinstance(cand, list) and cand:
-                            history = cand
-                            break
-
-                if isinstance(history, list) and history:
-                    for h in history[-20:]:
-                        if not isinstance(h, dict):
-                            continue
-                        h_role = h.get("role")
-                        h_content = h.get("content")
-                        if h_role in ("user", "assistant") and isinstance(h_content, str) and h_content.strip():
-                            c = h_content.strip()
-                            if len(c) > 1200:
-                                c = c[:1200] + "..."
-                            messages.append({"role": h_role, "content": c})
-
-            messages.append({"role": "user", "content": message})
-            
-            # 调用 LLM
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=0.7,
                 max_tokens=6000
             )
-            
+
             reply = response.choices[0].message.content or ""
-
-            # 如果模型给出“最小修改动作”，优先走可确认的 actions（避免一不小心推翻重来）
-            if isinstance(project, dict):
-                bundle = self._try_parse_action_bundle(reply)
-                if bundle:
-                    validated = self._validate_actions(bundle.get("actions", []), project, message)
-                    if validated:
-                        has_regen = any(a.get("type") == "regenerate_shot_frame" for a in validated if isinstance(a, dict))
-                        return {
-                            "type": "text",
-                            "content": bundle.get("reply", ""),
-                            "data": {"actions": validated},
-                            "confirmButton": {
-                                "label": "只修改错误点并重生成" if has_regen else "只修改错误点",
-                                "action": "apply_agent_actions",
-                                "payload": validated
-                            }
-                        }
-                    else:
-                        # 解析到了 actions 但没通过安全校验：退回普通对话（要求用户缩小范围/给出明确目标）
-                        return {
-                            "type": "text",
-                            "content": bundle.get("reply", "") + "\n\n（为避免推翻重来：我需要你明确一个要修改的镜头 ID（如 Shot_03）或元素 ID（如 Element_WOLF），我会只改这一个。）"
-                        }
-
-            # 否则按原有逻辑解析（文本 / structured / action）
-            parsed = self._parse_response(reply)
-            return parsed
-            
+            return self._post_process_chat_reply(reply, project, message)
         except Exception as e:
             print(f"[Agent] 对话失败: {e}")
             return {
                 "type": "error",
                 "content": f"AI 助手调用失败: {str(e)}"
             }
+
+    async def stream_chat(self, message: str, context: Optional[Dict] = None) -> AsyncGenerator[Dict[str, Any], None]:
+        """流式对话接口 - SSE 逐步返回 delta，最后返回完整 parsed 结构。"""
+        if not self._ensure_client():
+            fallback = {
+                "type": "text",
+                "content": "请先在设置中配置 LLM API Key 以启用 AI 助手功能。"
+            }
+            yield {"type": "complete", "content": fallback["content"], "parsed": fallback}
+            return
+
+        try:
+            messages, project, shortcut = self._build_chat_messages(message, context)
+            if shortcut:
+                shortcut_content = str(shortcut.get("content") or "")
+                if shortcut_content:
+                    yield {"type": "delta", "content": shortcut_content, "accumulated": shortcut_content}
+                yield {"type": "complete", "content": shortcut_content, "parsed": shortcut}
+                return
+
+            stream = await self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=6000,
+                stream=True,
+            )
+
+            accumulated = ""
+            async for chunk in stream:
+                delta_text = ""
+                choices = getattr(chunk, "choices", None) or []
+                for choice in choices:
+                    delta = getattr(choice, "delta", None)
+                    content = getattr(delta, "content", None)
+                    if isinstance(content, str):
+                        delta_text += content
+                        continue
+                    if isinstance(content, list):
+                        parts: List[str] = []
+                        for item in content:
+                            if isinstance(item, dict):
+                                text = item.get("text") or item.get("content") or ""
+                            else:
+                                text = getattr(item, "text", "") or getattr(item, "content", "")
+                            if isinstance(text, str) and text:
+                                parts.append(text)
+                        if parts:
+                            delta_text += "".join(parts)
+                if delta_text:
+                    accumulated += delta_text
+                    yield {"type": "delta", "content": delta_text, "accumulated": accumulated}
+
+            parsed = self._post_process_chat_reply(accumulated, project, message)
+            yield {"type": "complete", "content": parsed.get("content", accumulated), "parsed": parsed}
+        except Exception as e:
+            yield {"type": "error", "message": f"AI 助手调用失败: {str(e)}"}
     
     def _normalize_project_plan(self, data: Any) -> Optional[Dict[str, Any]]:
         """Normalize LLM planning output into the canonical AgentProjectPlan shape."""

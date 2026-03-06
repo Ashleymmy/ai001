@@ -1,19 +1,23 @@
+from __future__ import annotations
+
 """统一任务提交入口"""
 import logging
 from datetime import datetime, timedelta
-from typing import Tuple, Optional
+from typing import Tuple, Optional, TYPE_CHECKING
 
 from .types import TaskJobData, CreateTaskInput
 from .storage import TaskStorage
 from .event_bus import TaskEventBus
-from .queue_manager import QueueManager
 from .dedupe import build_dedupe_key, check_dedupe_with_arq
+
+if TYPE_CHECKING:
+    from .queue_manager import QueueManager
 
 logger = logging.getLogger(__name__)
 
 
 class TaskSubmitter:
-    def __init__(self, storage: TaskStorage, event_bus: TaskEventBus, queue_manager: Optional[QueueManager] = None):
+    def __init__(self, storage: TaskStorage, event_bus: TaskEventBus, queue_manager: Optional["QueueManager"] = None):
         self._storage = storage
         self._event_bus = event_bus
         self._queue = queue_manager

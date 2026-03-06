@@ -1,6 +1,7 @@
 """arq Worker 配置与任务分发"""
 import asyncio
 import logging
+import os
 from typing import Optional
 from arq import create_pool
 from arq.connections import RedisSettings, ArqRedis
@@ -16,6 +17,16 @@ QUEUE_CONCURRENCY = {
 }
 
 _semaphores: dict[str, asyncio.Semaphore] = {}
+
+
+def _redis_settings_from_env() -> RedisSettings:
+    host = os.getenv("TASK_QUEUE_REDIS_HOST", "localhost").strip() or "localhost"
+    port_raw = os.getenv("TASK_QUEUE_REDIS_PORT", "6379").strip()
+    try:
+        port = int(port_raw)
+    except Exception:
+        port = 6379
+    return RedisSettings(host=host, port=port)
 
 def _get_semaphore(queue_type: str) -> asyncio.Semaphore:
     if queue_type not in _semaphores:
@@ -54,7 +65,7 @@ class QueueManager:
     """管理 arq 连接池"""
 
     def __init__(self, redis_settings: Optional[RedisSettings] = None):
-        self.redis_settings = redis_settings or RedisSettings(host='localhost', port=6379)
+        self.redis_settings = redis_settings or _redis_settings_from_env()
         self._pool: Optional[ArqRedis] = None
 
     async def connect(self):
@@ -77,7 +88,7 @@ class QueueManager:
 
 class WorkerSettings:
     """arq Worker 配置 — 传给 arq worker CLI"""
-    redis_settings = RedisSettings(host='localhost', port=6379)
+    redis_settings = _redis_settings_from_env()
     functions = [process_task]
     max_jobs = 10
     job_timeout = 600  # 10 min

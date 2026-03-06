@@ -12,15 +12,16 @@ from backend.services.studio.agent_pipeline import (
 )
 
 
-def test_pipeline_stage_enum_has_13_values():
+def test_pipeline_stage_enum_has_20_values():
     stages = list(PipelineStage)
-    assert len(stages) == 13
+    assert len(stages) == 20
     assert PipelineStage.PLANNING in stages
     assert PipelineStage.COMPLETED in stages
 
 
-def test_default_stage_order_has_12_entries():
-    assert len(_DEFAULT_STAGE_ORDER) == 12
+def test_default_stage_order_has_19_entries():
+    assert len(_DEFAULT_STAGE_ORDER) == 19
+    assert len(_DEFAULT_STAGE_ORDER) == len(list(PipelineStage)) - 1
     assert "completed" not in _DEFAULT_STAGE_ORDER
     assert _DEFAULT_STAGE_ORDER[0] == "planning"
     assert _DEFAULT_STAGE_ORDER[-1] == "audio_generation"
@@ -78,7 +79,7 @@ async def test_run_episode_no_llm():
     pipe = create_pipeline("s1", "e1")
     state = await pipe.run_episode_pipeline("A hero saves the kingdom.")
     assert state.current_stage == "completed"
-    assert len(state.stages_completed) == 12
+    assert len(state.stages_completed) == len(_DEFAULT_STAGE_ORDER)
     assert len(state.stages_remaining) == 0
 
 

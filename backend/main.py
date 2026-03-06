@@ -45,9 +45,17 @@ class UTF8JSONResponse(JSONResponse):
 
 app = FastAPI(title="AI Storyboarder Backend", default_response_class=UTF8JSONResponse)
 
+def _read_cors_allow_origins() -> list[str]:
+    raw = os.getenv("CORS_ALLOW_ORIGINS", "*")
+    if not raw.strip() or raw.strip() == "*":
+        return ["*"]
+    origins = [item.strip() for item in raw.split(",") if item.strip()]
+    return origins or ["*"]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_read_cors_allow_origins(),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -104,7 +112,16 @@ app.include_router(studio.router)
 
 @app.on_event("startup")
 async def startup_event():
+    deps.validate_security_settings()
     deps.load_saved_settings()
+    deps.init_runtime_registry()
+    if deps.should_init_task_queue_runtime():
+        await deps.init_task_queue_runtime()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await deps.shutdown_task_queue_runtime()
 
 
 # ── Entry-point ─────────────────────────────────────────────────────

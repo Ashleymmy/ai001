@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import re
 import math
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, parse_qs
 
@@ -34,6 +34,9 @@ from services.studio.mood_packs import (
 from services.ws_manager import ws_manager
 from services.studio.prompts import build_default_custom_prompts, normalize_custom_prompts
 from services.collab_service import CollabService
+from services.studio.runtime_config import init_runtimes, runtime_registry
+from services.studio.task_queue.event_bus import TaskEventBus
+from services.studio.task_queue.storage import TaskStorage
 from services.fish_audio_service import FishAudioConfig, FishAudioService
 from services.tts_service import (
     DashScopeTTSConfig,
@@ -54,6 +57,10 @@ from schemas.settings import (
     SettingsRequest,
     TTSConfig,
 )
+
+if TYPE_CHECKING:
+    from services.studio.task_queue.queue_manager import QueueManager
+    from services.studio.task_queue.submitter import TaskSubmitter
 
 # ---------------------------------------------------------------------------
 # Global service instances (Agent runtime)
@@ -84,8 +91,51 @@ collab_service: Optional[CollabService] = None
 
 AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
-# Phase 4: 任务队列 Feature Flag
-USE_TASK_QUEUE = os.getenv("USE_TASK_QUEUE", "false").lower() == "true"
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_bool_optional(name: str) -> Optional[bool]:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int, minimum: int = 0) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except Exception:
+        value = default
+    return max(minimum, value)
+
+
+# 任务队列开关与参数（支持 runtime 级别覆盖）
+USE_TASK_QUEUE = _env_bool("USE_TASK_QUEUE", False)
+USE_TASK_QUEUE_STUDIO = _env_bool_optional("USE_TASK_QUEUE_STUDIO")
+USE_TASK_QUEUE_AGENT = _env_bool_optional("USE_TASK_QUEUE_AGENT")
+USE_TASK_QUEUE_MODULE = _env_bool_optional("USE_TASK_QUEUE_MODULE")
+TASK_QUEUE_POLL_INTERVAL_MS = _env_int("TASK_QUEUE_POLL_INTERVAL_MS", 500, minimum=100)
+TASK_QUEUE_WAIT_TIMEOUT_SEC = _env_int("TASK_QUEUE_WAIT_TIMEOUT_SEC", 600, minimum=10)
+TASK_QUEUE_REDIS_HOST = os.getenv("TASK_QUEUE_REDIS_HOST", "localhost").strip() or "localhost"
+TASK_QUEUE_REDIS_PORT = _env_int("TASK_QUEUE_REDIS_PORT", 6379, minimum=1)
+TASK_QUEUE_DB_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "data",
+    "task_queue.db",
+)
+
+# 任务队列运行时单例
+task_queue_storage: Optional[TaskStorage] = None
+task_queue_event_bus: Optional[TaskEventBus] = None
+task_queue_manager: Optional["QueueManager"] = None
+task_queue_submitter: Optional["TaskSubmitter"] = None
+task_queue_redis_connected: bool = False
+task_queue_runtime_error: str = ""
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -144,6 +194,177 @@ ALLOWED_FILE_TYPES = {
     'audio/mp4': {'ext': '.m4a', 'category': 'audio', 'max_size': 25 * 1024 * 1024},
     'audio/ogg': {'ext': '.ogg', 'category': 'audio', 'max_size': 25 * 1024 * 1024},
 }
+
+
+# ---------------------------------------------------------------------------
+# Runtime mode / task queue helpers
+# ---------------------------------------------------------------------------
+
+def _pick_runtime_queue_flag(runtime: str) -> Optional[bool]:
+    key = (runtime or "module").strip().lower()
+    if key == "studio":
+        return USE_TASK_QUEUE_STUDIO
+    if key == "agent":
+        return USE_TASK_QUEUE_AGENT
+    return USE_TASK_QUEUE_MODULE
+
+
+def is_task_queue_enabled(runtime: str, endpoint: str = "") -> bool:
+    override = _pick_runtime_queue_flag(runtime)
+    return bool(USE_TASK_QUEUE if override is None else override)
+
+
+def resolve_runtime_mode(runtime: str, endpoint: str = "") -> str:
+    return "task_queue" if is_task_queue_enabled(runtime, endpoint) else "legacy"
+
+
+def _should_init_task_queue_runtime() -> bool:
+    return any(
+        is_task_queue_enabled(runtime)
+        for runtime in ("module", "agent", "studio")
+    )
+
+
+def should_init_task_queue_runtime() -> bool:
+    return _should_init_task_queue_runtime()
+
+
+async def init_task_queue_runtime() -> None:
+    """初始化任务队列运行时单例。"""
+    global task_queue_storage, task_queue_event_bus, task_queue_manager
+    global task_queue_submitter, task_queue_redis_connected, task_queue_runtime_error
+    if task_queue_storage is not None and task_queue_submitter is not None:
+        return
+
+    task_queue_runtime_error = ""
+    task_queue_storage = TaskStorage(TASK_QUEUE_DB_PATH)
+    task_queue_event_bus = TaskEventBus(task_queue_storage)
+    from services.studio.task_queue.submitter import TaskSubmitter
+
+    # 即使 Redis/arq 不可用，也保持 submitter 可用，让接口返回明确 503
+    task_queue_submitter = TaskSubmitter(task_queue_storage, task_queue_event_bus, None)
+    task_queue_manager = None
+    task_queue_redis_connected = False
+
+    try:
+        from services.studio.task_queue.queue_manager import QueueManager
+    except ModuleNotFoundError as exc:
+        missing = getattr(exc, "name", "") or str(exc)
+        task_queue_runtime_error = (
+            f"Task queue dependency missing: {missing}. "
+            f"请先安装 backend/requirements.txt（至少包含 arq、redis）"
+        )
+        return
+
+    try:
+        task_queue_manager = QueueManager()
+        await task_queue_manager.connect()
+        task_queue_redis_connected = True
+    except Exception as exc:
+        task_queue_runtime_error = f"Redis unavailable: {exc}"
+        task_queue_redis_connected = False
+
+    task_queue_submitter = TaskSubmitter(
+        task_queue_storage,
+        task_queue_event_bus,
+        task_queue_manager if task_queue_redis_connected else None,
+    )
+
+
+async def shutdown_task_queue_runtime() -> None:
+    global task_queue_storage, task_queue_event_bus, task_queue_manager
+    global task_queue_submitter, task_queue_redis_connected
+    if task_queue_manager is not None:
+        try:
+            await task_queue_manager.close()
+        except Exception:
+            pass
+    if task_queue_storage is not None:
+        try:
+            task_queue_storage.close()
+        except Exception:
+            pass
+    task_queue_storage = None
+    task_queue_event_bus = None
+    task_queue_manager = None
+    task_queue_submitter = None
+    task_queue_redis_connected = False
+
+
+def get_task_queue_storage(required: bool = True) -> Optional[TaskStorage]:
+    if task_queue_storage is None and required:
+        raise HTTPException(503, "任务队列未初始化")
+    return task_queue_storage
+
+
+def get_task_queue_submitter(
+    runtime: str,
+    endpoint: str = "",
+    *,
+    required: bool = True,
+) -> Optional[TaskSubmitter]:
+    mode = resolve_runtime_mode(runtime, endpoint)
+    if mode != "task_queue":
+        return None
+    if task_queue_submitter is None:
+        if required:
+            raise HTTPException(503, "任务队列未初始化，请检查后端启动日志")
+        return None
+    if not task_queue_redis_connected:
+        if required:
+            raise HTTPException(503, f"任务队列不可用（Redis/Worker 未就绪）: {task_queue_runtime_error}")
+        return None
+    return task_queue_submitter
+
+
+def get_task_queue_health() -> Dict[str, Any]:
+    enabled = _should_init_task_queue_runtime()
+    return {
+        "enabled": enabled,
+        "runtime_ready": bool(task_queue_storage and task_queue_submitter),
+        "redis_connected": bool(task_queue_redis_connected),
+        "worker_ready": bool(task_queue_redis_connected),
+        "mode": {
+            "module": resolve_runtime_mode("module"),
+            "agent": resolve_runtime_mode("agent"),
+            "studio": resolve_runtime_mode("studio"),
+        },
+        "redis": {
+            "host": TASK_QUEUE_REDIS_HOST,
+            "port": TASK_QUEUE_REDIS_PORT,
+        },
+        "db_path": TASK_QUEUE_DB_PATH,
+        "error": task_queue_runtime_error or "",
+    }
+
+
+def sync_runtime_service_refs() -> None:
+    runtime_registry.update_service_ref("agent", "llm_service", llm_service)
+    runtime_registry.update_service_ref("agent", "image_service", image_service)
+    runtime_registry.update_service_ref("agent", "video_service", video_service)
+    runtime_registry.update_service_ref("agent", "storage", storage)
+
+    runtime_registry.update_service_ref("module", "llm_service", module_llm_service)
+    runtime_registry.update_service_ref("module", "image_service", module_image_service)
+    runtime_registry.update_service_ref("module", "video_service", module_video_service)
+    runtime_registry.update_service_ref("module", "storage", storage)
+
+    runtime_registry.update_service_ref("studio", "llm_service", module_llm_service)
+    runtime_registry.update_service_ref("studio", "image_service", module_image_service)
+    runtime_registry.update_service_ref("studio", "video_service", module_video_service)
+    runtime_registry.update_service_ref("studio", "storage", studio_storage)
+
+
+def init_runtime_registry() -> None:
+    init_runtimes()
+    sync_runtime_service_refs()
+
+
+def validate_security_settings() -> None:
+    if AUTH_REQUIRED:
+        secret = (os.getenv("COLLAB_JWT_SECRET", "dev-collab-secret") or "").strip()
+        if not secret or secret == "dev-collab-secret":
+            raise RuntimeError("AUTH_REQUIRED=true 时必须配置非默认 COLLAB_JWT_SECRET")
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +525,8 @@ def load_saved_settings():
         print("[Startup] Studio 复用 Module settings")
     else:
         print("[Startup] Studio 暂无设置（将在前端配置后激活）")
+
+    sync_runtime_service_refs()
 
 
 # ---------------------------------------------------------------------------
@@ -609,6 +832,7 @@ def apply_agent_runtime_settings(request: SettingsRequest) -> Dict[str, Any]:
             f"fish.model={request.tts.fish.model}"
         )
 
+    sync_runtime_service_refs()
     return applied_settings
 
 
@@ -688,6 +912,7 @@ def apply_module_runtime_settings(request: SettingsRequest) -> Dict[str, Any]:
             f"fish.model={request.tts.fish.model}"
         )
 
+    sync_runtime_service_refs()
     return applied_settings
 
 

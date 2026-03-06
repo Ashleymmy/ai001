@@ -1,10 +1,11 @@
 """Chat routes: /api/chat, /api/bridge/generate-text, /api/chat/history/*."""
 
 from typing import Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from services.storage_service import storage
+from services.llm_service import create_structured_sse_response
 import dependencies as deps
 from schemas.settings import ChatRequest, BridgeGenerateTextRequest
 
@@ -30,6 +31,16 @@ async def chat_with_ai(request: ChatRequest):
     except Exception as e:
         print(f"对话失败: {e}")
         return {"reply": f"抱歉，出现错误: {str(e)}"}
+
+
+@router.post("/chat/stream")
+async def chat_with_ai_stream(req: ChatRequest, request: Request):
+    service = deps.get_request_llm_service(req.llm)
+    stream_gen = service.stream_chat(
+        message=req.message,
+        context=req.context,
+    )
+    return create_structured_sse_response(stream_gen, request=request)
 
 
 @router.post("/bridge/generate-text")

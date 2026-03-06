@@ -407,6 +407,26 @@ class TaskStorage:
         ).fetchall()
         return [self._row_to_event(r) for r in rows]
 
+    def list_events_after_for_tasks(
+        self, task_ids: List[str], after_id: int, limit: int = 200
+    ) -> List[TaskEvent]:
+        """按 task_id 列表查询 ID 大于 after_id 的事件。"""
+        normalized = [str(tid).strip() for tid in task_ids if str(tid).strip()]
+        if not normalized:
+            return []
+        placeholders = ",".join(["?"] * len(normalized))
+        params: List[Any] = [after_id, *normalized, max(1, int(limit))]
+        rows = self._conn.execute(
+            f"""
+            SELECT * FROM task_events
+            WHERE id > ? AND task_id IN ({placeholders})
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+        return [self._row_to_event(r) for r in rows]
+
     # ------------------------------------------------------------------
     # Pipeline Runs
     # ------------------------------------------------------------------

@@ -9,12 +9,15 @@ from backend.services.studio.agent_roles import (
 )
 
 
-def test_10_roles_registered():
-    assert len(AGENT_ROLES) == 10
+def test_19_roles_registered():
+    assert len(AGENT_ROLES) == 19
     expected = {
         "producer", "world_builder", "character_developer", "dialogue_writer",
         "storyboard_writer", "prompt_compositor", "narrative_qa", "visual_qa",
         "prompt_qa", "state_manager",
+        "character_profiler", "character_visual_designer", "screenplay_converter",
+        "text_clipper", "cinematographer", "location_extractor", "voice_analyst",
+        "acting_director", "shot_variant_analyst",
     }
     assert set(AGENT_ROLES.keys()) == expected
 
@@ -43,7 +46,7 @@ def test_get_agent_role_unknown():
 
 def test_list_agent_roles_returns_all():
     roles = list_agent_roles()
-    assert len(roles) == 10
+    assert len(roles) == len(AGENT_ROLES)
     for r in roles:
         assert "role_id" in r
         assert "display_name" in r
@@ -52,16 +55,25 @@ def test_list_agent_roles_returns_all():
 
 def test_list_roles_by_department_story():
     story_roles = list_roles_by_department("story")
-    assert len(story_roles) == 4
+    assert len(story_roles) == 8
     story_ids = {r.role_id for r in story_roles}
-    assert story_ids == {"world_builder", "character_developer", "dialogue_writer", "storyboard_writer"}
+    assert story_ids == {
+        "world_builder",
+        "character_developer",
+        "dialogue_writer",
+        "storyboard_writer",
+        "character_profiler",
+        "screenplay_converter",
+        "text_clipper",
+        "location_extractor",
+    }
 
 
 def test_list_roles_by_department_tech():
     tech_roles = list_roles_by_department("tech")
-    assert len(tech_roles) == 4
+    assert len(tech_roles) == 5
     tech_ids = {r.role_id for r in tech_roles}
-    assert tech_ids == {"narrative_qa", "visual_qa", "prompt_qa", "state_manager"}
+    assert tech_ids == {"narrative_qa", "visual_qa", "prompt_qa", "state_manager", "shot_variant_analyst"}
 
 
 def test_model_tiers_has_4_levels():
